@@ -5047,6 +5047,89 @@ entra na janela; com o nó a não servir candidato o disjuntor não avalia nem g
 
 ---
 
+## AOS-526 — Pedir a tool call quando o contrato do passo a exige (`tool_choice`), por perfil e medido antes de ligar
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO emenda ADR nenhum. O ADR-036 (protocolo de tool-use nativo) e o ADR-037 (contrato de conclusão) são citados como o que já existe: o pedido leva as tools, e o kernel sabe que tool o passo exige. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 — Model Gateway e Custos |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A4. Nasce da investigação das primeiras falhas do titular (acompanhamento §5, 2026-10-13) |
+| Tipo | feat |
+| Prioridade | P2: o defeito custa tentativas, não resultados — a nova tentativa (A1) recupera-o |
+| Estimativa | M |
+| Dependências | AOS-493 (contrato de conclusão), AOS-513 (parâmetros por perfil), AOS-518 (exame), feitos. O modo real do banco só corre com autorização do dono |
+| Bloqueia | Nada |
+| Responsável sugerido | Engenheiro de Plataforma |
+| Documentos de referência | `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (§5, 2026-10-13), `docs/adr/ADR-036-o-tail-e-a-forma-canonica-da-conversa.md`, `docs/adr/ADR-037-o-desfecho-de-um-run-e-um-veredicto-do-kernel.md`, `packages/platform/model-gateway/route_profile.go`, `packages/qa/banco-ensaio/README.md` |
+
+### Contexto
+
+- **O que se mediu.** O titular de produção (`openai/kimi-for-coding`) fecha a primeira tentativa
+  de um nó com tools **sem pedir a tool** cerca de uma vez em onze: 11 em 127, juntando o exame
+  de 2026-10-11 (3 em 40) e três séries em produção (0 em 19, 4 em 33, 4 em 35). Nenhuma série
+  se distingue das outras por mais do que o acaso; a «subida» registada a 2026-10-12 era ruído.
+- **Não é do pedido.** Nas 76 primeiras tentativas das duas últimas séries, as 8 falhadas e as
+  68 cumpridas têm o mesmo tamanho de entrada (883 a 1002 tokens), a mesma parte em cache, a
+  mesma tool oferecida, a mesma projecção. O que muda é a resposta: `finish_reason: stop`, zero
+  tool calls e um texto curto (cerca de 62 bytes em 7 das 8; 7 KB numa).
+- **O texto não foi lido.** O conteúdo capturado dos turnos está selado no Event Store, com a
+  chave do titular dos dados; não se lê sem a identidade do dono. A forma — texto curto e
+  paragem — é a de um modelo que anuncia a chamada e não a faz.
+- **Custa tentativas, não resultados.** Os 80 planos das duas séries concluíram; a nova
+  tentativa recuperou as 8 (uma só à terceira).
+- **O pedido não diz ao fornecedor que a tool é obrigatória.** O gateway envia `model`,
+  `messages` e `tools`. O campo `tool_choice` existe no wire (`port/normalize.go`) e nunca é
+  preenchido. O kernel sabe, pelo contrato de conclusão, que o passo exige a tool.
+
+### Objectivo
+
+Reduzir as primeiras tentativas sem tool call, pedindo ao fornecedor a chamada quando o passo a
+exige — **só nas rotas em que se mediu que o fornecedor aceita o pedido e que a taxa desce**.
+
+### Âmbito
+
+- **Um parâmetro novo no perfil da rota**, desligado por omissão, que diz ao gateway para enviar
+  `tool_choice` (`required`, ou a tool nomeada quando o contrato exige uma só) **enquanto o
+  contrato de conclusão do run ainda não estiver satisfeito**; depois de satisfeito, o campo
+  deixa de ir, para o modelo poder responder em texto.
+- **Sem o parâmetro, o pedido é byte a byte o de hoje**, para todas as rotas.
+- **O banco de ensaio mede as duas formas**, com e sem o parâmetro, na mesma rota: a taxa de
+  primeiras tentativas sem tool call (L2), os 4xx de parâmetro, e se o run ainda fecha — um
+  modelo obrigado a chamar a tool pode não conseguir dar a resposta final.
+- **Entra em produção como qualquer mudança de perfil**: exame, registo assinado pelo dono,
+  canary. Nenhuma rota de produção muda por este ticket.
+- **Fora de âmbito:** mudar o texto do protocolo ou a regra da nova tentativa; forçar a tool em
+  nós sem contrato; a escolha de modelo.
+
+### Critérios de Aceitação
+
+- [ ] Com o parâmetro ausente, os pedidos de uma corrida de referência são os de antes (digest
+      pinado dos pedidos, como no AOS-516).
+- [ ] Com o parâmetro, o pedido leva `tool_choice` só enquanto o contrato não está satisfeito, e
+      deixa de o levar no turno seguinte a uma tool call que o satisfaça. Provado por teste, com
+      o controlo: um nó sem contrato nunca o leva.
+- [ ] O perfil com o parâmetro passa pela via assinada (registo de entrada) e um valor fora do
+      vocabulário é recusado no arranque.
+- [ ] Um fornecedor que responda 4xx ao parâmetro é classificado como erro de parâmetro, e o
+      exame recusa a rota — não se descobre em produção.
+- [ ] Medição real, com autorização do dono, na rota do titular: L2 com e sem o parâmetro, na
+      mesma sessão, com a contagem e o intervalo; registada na §5 do acompanhamento. O critério
+      de sucesso é a taxa descer **e** os nós continuarem a fechar cumpridos.
+- [ ] Gates locais verdes; cobertura dos módulos tocados sem regressão.
+
+### Notas
+
+- Não se sabe se o endpoint `api.kimi.com/coding/v1` aceita `tool_choice`, nem com que valores.
+  Com `drop_params: false` no proxy de produção, um parâmetro recusado é um 400 e não é
+  descartado em silêncio: é por isso que a medição vem antes.
+- O candidato de produção desde 2026-10-13 (`openrouter/anthropic/claude-haiku-5.5`) teve 0
+  primeiras tentativas sem tool call em 85. Se o canary o confirmar, a utilidade deste ticket
+  para o titular depende de quem fica titular.
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -5084,3 +5167,4 @@ entra na janela; com o nó a não servir candidato o disjuntor não avalia nem g
 | 3.10 | 2026-10-11 | +AOS-521 (fase A3): disjuntor por modelo — cinco sinais sem ler texto, regra de 3 falhas nos últimos 20 runs do candidato e abertura ao primeiro turno com o modelo servido diferente; aberto, o candidato não recebe runs novos, o estado é durável e selado, e só um registo assinado novo o reabre (`AOS_MODEL_BREAKER=off\|observe\|enforce`, omissão `off`); secção no ADR novo do AOS-520 como entregável (D5) | Equipa AOS |
 | 3.11 | 2026-10-12 | AOS-519, AOS-520 e AOS-521: o compose de produção passa as quatro variáveis da fase A3, vazias por omissão, e monta a pasta dos perfis só de leitura; o deploy copia o `alerta-disjuntor.sh`; runbook dos passos do dono. Aplicar no servidor continua por fazer | Equipa AOS |
 | 3.12 | 2026-10-12 | AOS-517, AOS-519, AOS-520 e AOS-521 em produção na v0.1.55: o proxy referido pelo digest e `drop_params: false` (dois dos cinco critérios do servidor do AOS-517 marcados); o perfil assinado do `k3` carregado; o candidato a servir 10% dos planos (série `v0155c`: 7 planos em 40, 0 com dois modelos); o disjuntor em `observe`, sem nunca ter aberto. Nada foi provado com um modelo mau real | Equipa AOS |
+| 3.13 | 2026-10-13 | +AOS-526 (fase A4): pedir a tool call (`tool_choice`) quando o contrato do passo a exige, por perfil, desligado por omissão e medido no banco antes de ligar. Nasce da investigação das primeiras falhas do titular: 11 em 127 primeiras tentativas sem tool call, com pedidos iguais aos das que cumprem | Equipa AOS |
