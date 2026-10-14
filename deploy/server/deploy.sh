@@ -199,6 +199,33 @@ mkdir -p "${APP_DIR}/orq"
 # no nó. Cria-se sempre, pela mesma razão das de cima; vazia e com AOS_MODEL_ROUTE_PROFILES_DIR
 # por definir, o nó nem a abre. Se já existir (o runbook passa-a para o root), isto não lhe toca.
 mkdir -p "${APP_DIR}/perfis-de-rota"
+# `model-pricing/` é a pasta da tabela de preços do operador (AOS-527), montada só de leitura no
+# nó. Cria-se sempre, pela mesma razão; com AOS_MODEL_PRICING_PATH por definir o nó nem a abre. O
+# CD semeia nela o pricing.json só quando falta, e este passo nunca toca no que lá estiver.
+mkdir -p "${APP_DIR}/model-pricing"
+# A TABELA APONTADA TEM DE CARREGAR, e isto diz-se AQUI porque reverter não salva: o ficheiro e o
+# `.env` são do host, a imagem anterior também lê AOS_MODEL_PRICING_PATH (AOS-259) e abortaria
+# igual (ErrBadModelPricing) — a reversão falhava e o nó ficava em baixo. Só se confere o caminho
+# dentro da pasta montada; vazia ou fora dela, nada muda. O conteúdo (rates, pares) confere-o o nó.
+case "${AOS_MODEL_PRICING_PATH:-}" in
+  /etc/aos/model-pricing/*)
+    tabela_precos="${APP_DIR}/model-pricing/${AOS_MODEL_PRICING_PATH#/etc/aos/model-pricing/}"
+    case "${AOS_MODEL_PRICING_PATH}" in
+      *..*) fail "AOS_MODEL_PRICING_PATH=${AOS_MODEL_PRICING_PATH} tem '..' — aponte um ficheiro dentro de /etc/aos/model-pricing/" ;;
+    esac
+    [ -s "${tabela_precos}" ] \
+      || fail "AOS_MODEL_PRICING_PATH=${AOS_MODEL_PRICING_PATH} mas ${tabela_precos} não existe (ou está vazio) — o nó abortaria no arranque, e a imagem anterior também. Ponha a tabela ANTES do deploy, ou retire a variável do .env"
+    [ -n "$( find "${tabela_precos}" -maxdepth 0 -perm -o=r 2>/dev/null )" ] \
+      || fail "${tabela_precos} não é legível por «outros» — o nó corre como uid 65532 e não a leria. chmod 0644 ${tabela_precos}"
+    # `python3 -c ''` e não `command -v`: um python3 que existe mas não corre (um atalho partido) daria
+    # «JSON inválido» sobre uma tabela boa.
+    if python3 -c '' >/dev/null 2>&1; then
+      python3 -c 'import json, sys; json.load(open(sys.argv[1], encoding="utf-8"))' "${tabela_precos}" 2>/dev/null \
+        || fail "${tabela_precos} não é JSON válido — o nó abortaria no arranque (ErrBadModelPricing), e a imagem anterior também"
+    fi
+    log "0b/6 tabela de preços do modelo: ${tabela_precos} presente e legível."
+    ;;
+esac
 if [ -n "${AOS_WORM_TRUST_ANCHOR:-}" ]; then
   [ -s "${APP_DIR}/ancoras/checkpoints.json" ] \
     || fail "AOS_WORM_TRUST_ANCHOR está ligada mas ${APP_DIR}/ancoras/checkpoints.json não existe (ou está vazio) — o nó abortaria no arranque. Corra a selagem e entregue o ficheiro ANTES de ligar a âncora"

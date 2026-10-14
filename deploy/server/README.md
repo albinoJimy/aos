@@ -1921,6 +1921,100 @@ calcular de que lado ele cai (a função não tem segredo). O `aos-orq serve` ma
 de plano: cada nó conta como um run independente. O disjuntor — tirar a fatia a um candidato que
 falha antes do 40.º plano — é o AOS-521; as métricas por modelo são o PR 2 deste ticket.
 
+### O custo do modelo em dólares — `AOS_MODEL_PRICING_PATH` e o tecto por run (AOS-527)
+
+O nó deriva o custo de cada turno dos tokens que o provider ecoa, multiplicados pela **tabela de
+preços** em vigor (AOS-259). Sem preço para o par (`AOS_MODEL_NAME`, `AOS_MODEL_REGION`) o custo
+sai **não derivado**: zero por ausência de dados, marcado como tal no `turn.recorded` e no span, e
+o tecto em dólares não se pode ligar. A tabela embebida no binário só tem pares de referência e
+não cobre o de produção (`gpt-4o` em `eu`), pelo que o preço vem de um ficheiro do operador.
+
+**Onde vive.** `/opt/aos/model-pricing/pricing.json` no servidor, montado só de leitura em
+`/etc/aos/model-pricing/` no nó (só no nó: o `aos-orq` não mede dólares). A pasta monta-se sempre
+e o `deploy.sh` cria-a; o CD semeia nela o `deploy/server/model-pricing/pricing.json` do
+repositório **só quando falta** (`--ignore-existing`) e nunca o reescreve — o preço é do operador.
+A pasta fica do `aos` (o CD escreve lá), e o `rsync -a` repõe-lhe 0755 a cada deploy. Um deploy
+à mão sem o `deploy.sh` (um `docker compose up` directo) deixa o Docker criar a pasta como root, e
+o deploy seguinte do CD falha no passo «Sincronizar»; o remédio é `chown aos:aos
+/opt/aos/model-pricing` como root.
+
+O ficheiro tem de ser **0644**: o nó corre como uid 65532 e não lê um 0600.
+
+**Um preço errado não é inócuo.** Sem tecto em dólares só engana a contabilidade; com
+`AOS_BUDGET_MAX_COST_MICRO_USD` ligada, um preço exagerado **nega runs** que cabiam, e um preço a 0
+**desarma o tecto** sem aviso (o custo derivado é zero e nunca o atinge).
+
+**Sem `AOS_MODEL_PRICING_PATH` nada muda.** Vazia — a omissão —, o nó usa a tabela embebida e
+arranca exactamente como antes, com ou sem o ficheiro na pasta. Definida, o ficheiro tem de
+carregar: ilegível, JSON inválido, `version` vazia, rate negativo ou par duplicado ⇒ o nó **recusa
+arrancar** (`ErrBadModelPricing`).
+
+⚠️ **Reverter não resolve.** O ficheiro e o `.env` são do host, e a imagem anterior também lê
+`AOS_MODEL_PRICING_PATH` (desde o AOS-259): aborta igual, a reversão falha e o nó fica em baixo. Por
+isso o `deploy.sh` confere a tabela no passo 0b, **antes** de tocar em produção, quando a variável
+aponta para dentro de `/etc/aos/model-pricing/`: o ficheiro correspondente em
+`/opt/aos/model-pricing/` tem de existir, não estar vazio, ser legível por «outros» e, havendo
+`python3` no host, ser JSON válido. Falhando, o deploy pára com a razão e nada muda. Os rates e os
+pares confere-os só o nó. Uma recriação à mão (os comandos abaixo) não passa por essa verificação:
+se o nó não subir, retira a linha do `.env` e recria-o.
+
+**O formato** é o de `packages/platform/model-gateway/pricing/pricing_table.json`: `version` e
+`entries`, cada entrada com `model`, `region` e quatro rates inteiros em micro-USD por milhão de
+tokens (`input`, `output`, `cache_read`, `cache_write`). A semente traz uma entrada, `gpt-4o`/`eu`
+a 100000 de entrada e 500000 de saída (0,10 e 0,50 USD/Mtok), o preço da OpenRouter para
+`anthropic/claude-haiku-5.5` lido a 2026-10-12, e cache a 0 por não se conhecer — os tokens
+servidos de cache contam a 0 e o custo sai **por baixo** enquanto o operador não puser esse preço.
+Um campo a mais (o `_nota` da semente) é ignorado pelo leitor e não entra no digest; ao contrário
+do `authority.json`, este descodificador não é estrito.
+
+⚠️ **O preço é por (alias, região), não pelo modelo.** O nó pede o alias `gpt-4o`; quem decide o
+modelo real é o `config.yaml` do proxy. Trocar o modelo por trás do alias — ou o preço do
+fornecedor mudar — exige actualizar a tabela, subir o `version` e recriar o nó; senão o custo
+continua a sair com o preço antigo, com a autoridade de um número derivado. O banner declara a
+versão e o digest da tabela em vigor.
+
+⚠️ **Com um candidato ligado** (`AOS_MODEL_CANDIDATE=on`) e a tabela a cobrir o titular, o alias
+do candidato também tem de ter entrada para a região do nó, senão o nó não arranca
+(`ErrModelCandidateWithoutPrice`). Hoje não há candidato.
+
+**Ligar** (como `aos`, em `/opt/aos`, depois do deploy que trouxer este ticket):
+
+```bash
+grep -c 'model-pricing' /opt/aos/docker-compose.prod.yml   # >= 1
+cat /opt/aos/model-pricing/pricing.json                     # a semente; confirmar o preço do dia
+printf '%s\n' 'AOS_MODEL_PRICING_PATH=/etc/aos/model-pricing/pricing.json' >> /opt/aos/.env
+stat -c '%a %U' /opt/aos/model-pricing/pricing.json        # 644 aos
+docker compose -f /opt/aos/docker-compose.prod.yml --env-file /opt/aos/.env --env-file /opt/aos/image.env up -d --no-deps --force-recreate aos
+docker logs aos-aos-1 2>&1 | grep 'canal de custo' | tail -1
+# tem de dizer ARMADO, com a tabela EXTERNA, versao 2026.10#..., modelo "gpt-4o", regiao "eu".
+# FONTE AUSENTE quer dizer que o par do .env não é o da tabela (nome ou região diferentes).
+```
+
+Recuo: retirar a linha do `.env` e recriar o nó. O que já foi gravado com custo derivado fica.
+
+**Depois, o tecto em dólares por run.** Só com o banner a dizer ARMADO: com
+`AOS_BUDGET_MAX_COST_MICRO_USD` definida e sem preço, o nó recusa arrancar
+(`ErrBudgetCostNoPriceSource`). O valor de partida sugerido é **100000** (0,10 USD por run): é o
+pior caso do tecto em tokens de produção (200000 tokens, todos ao preço de saída de 0,50 USD/Mtok),
+pelo que, com os preços de hoje, não nega nenhum run que os tokens não negassem já, e passa a morder
+se o preço subir ou se a tabela passar a um modelo mais caro. Aperta-se depois pelo custo medido
+(`cost_micro_usd` dos `turn.recorded` de uma série). Com a quota por principal em dólares
+(`AOS_BUDGET_PRINCIPAL_MAX_COST_MICRO_USD`), ela tem de ser >= a este tecto.
+
+O valor do tecto **não aparece no arranque**: as linhas do orçamento e do burn-down do banner são
+as mesmas com ou sem ele. Confirma-se por três coisas: a variável no `.env`, a variável no contentor,
+e o nó a correr — com a variável definida e sem fonte de preço o arranque falha com
+`ErrBudgetCostNoPriceSource`, pelo que um nó de pé com ela no ambiente tem o tecto em vigor.
+
+```bash
+printf '%s\n' 'AOS_BUDGET_MAX_COST_MICRO_USD=100000' >> /opt/aos/.env
+docker compose -f /opt/aos/docker-compose.prod.yml --env-file /opt/aos/.env --env-file /opt/aos/image.env up -d --no-deps --force-recreate aos
+grep '^AOS_BUDGET_MAX_COST_MICRO_USD=' /opt/aos/.env                              # =100000
+docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' aos-aos-1 | grep '^AOS_BUDGET_MAX_COST_MICRO_USD='
+docker inspect -f '{{.State.Status}} reinícios={{.RestartCount}}' aos-aos-1       # running reinícios=0
+docker logs aos-aos-1 2>&1 | grep -c 'NAO tem fonte de preco'                    # 0
+```
+
 ### A forma da resposta do provider — `AOS_MODEL_RESPONSE_SHAPE` (AOS-507)
 
 Uma resposta que gasta tokens de saída e chega com o texto vazio fecha `empty_output`, e o registo

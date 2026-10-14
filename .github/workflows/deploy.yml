@@ -230,6 +230,11 @@ jobs:
             [ -f "deploy/server/$f" ] || continue
             rsync -az --ignore-existing -e "$SSH" "deploy/server/$f" "$USER@$HOST:/opt/aos/$f"
           done
+          # AOS-527: a tabela de preços do modelo é SEMENTE pela mesma razão — o preço é do operador
+          # e um deploy não o pode repor. A pasta inteira, e não o ficheiro: o rsync só cria a última
+          # componente do destino, e no primeiro deploy /opt/aos/model-pricing ainda não existe (o
+          # deploy.sh, que a cria, corre depois deste passo).
+          rsync -az --ignore-existing -e "$SSH" deploy/server/model-pricing/ "$USER@$HOST:/opt/aos/model-pricing/"
           for d in model-tools litellm keycloak vault gvisor; do
             rsync -az --exclude='config.yaml' --exclude='realm-aos.json' \
               -e "$SSH" "deploy/server/$d/" "$USER@$HOST:/opt/aos/$d/"
