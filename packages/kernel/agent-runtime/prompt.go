@@ -199,6 +199,20 @@ type PromptView struct {
 	// `prompt_hash` (o que lá entra é o rótulo). O mapa e os bytes são do run: quem recebe a
 	// vista não os altera.
 	ProviderStates map[string][]byte
+	// CompletionPending são as tools do CONTRATO DE CONCLUSÃO do run ([Goal.CompletionRequires])
+	// que ainda não tiveram uma chamada EFECTIVA antes deste turno (AOS-526), pela ordem do
+	// contrato — o mesmo critério com que [ConcludeRun] decide o veredicto. É para quem faz o
+	// pedido poder dizer ao provider que a tool é obrigatória; o runtime não decide nada com ele.
+	// nil num run sem contrato, com o modo do veredicto desligado, ou com o contrato satisfeito: a
+	// vista é a de sempre. Não é do assembler — o loop escreve-o na vista depois de a montar — e
+	// não entra em Materialized nem no `prompt_hash`.
+	CompletionPending []string
+	// CompletionToForce é a lista que quem faz o pedido pode FORÇAR neste turno (AOS-526): igual a
+	// [PromptView.CompletionPending] enquanto o run ainda não pediu tool nenhuma, e nil a partir da
+	// primeira tool call do run, seja de que tool for e seja qual for o desfecho. As mesmas regras
+	// de [PromptView.CompletionPending]: escrita pelo loop, fora de Materialized e do
+	// `prompt_hash`, e sem decisão nenhuma no runtime.
+	CompletionToForce []string
 }
 
 // PromptAssembler monta prompts cache-estáveis (ADR-009). É construído uma vez

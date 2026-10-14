@@ -252,6 +252,13 @@ func dentroDoAlfabeto(s string, max int, extra string) bool {
 // paramsDoTurno devolve o `manifest.model.params` de um turno: os parâmetros do Goal e, por
 // cima, os que o perfil da rota enviou no pedido. Sem parâmetros do pedido devolve o mapa do
 // Goal TAL COMO ESTÁ — o manifesto fica com os bytes de sempre.
+//
+// LIMITE CONHECIDO (AOS-513, AOS-526): os parâmetros do pedido podem variar de turno para turno —
+// o `tool_choice` da regra do perfil só vai enquanto há tools do contrato por tentar. A âncora
+// opt-in de modelo do motor de replay compara `manifest.model.params` com um `spec.Model.Params`
+// fixo, e daria divergência `model` num turno com parâmetros do pedido. Em produção ninguém
+// preenche `spec.Model`; quem o fizer num run com uma rota que declara parâmetros tem de contar
+// com isto.
 func paramsDoTurno(doGoal, doPedido map[string]string) map[string]string {
 	if len(doPedido) == 0 {
 		return doGoal

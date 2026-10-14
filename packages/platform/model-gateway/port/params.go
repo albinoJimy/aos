@@ -84,7 +84,28 @@ type RequestParams struct {
 	// lado de Thinking nem de ReasoningEffort: são três formas de pedir a mesma coisa, e uma
 	// rota pede-a de uma só maneira.
 	Reasoning *ReasoningParam `json:"reasoning,omitempty"`
+	// ToolChoice é a REGRA com que o gateway pede ao provider a tool call (AOS-526), no
+	// vocabulário fechado ToolChoice* abaixo. Não é o valor do wire: com
+	// [ToolChoiceWhileContractPending] o gateway escreve `tool_choice` no pedido só enquanto o run
+	// ainda não pediu tool nenhuma e o contrato de conclusão tem tools por cumprir que o pedido
+	// oferece ([ChatRequest.ContractToForce]). Vazio ⇒ o campo nunca vai, e o pedido é o de sempre.
+	ToolChoice string `json:"tool_choice,omitempty"`
 }
+
+// Regras de [RequestParams.ToolChoice]. Vocabulário FECHADO.
+const (
+	// ToolChoiceNever — o gateway nunca escreve `tool_choice`. É a omissão (o campo vazio).
+	ToolChoiceNever = ""
+	// ToolChoiceNeverName é a forma escrita de [ToolChoiceNever] num perfil lido de JSON.
+	ToolChoiceNeverName = "nunca"
+	// ToolChoiceWhileContractPending — o pedido leva `tool_choice` só enquanto o run ainda não
+	// pediu tool nenhuma e o contrato de conclusão tem tools por cumprir que o pedido oferece: a
+	// tool nomeada quando é uma só, `required` quando são mais. A partir da primeira tool call do
+	// run — de qualquer tool, recusada, falhada ou efectiva —, num nó sem contrato ou sem tools
+	// oferecidas, o campo não vai. Cada run — e cada nova tentativa de um nó é um run novo — só pode
+	// ser forçado nos turnos antes da sua primeira tool call.
+	ToolChoiceWhileContractPending = "enquanto_o_contrato_nao_estiver_satisfeito"
+)
 
 // ErrBadRequestParams — um parâmetro do pedido está fora do conjunto fechado. A mensagem só
 // leva o nome do campo: o valor recusado não é repetido.
@@ -92,7 +113,7 @@ var ErrBadRequestParams = errors.New("port: parametro do pedido fora do conjunto
 
 // IsZero diz se o perfil não declara parâmetro nenhum.
 func (p RequestParams) IsZero() bool {
-	return p.Thinking == nil && p.ReasoningEffort == "" && p.MaxTokens == 0 && p.Reasoning == nil
+	return p.Thinking == nil && p.ReasoningEffort == "" && p.MaxTokens == 0 && p.Reasoning == nil && p.ToolChoice == ToolChoiceNever
 }
 
 // Validate recusa qualquer valor fora do vocabulário de cada campo. Fail-closed: quem carrega um
@@ -144,6 +165,11 @@ func (p RequestParams) Validate() error {
 	if p.Thinking != nil && p.Thinking.BudgetTokens != 0 && p.MaxTokens != 0 && p.Thinking.BudgetTokens >= p.MaxTokens {
 		return fmt.Errorf("%w: thinking.budget_tokens tem de ser menor do que max_tokens", ErrBadRequestParams)
 	}
+	switch p.ToolChoice {
+	case ToolChoiceNever, ToolChoiceWhileContractPending:
+	default:
+		return fmt.Errorf("%w: tool_choice (aceites: %s, %s)", ErrBadRequestParams, ToolChoiceNeverName, ToolChoiceWhileContractPending)
+	}
 	return nil
 }
 
@@ -154,14 +180,24 @@ const (
 	ParamKeyReasoningEffort = "reasoning_effort"
 	ParamKeyMaxTokens       = "max_tokens"
 	ParamKeyReasoning       = "reasoning"
+	// ParamKeyToolChoice só entra no manifesto de um turno cujo pedido LEVOU `tool_choice`
+	// (AOS-526), com o valor [ToolChoiceRequired] ou [ToolChoiceManifestNamed]. A regra do perfil
+	// não entra: o que se grava é o que o pedido levou.
+	ParamKeyToolChoice = "tool_choice"
 )
+
+// ToolChoiceManifestNamed é o valor de [ParamKeyToolChoice] num turno cujo pedido nomeou a tool.
+// O nome da tool não vai no manifesto: é o do contrato, que o manifesto já grava.
+const ToolChoiceManifestNamed = "function"
 
 // Manifest devolve os parâmetros na forma em que o turno os grava: chaves do conjunto fechado
 // acima e valores de vocabulário fechado ou inteiros — `thinking` é o modo, seguido de `:` e do
 // orçamento quando o tem (`enabled:4096`); `reasoning` é o nome do campo declarado, `:` e o seu
-// valor (`effort:medium`, `max_tokens:2048`). nil quando o perfil não declara nenhum.
+// valor (`effort:medium`, `max_tokens:2048`). nil quando o perfil não declara nenhum. A regra de
+// `tool_choice` não entra aqui: o manifesto grava, turno a turno, o que o pedido levou
+// ([ApplyToolChoice]).
 func (p RequestParams) Manifest() map[string]string {
-	if p.IsZero() {
+	if p.Thinking == nil && p.ReasoningEffort == "" && p.MaxTokens == 0 && p.Reasoning == nil {
 		return nil
 	}
 	out := map[string]string{}
@@ -188,6 +224,22 @@ func (p RequestParams) Manifest() map[string]string {
 	return out
 }
 
+// Declared devolve TUDO o que o perfil declara, na forma de [RequestParams.Manifest] mais a regra
+// de `tool_choice` em [ParamKeyToolChoice] (AOS-526), com o seu nome do vocabulário. É para quem
+// MOSTRA o perfil a uma pessoa — o resumo do que se vai assinar, o do banco —: uma regra que só
+// muda o pedido em certos turnos não pode ficar fora do que o dono vê. nil quando não declara nada.
+// Não é o que um turno grava: esse é [RequestParams.Manifest] mais o que o pedido levou.
+func (p RequestParams) Declared() map[string]string {
+	m := p.Manifest()
+	if p.ToolChoice != ToolChoiceNever {
+		if m == nil {
+			m = map[string]string{}
+		}
+		m[ParamKeyToolChoice] = p.ToolChoice
+	}
+	return m
+}
+
 // Apply escreve os parâmetros do perfil no pedido que vai sair para a rota. `thinking`,
 // `reasoning_effort` e `reasoning` são SEMPRE os do perfil — os que o pedido trouxesse são apagados, mesmo
 // quando o perfil não declara nenhum —; `max_tokens` só é sobreposto quando o perfil o declara.
@@ -203,5 +255,55 @@ func (p RequestParams) Apply(req *ChatRequest) {
 	}
 	if p.MaxTokens != 0 {
 		req.MaxTokens = p.MaxTokens
+	}
+}
+
+// ApplyToolChoice escreve no pedido o `tool_choice` que a regra do perfil manda (AOS-526), e
+// devolve o valor que o manifesto do turno grava em [ParamKeyToolChoice] — vazio quando o pedido
+// não o leva.
+//
+// Com a regra [ToolChoiceNever] não toca no pedido: é o caminho de sempre, byte a byte. Com
+// [ToolChoiceWhileContractPending], o `tool_choice` do pedido passa a ser SÓ o da regra — o que
+// um chamador lá tivesse posto é apagado — e decide-se pelas tools que o kernel deixou forçar
+// ([ChatRequest.ContractToForce]: as do contrato por cumprir, só enquanto o run não pediu tool
+// nenhuma) e que o pedido OFERECE (`tools`, por nome exacto):
+//
+//   - nenhuma ⇒ o campo não vai (contrato satisfeito, nó sem contrato, sem tools oferecidas, ou o
+//     run já pediu alguma tool — o modelo responde livremente, e a RAZÃO do veredicto é a mesma
+//     que sem a regra; o 1.º turno é que foi forçado);
+//   - uma ⇒ a tool nomeada (no wire, `{"type":"function","function":{"name":…}}`);
+//   - mais de uma ⇒ [ToolChoiceRequired]: o provider tem de chamar uma tool, e o contrato diz
+//     quais faltam; nomear uma delas obrigava-o a deixar as outras para outro turno.
+func (p RequestParams) ApplyToolChoice(req *ChatRequest) string {
+	if p.ToolChoice != ToolChoiceWhileContractPending {
+		return ""
+	}
+	oferecidas := make(map[string]bool, len(req.Tools))
+	for _, t := range req.Tools {
+		oferecidas[t.Function.Name] = true
+	}
+	var porChamar []string
+	for _, nome := range req.ContractToForce {
+		if nome != "" && oferecidas[nome] {
+			porChamar = append(porChamar, nome)
+			oferecidas[nome] = false // um nome repetido no contrato conta uma vez
+		}
+	}
+	switch len(porChamar) {
+	case 0:
+		req.ToolChoice = ""
+		return ""
+	case 1:
+		if !toolChoiceReservado(porChamar[0]) {
+			req.ToolChoice = porChamar[0]
+			return ToolChoiceManifestNamed
+		}
+		// Uma tool chamada `auto`, `none` ou `required` não se nomeia por este campo: o wire lia-a
+		// como o modo — e `none` proibia a chamada que a regra quer pedir. Vai `required`.
+		req.ToolChoice = ToolChoiceRequired
+		return ToolChoiceRequired
+	default:
+		req.ToolChoice = ToolChoiceRequired
+		return ToolChoiceRequired
 	}
 }

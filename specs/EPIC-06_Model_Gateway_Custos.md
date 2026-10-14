@@ -5105,14 +5105,14 @@ exige — **só nas rotas em que se mediu que o fornecedor aceita o pedido e que
 
 ### Critérios de Aceitação
 
-- [ ] Com o parâmetro ausente, os pedidos de uma corrida de referência são os de antes (digest
+- [x] Com o parâmetro ausente, os pedidos de uma corrida de referência são os de antes (digest
       pinado dos pedidos, como no AOS-516).
-- [ ] Com o parâmetro, o pedido leva `tool_choice` só enquanto o contrato não está satisfeito, e
+- [x] Com o parâmetro, o pedido leva `tool_choice` só enquanto o contrato não está satisfeito, e
       deixa de o levar no turno seguinte a uma tool call que o satisfaça. Provado por teste, com
       o controlo: um nó sem contrato nunca o leva.
-- [ ] O perfil com o parâmetro passa pela via assinada (registo de entrada) e um valor fora do
+- [x] O perfil com o parâmetro passa pela via assinada (registo de entrada) e um valor fora do
       vocabulário é recusado no arranque.
-- [ ] Um fornecedor que responda 4xx ao parâmetro é classificado como erro de parâmetro, e o
+- [x] Um fornecedor que responda 4xx ao parâmetro é classificado como erro de parâmetro, e o
       exame recusa a rota — não se descobre em produção.
 - [ ] Medição real, com autorização do dono, na rota do titular: L2 com e sem o parâmetro, na
       mesma sessão, com a contagem e o intervalo; registada na §5 do acompanhamento. O critério
@@ -5127,6 +5127,46 @@ exige — **só nas rotas em que se mediu que o fornecedor aceita o pedido e que
 - O candidato de produção desde 2026-10-13 (`openrouter/anthropic/claude-haiku-5.5`) teve 0
   primeiras tentativas sem tool call em 85. Se o canary o confirmar, a utilidade deste ticket
   para o titular depende de quem fica titular.
+
+### Estado
+
+**2026-10-14 — o mecanismo, provado em teste; a medição real e os gates por correr.**
+
+- **O parâmetro.** `params.tool_choice` no perfil da rota, vocabulário fechado `nunca` (a
+  omissão, o campo vazio) e `enquanto_o_contrato_nao_estiver_satisfeito`. Não é um valor do
+  wire, e por isso não aceita `required`, `auto` nem um nome. Exige a capacidade `tools`. Um
+  perfil sem o campo, ou com `nunca`, tem o digest de antes (os quatro da tabela e dois perfis
+  com parâmetros, pinados antes deste ticket).
+- **Como o gateway sabe do contrato.** O loop do kernel escreve na vista de cada turno duas
+  listas, pela ordem do contrato e sobre os contadores do veredicto: as tools ainda sem chamada
+  efectiva (`PromptView.CompletionPending`, a condição do veredicto, `Effective == 0`) e as que
+  se podem forçar (`PromptView.CompletionToForce`: as mesmas enquanto o total de pedidos de tools
+  do run é zero, nil depois). O adaptador passa a segunda ao pedido num metadado de plataforma (`ChatRequest.ContractToForce`, nunca no wire;
+  porta 1.11.0), e o gateway decide pelo perfil da rota a que o pedido vai. Nenhuma interface do
+  kernel mudou além dos dois campos aditivos da vista.
+- **A regra exacta.** O campo `tool_choice` só vai enquanto o run ainda não pediu tool nenhuma e o contrato de conclusão tem tools por cumprir que o pedido oferece — a tool nomeada se for uma, `"required"` se forem várias —, e a partir da primeira tool call do run, seja de que tool for e recusada, falhada ou efectiva, nunca mais vai nesse run.
+  Depois disso o modelo responde livremente, e a **razão** do veredicto é a mesma que sem a regra
+  (`contract_unmet_no_call`, `contract_unmet_after_denial`, `contract_unmet_after_tool_error`); o
+  que muda é que o 1.º turno foi forçado. Cada nova tentativa de um nó é um run novo, e pode ser
+  forçada no seu 1.º turno. Revisão adversarial, 2026-10-14, duas rondas: forçar enquanto o
+  contrato estivesse por cumprir fazia laços — uma tool recusada ou falhada pedida outra vez, ou,
+  sob `"required"`, um modelo que chama sempre outra tool (ou um nome inventado) — até ao tecto de
+  turnos (16) ou ao disjuntor, com chamadas pagas; o defeito medido é só a 1.ª resposta sair sem
+  tool call, e a regra cinge-se a ele.
+- **Registo.** O turno que levou o campo grava `tool_choice=function` ou `required` em
+  `manifest.model.params`; um 4xx a esse pedido conta em `aos_model_route_params_rejected_total`.
+  O resumo do `aos-issuer route-profile-sign` e o do banco mostram a regra.
+- **Via assinada.** O formato do registo de entrada não mudou: o perfil viaja dentro dele e a
+  leitura fechada do gateway conhece o campo. Um registo antigo lê-se igual.
+- **Banco.** Dois comportamentos novos do falso: `respeita_tool_choice` (anuncia e não chama, a
+  não ser que o pedido peça a tool) e `recusa_tool_choice` (400 de parâmetro ao campo). Os
+  mesmos cenários estão no teste do proxy real.
+- **Limite (replay).** O `tool_choice` enviado entra em `manifest.model.params` do `turn.recorded`
+  e varia de turno para turno; a âncora opt-in de modelo do motor de replay compara esse mapa com
+  um `spec.Model.Params` fixo e daria divergência `model` nesses turnos. É a mesma classe que os
+  parâmetros do AOS-513 já tinham, e em produção ninguém preenche `spec.Model`. Não se mudou.
+- **Por provar:** a medição real (critério acima, só com o dono); o teste do proxy real (precisa
+  de Docker; não foi corrido); os gates locais (critério abaixo).
 
 ---
 
@@ -5168,3 +5208,5 @@ exige — **só nas rotas em que se mediu que o fornecedor aceita o pedido e que
 | 3.11 | 2026-10-12 | AOS-519, AOS-520 e AOS-521: o compose de produção passa as quatro variáveis da fase A3, vazias por omissão, e monta a pasta dos perfis só de leitura; o deploy copia o `alerta-disjuntor.sh`; runbook dos passos do dono. Aplicar no servidor continua por fazer | Equipa AOS |
 | 3.12 | 2026-10-12 | AOS-517, AOS-519, AOS-520 e AOS-521 em produção na v0.1.55: o proxy referido pelo digest e `drop_params: false` (dois dos cinco critérios do servidor do AOS-517 marcados); o perfil assinado do `k3` carregado; o candidato a servir 10% dos planos (série `v0155c`: 7 planos em 40, 0 com dois modelos); o disjuntor em `observe`, sem nunca ter aberto. Nada foi provado com um modelo mau real | Equipa AOS |
 | 3.13 | 2026-10-13 | +AOS-526 (fase A4): pedir a tool call (`tool_choice`) quando o contrato do passo a exige, por perfil, desligado por omissão e medido no banco antes de ligar. Nasce da investigação das primeiras falhas do titular: 11 em 127 primeiras tentativas sem tool call, com pedidos iguais aos das que cumprem | Equipa AOS |
+| 3.14 | 2026-10-14 | AOS-526 implementado: a regra `params.tool_choice` do perfil (`nunca` \| `enquanto_o_contrato_nao_estiver_satisfeito`), as tools do contrato por chamar na vista do turno e no pedido (porta 1.11.0), o perfil pela via assinada e os dois falsos do banco; quatro critérios marcados, a medição real por fazer | Equipa AOS |
+| 3.15 | 2026-10-14 | AOS-526, revisão adversarial: o campo só vai enquanto o run não pediu tool nenhuma (`PromptView.CompletionToForce`), o que fecha os laços da tool recusada, da tool falhada e da outra tool sob `required`; limite do replay com parâmetros do pedido que variam por turno declarado | Equipa AOS |

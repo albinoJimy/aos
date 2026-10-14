@@ -69,7 +69,7 @@ func paramsDoPerfil(p modelgateway.RouteProfile) string {
 	if p.Params == nil || p.Params.IsZero() {
 		return "nenhum"
 	}
-	m := p.Params.Manifest()
+	m := p.Params.Declared()
 	nomes := make([]string, 0, len(m))
 	for k := range m {
 		nomes = append(nomes, k)

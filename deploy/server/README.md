@@ -1356,6 +1356,20 @@ parâmetro) e `aos_model_provider_state_returned_total{resultado}` (`recusado` �
 porque faltava o estado de um turno numa rota `obrigatorio`). As duas famílias só existem quando
 algum perfil da tabela as usa.
 
+**A regra `params.tool_choice` (AOS-526) — desligada em todas as rotas.** Um perfil pode declarar
+`"params":{"tool_choice":"enquanto_o_contrato_nao_estiver_satisfeito"}` (a omissão é `nunca`).
+Não é um valor do wire. A regra: o campo `tool_choice` só vai enquanto o run ainda não pediu tool nenhuma e o contrato de conclusão tem tools por cumprir que o pedido oferece — a tool nomeada se for uma, `"required"` se forem várias —, e a partir da primeira tool call do run, seja de que tool for e recusada, falhada ou efectiva, nunca mais vai nesse run. No wire, a tool nomeada é
+`"tool_choice":{"type":"function","function":{"name":"arquivo"}}`. Depois da primeira tool call o
+modelo responde livremente, e a razão do veredicto é a mesma que sem a regra; o que muda é que o
+1.º turno foi forçado. Cada nova tentativa de um nó é um run novo, e pode ser forçada no seu 1.º
+turno. Um nó sem contrato, ou sem tools, nunca o leva; sem a regra o
+pedido é o de sempre. Um valor fora do vocabulário recusa o perfil (e, num registo assinado, a
+pasta no arranque). O turno que levou o campo grava `tool_choice=function` ou `required` em
+`manifest.model.params`, e um 4xx a esse pedido conta em `aos_model_route_params_rejected_total`.
+Entra como qualquer mudança de perfil — banco, registo assinado, canary —, e **só depois de medido
+no banco com e sem a regra na mesma rota**: com `drop_params: false` o proxy reencaminha o campo, e
+não se sabe se o endpoint do Kimi o aceita.
+
 **Recuo.** Voltar à projecção `1.2.0` é seguro a qualquer momento para rotas com `devolver:
 nunca`. Com runs em curso numa rota `obrigatorio`, **drenar primeiro** (esperar que não haja runs
 em `running` nem à espera de aprovação): na `1.2.0` o turno seguinte desses runs falha com

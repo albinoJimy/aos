@@ -134,7 +134,7 @@ func resumoDoRegisto(w io.Writer, e routeentry.Entry) {
 	p := e.Profile
 	params := "nenhum"
 	if p.Params != nil && !p.Params.IsZero() {
-		m := p.Params.Manifest()
+		m := p.Params.Declared()
 		nomes := make([]string, 0, len(m))
 		for k := range m {
 			nomes = append(nomes, k)

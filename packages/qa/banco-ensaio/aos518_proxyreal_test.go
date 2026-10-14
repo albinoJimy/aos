@@ -41,6 +41,10 @@ func TestAOS518_ProxyReal_AQualificacaoAtrasDoProxy(t *testing.T) {
 		{"recusa o segundo turno", aos518PerfilSimples, "rejeita_segundo", SaidaModeloRecusado, VeredictoRecusado, []string{RazaoModeloNaoCumpridos, RazaoModelo4xxNoSegundo, RazaoAmostraIncompleta}},
 		{"responde vazio", aos518PerfilSimples, "vazia", SaidaModeloRecusado, VeredictoRecusado, []string{RazaoModeloNaoCumpridos, RazaoModeloRespostasVazias, RazaoSemToolsNaoCumpridos, RazaoAmostraIncompleta}},
 		{"o proxy serve outro modelo", outroModelo, "cumpre", SaidaModeloRecusado, VeredictoRecusado, []string{RazaoModeloServidoDiferente}},
+		// AOS-526: a regra `params.tool_choice` atrás do proxy. O falso que só chama a tool quando
+		// o pedido a pede qualifica-se com ela; o que recusa o campo com 400 faz recusar a rota.
+		{"respeita tool_choice com a regra", aos526PerfilComRegra, "respeita_tool_choice", SaidaQualificadoEmEnsaio, VeredictoQualificado, []string{}},
+		{"recusa tool_choice com a regra", aos526PerfilComRegra, "recusa_tool_choice", SaidaModeloRecusado, VeredictoRecusado, []string{RazaoModeloNaoCumpridos, RazaoAmostraIncompleta}},
 	}
 	medidas := map[string]any{"imagem": ImagemDoProxy}
 	for _, c := range cenarios {

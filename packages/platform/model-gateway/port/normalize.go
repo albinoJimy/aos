@@ -23,20 +23,55 @@ var (
 // metadados de plataforma de [ChatRequest] com tag "-" são deliberadamente
 // omitidos, garantindo que Principal/Region/Board nunca vazam para o provedor).
 type wireChatRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	Tools       []Tool    `json:"tools,omitempty"`
-	ToolChoice  string    `json:"tool_choice,omitempty"`
-	Stream      bool      `json:"stream,omitempty"`
-	Temperature *float64  `json:"temperature,omitempty"`
-	Seed        *int64    `json:"seed,omitempty"`
-	MaxTokens   int       `json:"max_tokens,omitempty"`
+	Model       string         `json:"model"`
+	Messages    []Message      `json:"messages"`
+	Tools       []Tool         `json:"tools,omitempty"`
+	ToolChoice  wireToolChoice `json:"tool_choice,omitempty"`
+	Stream      bool           `json:"stream,omitempty"`
+	Temperature *float64       `json:"temperature,omitempty"`
+	Seed        *int64         `json:"seed,omitempty"`
+	MaxTokens   int            `json:"max_tokens,omitempty"`
 	// AOS-513 — os parâmetros de raciocínio que o perfil da rota declara. `omitempty`, e no FIM
 	// da struct: um pedido sem eles serializa os bytes de sempre.
 	Thinking        *ThinkingParam `json:"thinking,omitempty"`
 	ReasoningEffort string         `json:"reasoning_effort,omitempty"`
 	// AOS-516 — `reasoning`, depois dos outros dois e com `omitempty`, pela mesma razão.
 	Reasoning *ReasoningParam `json:"reasoning,omitempty"`
+}
+
+// Os modos de [ChatRequest.ToolChoice] que vão no wire como texto (forma OpenAI). Qualquer outro
+// valor não vazio é o NOME de uma tool.
+const (
+	ToolChoiceAuto     = "auto"
+	ToolChoiceNone     = "none"
+	ToolChoiceRequired = "required"
+)
+
+// toolChoiceReservado diz se v é um dos modos de [ChatRequest.ToolChoice] e não um nome.
+func toolChoiceReservado(v string) bool {
+	return v == ToolChoiceAuto || v == ToolChoiceNone || v == ToolChoiceRequired
+}
+
+// wireToolChoice é o `tool_choice` do pedido no wire (AOS-526). Vazio ⇒ o campo não vai
+// (`omitempty`), e o pedido tem os bytes de sempre. Um modo ([ToolChoiceAuto], [ToolChoiceNone],
+// [ToolChoiceRequired]) vai como texto; um nome de tool vai na forma OpenAI de chat/completions
+// que nomeia a função:
+//
+//	"tool_choice":{"type":"function","function":{"name":"doc_read"}}
+type wireToolChoice string
+
+// MarshalJSON implementa [json.Marshaler].
+func (c wireToolChoice) MarshalJSON() ([]byte, error) {
+	if toolChoiceReservado(string(c)) {
+		return json.Marshal(string(c))
+	}
+	type funcao struct {
+		Name string `json:"name"`
+	}
+	return json.Marshal(struct {
+		Type     string `json:"type"`
+		Function funcao `json:"function"`
+	}{Type: "function", Function: funcao{Name: string(c)}})
 }
 
 // Normalize valida e canoniza um [ChatRequest] de forma DETERMINISTA: os mesmos
@@ -98,7 +133,7 @@ func (r ChatRequest) MarshalWire(stream bool) ([]byte, error) {
 		Model:       r.Model,
 		Messages:    semRaciocinio(r.Messages),
 		Tools:       r.Tools,
-		ToolChoice:  r.ToolChoice,
+		ToolChoice:  wireToolChoice(r.ToolChoice),
 		Stream:      stream,
 		Temperature: r.Temperature,
 		Seed:        r.Seed,
