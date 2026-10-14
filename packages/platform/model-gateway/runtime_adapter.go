@@ -313,6 +313,11 @@ func (a *ModelClientAdapter) Call(ctx context.Context, view agentruntime.PromptV
 		Board:     a.board,
 		RunID:     runID,
 		StepID:    stepID,
+		// AOS-526 — as tools que a regra pode forçar neste turno, como o kernel as calculou
+		// ([agentruntime.PromptView.CompletionToForce]): as do contrato por cumprir, só enquanto o
+		// run ainda não pediu tool nenhuma. Não vão no wire: só a regra `tool_choice` do perfil da rota as lê. Uma
+		// cópia, para o pedido não partilhar a fatia da vista; nil fica nil.
+		ContractToForce: append([]string(nil), view.CompletionToForce...),
 	}
 	resp, err := a.gw.Chat(ctx, req)
 	if err != nil {

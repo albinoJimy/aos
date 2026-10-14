@@ -161,7 +161,7 @@ func marshalComEstado(w wireChatRequest) ([]byte, error) {
 	// O resto do pedido — tudo menos `model` e `messages` — pelo codificador de sempre.
 	cauda, err := json.Marshal(struct {
 		Tools           []Tool          `json:"tools,omitempty"`
-		ToolChoice      string          `json:"tool_choice,omitempty"`
+		ToolChoice      wireToolChoice  `json:"tool_choice,omitempty"`
 		Stream          bool            `json:"stream,omitempty"`
 		Temperature     *float64        `json:"temperature,omitempty"`
 		Seed            *int64          `json:"seed,omitempty"`

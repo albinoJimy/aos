@@ -76,6 +76,18 @@ const (
 	ComportamentoSemToolSemMotivo     Comportamento = "sem_tool_sem_motivo"
 )
 
+// Os dois comportamentos abaixo (AOS-526) olham para o `tool_choice` do pedido. Sem tools, ou
+// fora do caso que os distingue, comportam-se como [ComportamentoCumpre].
+const (
+	// ComportamentoRespeitaToolChoice — com tools por pedir, ANUNCIA a chamada em texto e não a
+	// faz (como [ComportamentoTexto]) quando o pedido não traz `tool_choice`; quando o traz, pede
+	// a tool pelo mecanismo nativo. É o modelo que a regra `params.tool_choice` do perfil corrige.
+	ComportamentoRespeitaToolChoice Comportamento = "respeita_tool_choice"
+	// ComportamentoRecusaToolChoice — responde 400 de parâmetro (`invalid_request_error`) a todo o
+	// pedido que traga `tool_choice`: o fornecedor que não aceita o campo.
+	ComportamentoRecusaToolChoice Comportamento = "recusa_tool_choice"
+)
+
 // motivoDoComportamento devolve o `finish_reason` de um comportamento que não faz tool call
 // (nil ⇒ o campo vai a `null`), e se o comportamento é um desses.
 func motivoDoComportamento(c Comportamento) (motivo any, eDesses bool) {
@@ -102,6 +114,7 @@ func Comportamentos() []Comportamento {
 		ComportamentoSemToolEndTurn, ComportamentoSemToolContentFilter, ComportamentoSemToolSemMotivo,
 		ComportamentoDegrauCumpre, ComportamentoDegrauOmite, ComportamentoDegrauDistractor, ComportamentoDegrauUmaLeitura,
 		ComportamentoDegrauUmPorTurno,
+		ComportamentoRespeitaToolChoice, ComportamentoRecusaToolChoice,
 	}
 }
 
@@ -224,6 +237,13 @@ type pedidoAoFalso struct {
 			} `json:"parameters"`
 		} `json:"function"`
 	} `json:"tools"`
+	// ToolChoice é o `tool_choice` do pedido, cru (AOS-526). Ausente ⇒ vazio.
+	ToolChoice json.RawMessage `json:"tool_choice"`
+}
+
+// comToolChoice diz se o pedido trouxe `tool_choice` (e não `null`).
+func (p pedidoAoFalso) comToolChoice() bool {
+	return len(p.ToolChoice) > 0 && string(p.ToolChoice) != "null"
 }
 
 // texto devolve o `content` de uma mensagem como texto (a forma string do wire).
@@ -314,7 +334,11 @@ func (f *ProviderFalso) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case comportamento == ComportamentoErro401:
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":{"message":"chave recusada pelo provider falso (roteiro)","type":"authentication_error"}}`))
-	case comportamento == ComportamentoTexto && temTools:
+	case comportamento == ComportamentoRecusaToolChoice && p.comToolChoice():
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"este provider falso nao aceita tool_choice","type":"invalid_request_error"}}`))
+	case comportamento == ComportamentoTexto && temTools,
+		comportamento == ComportamentoRespeitaToolChoice && porPedir && !p.comToolChoice():
 		// A tool call ESCRITA COMO TEXTO: o nome da tool no texto, nenhuma tool call nativa.
 		texto := SentinelaDeTexto + " I will now call " + p.Tools[0].Function.Name + " with the document name as its argument."
 		_, _ = w.Write(respostaDeTexto(texto, tokensDeEntrada))

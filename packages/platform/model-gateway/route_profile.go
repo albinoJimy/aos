@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -19,8 +20,10 @@ import (
 // Três coisas, todas opcionais, e todas INERTES enquanto nenhum perfil as declarar:
 //
 //   - os PARÂMETROS DO PEDIDO a enviar a essa rota ([RouteProfile.Params]), de um conjunto
-//     fechado e com tipo ([port.RequestParams]): `thinking`, `reasoning_effort`, `max_tokens`
-//     e, desde o AOS-516, `reasoning`;
+//     fechado e com tipo ([port.RequestParams]): `thinking`, `reasoning_effort`, `max_tokens`,
+//     desde o AOS-516 `reasoning` e, desde o AOS-526, a REGRA `tool_choice` — que não é um valor
+//     do wire: diz ao gateway para pedir a tool call enquanto o contrato de conclusão do run não
+//     estiver satisfeito ([port.RequestParams.ApplyToolChoice]);
 //   - a VERSÃO DA PROJECÇÃO nativa a usar nos runs dessa rota ([RouteProfile.ProjectionVersion]),
 //     que prevalece sobre o interruptor do nó;
 //   - a CLASSE DE ESTADO ([RouteProfile.StateReturn]): se o estado opaco de um turno (ADR-040)
@@ -99,6 +102,10 @@ func (p RouteProfile) Validate() error {
 	if p.Params != nil {
 		if err := p.Params.Validate(); err != nil {
 			return fmt.Errorf("%w: params: %w", ErrBadRouteProfile, err)
+		}
+		// A regra de `tool_choice` (AOS-526) pede uma tool call: só numa rota que aceita `tools`.
+		if p.Params.ToolChoice != port.ToolChoiceNever && !slices.Contains(p.Capabilities, CapabilityTools) {
+			return fmt.Errorf("%w: params.tool_choice exige a capacidade %s", ErrBadRouteProfile, CapabilityTools)
 		}
 	}
 	if p.ProjectionVersion != "" {
@@ -212,6 +219,9 @@ func ParseRouteProfile(data []byte) (RouteProfile, error) {
 	}
 	if p.StateReturnAt == StateReturnAtOriginName {
 		p.StateReturnAt = StateReturnAtOrigin
+	}
+	if p.Params != nil && p.Params.ToolChoice == port.ToolChoiceNeverName {
+		p.Params.ToolChoice = port.ToolChoiceNever
 	}
 	if err := p.Validate(); err != nil {
 		return RouteProfile{}, err
@@ -489,11 +499,23 @@ func WithRouteParamsObserver(obs func(RouteParamsRejection)) Option {
 // vai (req.Model já é o nome resolvido), e devolve-os na forma do manifesto. Sem perfil, ou com
 // um perfil que não os declare, o pedido fica sem parâmetros de raciocínio — os que um chamador
 // lhe tivesse posto são apagados — e a devolução é nil.
+//
+// A REGRA DE `tool_choice` (AOS-526) aplica-se aqui também, pela mesma razão: decide-a o perfil
+// da rota a que o pedido VAI. Sem ela o pedido não é tocado. Com ela, quando o pedido leva o
+// campo, a devolução diz-o em [port.ParamKeyToolChoice] — é por isso que um 4xx desse turno conta
+// como recusa de parâmetros ([Gateway.contarRecusaDeParametros]).
 func (g *Gateway) aplicarPerfilDaRota(req *port.ChatRequest) map[string]string {
 	perfil, _ := g.perfis.For(req.Model)
 	params := perfil.parametros()
 	params.Apply(req)
-	return params.Manifest()
+	manifesto := params.Manifest()
+	if escolha := params.ApplyToolChoice(req); escolha != "" {
+		if manifesto == nil {
+			manifesto = map[string]string{}
+		}
+		manifesto[port.ParamKeyToolChoice] = escolha
+	}
+	return manifesto
 }
 
 // contarRecusaDeParametros conta um 4xx do provider num turno em que o perfil enviou parâmetros.

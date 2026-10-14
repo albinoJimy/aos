@@ -34,7 +34,7 @@ import (
 // Version é a versão SemVer do contrato de porta do GW. Incrementar segundo a
 // semântica ancorada a contrato: MAJOR quebra a forma pública dos tipos/métodos,
 // MINOR acrescenta de forma retro-compatível, PATCH corrige sem alterar contrato.
-const Version = "1.10.0"
+const Version = "1.11.0"
 
 // Role é o papel de uma mensagem na conversa (forma OpenAI).
 type Role string
@@ -433,7 +433,10 @@ type ChatRequest struct {
 	Model    string    `json:"model"`
 	Messages []Message `json:"messages"`
 	Tools    []Tool    `json:"tools,omitempty"`
-	// ToolChoice controla a escolha de tool ("auto"|"none"|"required"|nome).
+	// ToolChoice controla a escolha de tool ("auto"|"none"|"required"|nome). Um nome vai no wire
+	// na forma que nomeia a função (AOS-526, ver [ChatRequest.MarshalWire]). Num pedido para uma
+	// rota cujo perfil declara a regra de `tool_choice` ([RequestParams.ToolChoice]) é o gateway
+	// que o escreve ([RequestParams.ApplyToolChoice]).
 	ToolChoice string `json:"tool_choice,omitempty"`
 	Stream     bool   `json:"stream,omitempty"`
 	// Temperature/Seed/MaxTokens são parâmetros de amostragem. Ponteiros para
@@ -476,6 +479,15 @@ type ChatRequest struct {
 	// campo aditivo, MINOR 1.10.0). As mesmas regras dos dois acima: não se lê de JSON, não é do
 	// chamador, e só o perfil da rota o preenche.
 	Reasoning *ReasoningParam `json:"-"`
+	// ContractToForce são as tools do CONTRATO DE CONCLUSÃO do run que a regra de `tool_choice`
+	// pode forçar neste turno (AOS-526; campo aditivo, MINOR 1.11.0): as que ainda não tiveram uma
+	// chamada efectiva, pela ordem do contrato, só enquanto o run ainda não pediu tool nenhuma.
+	// Metadado de plataforma (nunca no wire): quem o preenche é o adaptador do runtime, com o que o
+	// kernel calculou para o turno; só o lê a regra de `tool_choice` do perfil da rota
+	// ([RequestParams.ApplyToolChoice]). nil num run sem contrato, com o modo do veredicto
+	// desligado, com o contrato satisfeito, depois da primeira tool call do run, ou num chamador que
+	// não o fornece — e então nenhuma regra pede a tool.
+	ContractToForce []string `json:"-"`
 }
 
 // Choice é uma escolha da resposta de chat (forma OpenAI).

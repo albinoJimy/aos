@@ -635,6 +635,11 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		// OS ESTADOS OPACOS DOS TURNOS ANTERIORES (AOS-515) seguem na vista, pelo digest do tail.
 		// nil num run sem estado: a vista é a de sempre.
 		view.ProviderStates = copiaDosEstados(estadosDoRun)
+		// AS TOOLS DO CONTRATO AINDA POR CUMPRIR (AOS-526) seguem na vista, pelos contadores do
+		// veredicto. nil sem contrato ou com ele satisfeito: a vista é a de sempre.
+		view.CompletionPending = contratoPorCumprir(conclusao, evidencia)
+		// E as que se podem forçar: as mesmas, só enquanto o run não pediu tool nenhuma (AOS-526).
+		view.CompletionToForce = contratoAForcar(conclusao, evidencia)
 		// O rótulo do contexto que o modelo vai ver NESTE turno. Autoriza todas as tool calls
 		// que o turno pedir — lido aqui, antes de a resposta existir, para que nada do que o
 		// modelo devolva (texto, tool calls, resultados) o possa mudar retroactivamente.

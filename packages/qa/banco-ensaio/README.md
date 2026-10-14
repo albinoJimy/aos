@@ -154,7 +154,7 @@ existir, a trava do contador. Não envia nada. Ver «O proxy efémero e os órf�
 | `--fornecedor kimi\|anthropic\|openrouter` | real | O fornecedor. |
 | `--modelo M` | real | Um dos modelos do ficheiro (omissão: o primeiro). |
 | `--precos F` | real | Tabela de preços. Obrigatória quando há tecto em dólares. |
-| `--perfil F` | todos | **Perfil de rota candidato** (AOS-513), em JSON, na forma dos campos de um perfil do gateway: `requested` (o nome que o nó pede: `rota-de-ensaio` ou, desde o AOS-519, o alias de produção — de 1 a 64 letras, dígitos, `_` e `-`, sem ponto; é o nome da rota efémera do proxy e o que a allowlist do nó de ensaio admite), `expected_model`, `wire_class`, `capabilities` e, opcionais, `params` (`thinking`, `reasoning_effort`, `max_tokens`), `projection_version` e `devolver`. A leitura é fechada: uma chave ou um valor fora do conjunto recusa a corrida antes de qualquer pedido. O digest do perfil vai no relatório (`digests.perfil`) e entra no digest da configuração. É assim que um perfil se qualifica **antes** de entrar na tabela de perfis do nó. |
+| `--perfil F` | todos | **Perfil de rota candidato** (AOS-513), em JSON, na forma dos campos de um perfil do gateway: `requested` (o nome que o nó pede: `rota-de-ensaio` ou, desde o AOS-519, o alias de produção — de 1 a 64 letras, dígitos, `_` e `-`, sem ponto; é o nome da rota efémera do proxy e o que a allowlist do nó de ensaio admite), `expected_model`, `wire_class`, `capabilities` e, opcionais, `params` (`thinking`, `reasoning_effort`, `max_tokens`, `reasoning` e, desde o AOS-526, a regra `tool_choice` — ver «A regra `params.tool_choice`»), `projection_version` e `devolver`. A leitura é fechada: uma chave ou um valor fora do conjunto recusa a corrida antes de qualquer pedido. O digest do perfil vai no relatório (`digests.perfil`) e entra no digest da configuração. É assim que um perfil se qualifica **antes** de entrar na tabela de perfis do nó. |
 | `--estado exige\|proibe` | falso, proxy | O provider falso do **estado opaco** (AOS-516) em vez do do roteiro: emite raciocínio assinado em cada turno com tools e exige-o de volta (no modo falso, byte a byte, pelo falso exigente do AOS-515), ou recusa qualquer estado. No modo proxy pede `--perfil` com `expected_model` `anthropic/<modelo>`: a rota do proxy é essa, e o falso fala o wire de mensagens da Anthropic. |
 | `--forma-do-falso openrouter` | falso, proxy | Só com `--estado`: o falso emite e exige a forma da **OpenRouter** (`reasoning` e `reasoning_details` com assinatura, no topo da mensagem). No modo proxy o `expected_model` do perfil é então `openrouter/<autor>/<modelo>` ou `openai/<autor>/<modelo>`. |
 | `--turnos-do-falso N` | falso, proxy | Turnos com tool call do provider falso do estado (omissão 2). |
@@ -770,11 +770,31 @@ Não mudam o veredicto, vão no campo `qualificacao_do_modelo.avisos` e **à cab
 | Corta a resposta | `--roteiro cortada` | `recusado`: L1, L6, com `truncated` nos desfechos |
 | Sem tool call, com outro motivo de paragem, e cumpre à 2.ª | `--roteiro sem_tool_end_turn,cumpre` (ou `sem_tool_content_filter`, `sem_tool_sem_motivo`) | `recusado`: só L2, 40 de 40 |
 | 500 a tudo | `--roteiro erro_500` | `inconclusivo` |
+| Anuncia a tool e não a chama, a não ser que o pedido a peça (AOS-526) | `--roteiro respeita_tool_choice` | sem a regra `tool_choice`: `recusado` por L1 e L2 (40 sem tool call à 1.ª); com ela: `qualificado` |
+| Recusa `tool_choice` com 400 de parâmetro (AOS-526) | `--roteiro recusa_tool_choice` com um perfil com a regra | `recusado`: L1 (os 400 contam como erro de parâmetro); sem a regra: `qualificado` |
 
 `troca_modelo` só discrimina no modo `falso`: atrás do proxy quem declara o modelo servido é o
 proxy, e o mesmo ensaia-se com um perfil que espera outro nome. No modo `falso` o provider
 declara o `expected_model` do perfil; no modo `proxy` o perfil tem de esperar
 `openai/modelo-falso-do-banco`.
+
+### A regra `params.tool_choice` (AOS-526)
+
+Um perfil candidato pode declarar `"params":{"tool_choice":"enquanto_o_contrato_nao_estiver_satisfeito"}`
+(a omissão é `nunca`; outro valor recusa o perfil). Com ela, o pedido do 1.º turno de cada nó
+com tools leva `tool_choice` — na bateria, a tool do contrato nomeada,
+`{"type":"function","function":{"name":"arquivo"}}`, porque cada nó oferece uma só; com mais de uma
+tool por cumprir iria `"required"`. A regra: o campo `tool_choice` só vai enquanto o run ainda não pediu tool nenhuma e o contrato de conclusão tem tools por cumprir que o pedido oferece — a tool nomeada se for uma, `"required"` se forem várias —, e a partir da primeira tool call do run, seja de que tool for e recusada, falhada ou efectiva, nunca mais vai nesse run. O pedido que já leva o resultado
+de uma tool, e o de um nó sem tools, não o levam; cada nova tentativa é um run novo, e pode ser
+forçada no seu 1.º turno. Sem a regra, os pedidos são os de antes, byte a byte (o teste
+pinado do AOS-516 continua com os mesmos digests).
+
+Para medir o efeito numa rota, qualifica-se duas vezes **na mesma sessão**, com e sem a regra, e
+compara-se L2 (sem tool call à 1.ª) e L1 (se os nós continuam a fechar cumpridos: um modelo
+obrigado a chamar a tool pode não conseguir dar a resposta final). Um fornecedor que responda 4xx
+ao campo faz a qualificação recusar a rota com L1 — os 4xx contam como erro de parâmetro, não como
+problema da conta. Os dois falsos dos controlos negativos acima provam isto no modo `falso`; no
+modo `proxy` os mesmos cenários estão no teste do proxy real, que só corre com Docker.
 
 ### O orçamento (decisão D7)
 

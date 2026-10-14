@@ -223,6 +223,45 @@ func contratoNormalizado(requires []string) []string {
 	return out
 }
 
+// contratoPorCumprir devolve as tools do contrato que ainda não tiveram uma chamada efectiva, pela
+// ordem do contrato (AOS-526, [PromptView.CompletionPending]). É a condição de [ConcludeRun] —
+// uma tool está cumprida com `Effective > 0` —, lida dos mesmos contadores. nil com c nil (modo
+// desligado), sem contrato, ou com o contrato todo cumprido.
+func contratoPorCumprir(c *Completion, e *RunEvidence) []string {
+	return contratoFiltrado(c, e, func(l ToolEvidence) bool { return l.Effective == 0 })
+}
+
+// contratoAForcar devolve as tools do contrato que quem faz o pedido pode FORÇAR neste turno
+// (AOS-526, [PromptView.CompletionToForce]): as de [contratoPorCumprir] enquanto o run ainda não
+// pediu tool NENHUMA (o total de pedidos de tools do run é zero); a partir da primeira tool call
+// do run — de qualquer tool, recusada, falhada ou efectiva —, nil.
+//
+// PORQUÊ SÓ ATÉ À PRIMEIRA. O defeito medido é a 1.ª resposta do run sair sem tool call nenhuma.
+// Forçar depois disso fazia laços: uma tool recusada ou falhada pedida à força outra vez, ou um
+// modelo que, obrigado a chamar alguma tool, chama sempre outra que não a exigida — em todos, o
+// campo ia em todos os turnos até ao tecto do run, com chamadas pagas. Assim não há laço possível
+// e não é preciso estado novo.
+func contratoAForcar(c *Completion, e *RunEvidence) []string {
+	if e == nil || e.ToolCallsRequested() > 0 {
+		return nil
+	}
+	return contratoPorCumprir(c, e)
+}
+
+// contratoFiltrado devolve as tools do contrato cuja linha de evidência cumpre o predicado.
+func contratoFiltrado(c *Completion, e *RunEvidence, fica func(ToolEvidence) bool) []string {
+	if c == nil || e == nil {
+		return nil
+	}
+	var out []string
+	for _, tool := range contratoNormalizado(c.Requires) {
+		if fica(e.linha(tool)) {
+			out = append(out, tool)
+		}
+	}
+	return out
+}
+
 // ToolEvidence é a linha do vector do veredicto para UMA tool exigida.
 type ToolEvidence struct {
 	// Tool é o nome da tool (o `ToolID`), como o contrato a declara.
