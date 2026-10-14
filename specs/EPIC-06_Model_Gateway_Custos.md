@@ -5170,6 +5170,107 @@ exige — **só nas rotas em que se mediu que o fornecedor aceita o pedido e que
 
 ---
 
+## AOS-527 — O custo do modelo em produção: a tabela de preços do operador montada no nó
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO emenda ADR nenhum. Usa o canal de custo de AOS-259 e o tecto em dólares de AOS-260 tal como existem; só os torna configuráveis no servidor de produção. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 — Model Gateway e Custos |
+| Fase | Operação de produção, depois de o Claude Haiku passar a titular (AOS-525) |
+| Tipo | feat |
+| Prioridade | P2: sem custo, o tecto em dólares por run não se pode ligar; o tecto em tokens continua a valer |
+| Estimativa | S |
+| Dependências | AOS-259 (tabela de preços externa), AOS-260 (tecto em dólares), AOS-525 (titular pago por token), feitos |
+| Bloqueia | Ligar `AOS_BUDGET_MAX_COST_MICRO_USD` em produção |
+| Responsável sugerido | Engenheiro de Plataforma |
+| Documentos de referência | `packages/cmd/aos/model_pricing_env.go`, `packages/cmd/aos/budget_env.go`, `packages/platform/model-gateway/pricing/pricing_table.json`, `deploy/server/docker-compose.prod.yml`, `deploy/server/README.md` |
+
+### Contexto
+
+- **O titular passou a ser pago por token.** Desde AOS-525 o modelo de produção é o Claude Haiku
+  pela OpenRouter, pedido pelo alias `gpt-4o` na região `eu` do nó. O titular anterior era pago
+  por subscrição e o custo zero declarado era a postura certa; deixou de ser.
+- **O nó regista custo zero, «não derivado».** `AOS_MODEL_PRICING_PATH` não está definida e a
+  tabela embebida só tem `gpt-4o` em `us-east`: o par (`gpt-4o`, `eu`) não tem preço.
+- **E não havia onde a apontar.** O compose de produção passa a variável ao nó, mas não monta
+  nenhum ficheiro onde ela possa apontar; o contentor é read-only e as montagens existentes são
+  as políticas, o catálogo de tools, as âncoras, os pisos e os perfis de rota.
+- **Sem custo, sem tecto em dólares.** Com `AOS_BUDGET_MAX_COST_MICRO_USD` definida e sem preço
+  para o par, o nó recusa arrancar (`ErrBudgetCostNoPriceSource`).
+
+### Objectivo
+
+Que o operador possa dar ao nó de produção uma tabela de preços sua, sem release, e a partir dela
+ligar o tecto em dólares por run — sem mudar o arranque de um servidor que não a use.
+
+### Âmbito
+
+- **O compose monta uma pasta do operador** só de leitura no nó (`./model-pricing` em
+  `/etc/aos/model-pricing`), no molde das âncoras e dos perfis de rota: directório e não ficheiro,
+  criado pelo `deploy.sh`. Só o nó: o `aos-orq` não mede dólares.
+- **O CD semeia a tabela só quando falta** (`--ignore-existing`): o preço é do operador e nenhum
+  deploy o reescreve.
+- **A semente** tem a entrada do par de produção, (`gpt-4o`, `eu`), ao preço da OpenRouter para
+  `anthropic/claude-haiku-5.5` lido a 2026-10-12: 100000 micro-USD por milhão de tokens de
+  entrada e 500000 de saída; cache a 0, por não se conhecer.
+- **`.env.example` e o README do servidor** dizem como ligar a tabela, o que acontece sem ela,
+  como ligar depois o tecto em dólares, e que o preço é por (alias, região) e não pelo modelo real.
+- **Fora de âmbito:** mudar o leitor da tabela ou o cálculo do custo; preços de cache; ligar
+  qualquer coisa em produção — é decisão do dono, pelos passos do README.
+
+### Critérios de Aceitação
+
+- [x] O compose monta `./model-pricing` em `/etc/aos/model-pricing`, só de leitura, no serviço
+      `aos` e não no `aos-orq`, e continua a passar `AOS_MODEL_PRICING_PATH` vazia por omissão.
+      Provado por teste sobre o ficheiro real.
+- [x] Um servidor sem o ficheiro arranca como hoje: a montagem é de uma pasta que o `deploy.sh`
+      cria, e com a variável vazia o nó usa a tabela embebida e não abre a pasta. Provado por
+      teste: o `deploy.sh` cria a pasta, o CD semeia-a com `--ignore-existing`, e sem a variável a
+      postura do custo é a de antes (tabela embebida, par sem preço).
+- [x] Uma tabela apontada que o nó não carregaria trava o deploy ANTES de tocar em produção
+      (passo 0b do `deploy.sh`: o ficheiro existe, não está vazio, é legível por «outros» e, com
+      `python3` no host, é JSON válido), porque reverter não resolve — a imagem anterior lê o
+      mesmo ficheiro e aborta igual. Provado por teste que corre o bloco real do `deploy.sh`.
+- [x] A semente carrega com o leitor real, cobre (`gpt-4o`, `eu`), e um turno de 1000 tokens de
+      entrada e 500 de saída custa 350 micro-USD (100 + 250). Com a variável apontada à semente, o
+      nó arma o canal de custo com a tabela externa.
+- [x] `.env.example` e README do servidor com os passos do operador, o valor de partida do tecto
+      em dólares e o aviso do preço por alias.
+- [ ] Aplicado em produção pelo dono: a variável no `.env`, o banner a dizer ARMADO com a tabela
+      externa, e um run com `cost_micro_usd` diferente de zero no `turn.recorded`.
+- [ ] Gates locais verdes; cobertura dos módulos tocados sem regressão.
+
+### Notas
+
+- O preço vale para o alias. Trocar o modelo por trás de `gpt-4o` no proxy, ou o fornecedor mudar
+  o preço, exige actualizar a tabela; o nó não tem como o saber.
+- Com cache a 0, os tokens servidos de cache contam a 0 e o custo sai por baixo.
+- Com um candidato ligado, o alias dele também precisa de entrada na tabela, senão o nó não
+  arranca (`ErrModelCandidateWithoutPrice`). Hoje não há candidato.
+
+### Estado
+
+**2026-10-14 — a montagem, a semente, a documentação e os testes; aplicar em produção por fazer.**
+
+- **A montagem.** `./model-pricing:/etc/aos/model-pricing:ro` no serviço `aos`; o caminho a pôr
+  no `.env` é `/etc/aos/model-pricing/pricing.json`. O `deploy.sh` cria a pasta no passo 0b, e o
+  CD sincroniza a pasta do repositório com `--ignore-existing` antes do deploy (a pasta inteira,
+  porque o rsync só cria a última componente do destino).
+- **Os testes** (`packages/cmd/aos/aos527_tabela_de_precos_test.go`) lêem os ficheiros reais: o
+  compose (a linha da montagem), o `deploy.sh` (a pasta criada antes do primeiro `dc up`, e a
+  pré-verificação da tabela executada em bash contra oito casos, só em Linux), o `deploy.yml` (a
+  semente antes do passo do deploy) e a semente.
+- **Revisão adversarial, 2026-10-14.** «O deploy reverte» era falso: a imagem anterior também lê
+  `AOS_MODEL_PRICING_PATH`, e um `pricing.json` mau deixava o nó em baixo depois de a reversão
+  falhar. Daí a pré-verificação no passo 0b. A verificação do tecto em dólares no README passou a
+  ser pela variável no contentor e pelo nó de pé, porque o banner é o mesmo com e sem ela.
+- **Por fazer:** os passos do dono no servidor (README do servidor, «O custo do modelo em
+  dólares») e os gates locais.
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -5210,3 +5311,4 @@ exige — **só nas rotas em que se mediu que o fornecedor aceita o pedido e que
 | 3.13 | 2026-10-13 | +AOS-526 (fase A4): pedir a tool call (`tool_choice`) quando o contrato do passo a exige, por perfil, desligado por omissão e medido no banco antes de ligar. Nasce da investigação das primeiras falhas do titular: 11 em 127 primeiras tentativas sem tool call, com pedidos iguais aos das que cumprem | Equipa AOS |
 | 3.14 | 2026-10-14 | AOS-526 implementado: a regra `params.tool_choice` do perfil (`nunca` \| `enquanto_o_contrato_nao_estiver_satisfeito`), as tools do contrato por chamar na vista do turno e no pedido (porta 1.11.0), o perfil pela via assinada e os dois falsos do banco; quatro critérios marcados, a medição real por fazer | Equipa AOS |
 | 3.15 | 2026-10-14 | AOS-526, revisão adversarial: o campo só vai enquanto o run não pediu tool nenhuma (`PromptView.CompletionToForce`), o que fecha os laços da tool recusada, da tool falhada e da outra tool sob `required`; limite do replay com parâmetros do pedido que variam por turno declarado | Equipa AOS |
+| 3.16 | 2026-10-14 | +AOS-527: o custo do modelo em produção — o compose monta só de leitura a pasta da tabela de preços do operador (`/etc/aos/model-pricing`), o CD semeia-a só quando falta, com o par (`gpt-4o`, `eu`) ao preço da OpenRouter para o Claude Haiku; `.env.example` e README com os passos do operador e o tecto em dólares. Aplicar em produção por fazer | Equipa AOS |

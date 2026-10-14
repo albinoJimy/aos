@@ -299,6 +299,10 @@ services:
 
       # Tabela de preços do modelo (AOS-259) — sem ela o custo é ZERO POR AUSÊNCIA DE DADOS,
       # que não é custo nulo, e um tecto em dólares compararia sempre contra zero.
+      # AOS-527: o caminho a usar é o da pasta montada mais abaixo,
+      #   AOS_MODEL_PRICING_PATH=/etc/aos/model-pricing/pricing.json
+      # Vazia (a omissão) ⇒ a tabela embebida, que não cobre o par deste nó, e o nó arranca como
+      # antes. Definida e o ficheiro ilegível ou inválido ⇒ o nó recusa arrancar (ErrBadModelPricing).
       AOS_MODEL_PRICING_PATH: "${AOS_MODEL_PRICING_PATH:-}"
 
       # Allowlist de modelos assinada (EPIC-06).
@@ -654,6 +658,15 @@ services:
       # registo assinado, postos pelo dono (README, «Ligar a fase A3 em produção»). Tem de ser
       # legível pelo uid 65532: pasta 0755, ficheiros 0644, dono root.
       - ./perfis-de-rota:/etc/aos/perfis-de-rota:ro
+      # TABELA DE PREÇOS DO OPERADOR (AOS-527). Montada SEMPRE; o que decide se é LIDA é
+      # AOS_MODEL_PRICING_PATH, vazia por omissão. DIRECTÓRIO e não ficheiro, como as âncoras
+      # acima: um bind de ficheiro inexistente vira um directório no host com o nome do ficheiro, e
+      # a semente deixava de lá conseguir entrar. O nó lê a tabela só no arranque: mudar o preço é
+      # editar o ficheiro e recriar o nó. O deploy.sh cria a pasta (passo
+      # 0b) e o CD semeia nela o pricing.json do repositório SÓ quando falta (--ignore-existing):
+      # o preço é do operador e nenhum deploy o reescreve. Só o `aos` a monta — o `aos-orq` não
+      # mede dólares, quem tem a tabela é o nó.
+      - ./model-pricing:/etc/aos/model-pricing:ro
       # CA interna (bundle) + material privado por FICHEIRO. Os três são montados sempre; o que
       # decide se são USADOS são as envs acima. Montar um ficheiro que o nó ignora é inócuo —
       # já um `volumes:` condicional não existe em compose, e um bind em falta impede o arranque.

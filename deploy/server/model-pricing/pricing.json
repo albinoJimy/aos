@@ -1,0 +1,16 @@
+{
+  "_nota": "AOS-527. SEMENTE: o deploy copia-a so quando o servidor nao tem /opt/aos/model-pricing/pricing.json e nunca a reescreve; o ficheiro do servidor e do OPERADOR. O preco e por (alias, regiao) do no e nao pelo modelo real: gpt-4o/eu e o alias que o no pede e que o proxy encaminha hoje para openrouter/anthropic/claude-haiku-5.5, a 0,10 USD/Mtok de entrada e 0,50 USD/Mtok de saida (preco da OpenRouter lido a 2026-10-12; cache a 0 por nao se conhecer). Trocar o modelo por tras do alias, ou o preco mudar, exige actualizar esta tabela e reiniciar o no. Este campo e ignorado pelo leitor e nao entra no digest. Ver deploy/server/README.md, «O custo do modelo em dolares».",
+  "version": "2026.10",
+  "entries": [
+    {
+      "model": "gpt-4o",
+      "region": "eu",
+      "rate": {
+        "input_per_mtok_micro_usd": 100000,
+        "output_per_mtok_micro_usd": 500000,
+        "cache_read_per_mtok_micro_usd": 0,
+        "cache_write_per_mtok_micro_usd": 0
+      }
+    }
+  ]
+}
