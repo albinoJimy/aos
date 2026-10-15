@@ -624,8 +624,11 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 					return SaidaRecusada
 				}
 			}
+			// Como o `segredoDaRota` do executor no modo falso: um valor fixo que o servidor falso
+			// local aceita, e não uma credencial de fornecedor nenhum.
+			segredoDoConselheiroFalso := "credencial-do-conselheiro-falso"
 			conselheiro, cerr := NovoConselheiro(CfgDoConselheiro{
-				BaseURL: "http://" + ouvinte.Addr().String() + "/v1", Credencial: "credencial-do-conselheiro-falso",
+				BaseURL: "http://" + ouvinte.Addr().String() + "/v1", Credencial: segredoDoConselheiroFalso,
 				Contador: contadorDoConselheiro, MaxConsultas: plano.MaxConsultas,
 			})
 			if cerr != nil {
