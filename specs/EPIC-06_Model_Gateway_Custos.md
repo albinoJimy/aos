@@ -5240,6 +5240,11 @@ ligar o tecto em dólares por run — sem mudar o arranque de um servidor que n�
       em dólares e o aviso do preço por alias.
 - [ ] Aplicado em produção pelo dono: a variável no `.env`, o banner a dizer ARMADO com a tabela
       externa, e um run com `cost_micro_usd` diferente de zero no `turn.recorded`.
+      *Nota de 2026-10-15:* duas das três partes feitas — v0.1.56 em produção; a pasta criada
+      pelo deploy (`644 aos`, a semente com `gpt-4o`/`eu`); `AOS_MODEL_PRICING_PATH` no `.env` e o
+      banner «canal de custo: ARMADO», tabela EXTERNA `2026.10#ba705cf5dd1b`. Ligado também o
+      tecto `AOS_BUDGET_MAX_COST_MICRO_USD=100000`, com o nó saudável e sem «NAO tem fonte de
+      preco». Falta um run com custo diferente de zero: nenhum correu desde a ligação.
 - [ ] Gates locais verdes; cobertura dos módulos tocados sem regressão.
 
 ### Notas
@@ -5312,3 +5317,4 @@ ligar o tecto em dólares por run — sem mudar o arranque de um servidor que n�
 | 3.14 | 2026-10-14 | AOS-526 implementado: a regra `params.tool_choice` do perfil (`nunca` \| `enquanto_o_contrato_nao_estiver_satisfeito`), as tools do contrato por chamar na vista do turno e no pedido (porta 1.11.0), o perfil pela via assinada e os dois falsos do banco; quatro critérios marcados, a medição real por fazer | Equipa AOS |
 | 3.15 | 2026-10-14 | AOS-526, revisão adversarial: o campo só vai enquanto o run não pediu tool nenhuma (`PromptView.CompletionToForce`), o que fecha os laços da tool recusada, da tool falhada e da outra tool sob `required`; limite do replay com parâmetros do pedido que variam por turno declarado | Equipa AOS |
 | 3.16 | 2026-10-14 | +AOS-527: o custo do modelo em produção — o compose monta só de leitura a pasta da tabela de preços do operador (`/etc/aos/model-pricing`), o CD semeia-a só quando falta, com o par (`gpt-4o`, `eu`) ao preço da OpenRouter para o Claude Haiku; `.env.example` e README com os passos do operador e o tecto em dólares. Aplicar em produção por fazer | Equipa AOS |
+| 3.17 | 2026-10-15 | AOS-527 em produção na v0.1.56: custo do modelo ARMADO com a tabela externa e tecto de 0,10 USD por run ligado. Falta ver um run com custo diferente de zero | Equipa AOS |
