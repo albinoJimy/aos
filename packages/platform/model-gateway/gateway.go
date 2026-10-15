@@ -356,9 +356,20 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 	span.SetAttribute(agentruntime.AttrRequestModel, req.Model)
 
 	ex := g.newExchange(pipeline.OpChat, req.Principal, req.Board, req.RunID, req.StepID, req.TreeID, req.Model, g.regionOf(req.Region))
+	ex.OriginTool = req.OriginTool
 
 	var resp port.ChatResponse
 	runErr := g.pipe.Execute(ctx, ex, func(ctx context.Context, ex *pipeline.Exchange) error {
+		// AOS-530: uma parte de imagem só sai para uma rota que declare `imagem`. A recusa entra
+		// AQUI — o primeiro passo depois dos estágios — porque precisa da rota RESOLVIDA (o
+		// roteamento já correu, recuo incluído) e de mais nada: antes da credencial, para que
+		// nenhum segredo seja buscado nem nenhuma chave do pool usada; antes do selo de atribuição,
+		// que sela um EFEITO que vai acontecer (audit-before-effect) e não uma chamada que nunca
+		// sai; e, como todas as recusas desta função, antes do adaptador e do custo — o metering
+		// não corre quando a invocação devolve erro.
+		if err := g.recusarImagemSemCapacidade(ex, req); err != nil {
+			return err
+		}
 		cred, err := g.credential(ctx, ex)
 		if err != nil {
 			return err
@@ -387,8 +398,9 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 		r, err := g.adapter.Chat(ctx, req, cred)
 		if err != nil {
 			g.contarRecusaDeParametros(req.Model, enviados, err)
-			if comEstado > 0 {
-				// O pedido levou estado: o corpo do erro do provider pode ecoá-lo, e não sobe.
+			if comEstado > 0 || req.HasImages() {
+				// O pedido levou estado ou uma imagem (AOS-530): o corpo do erro do provider pode
+				// ecoá-los, e não sobe.
 				return semCorpoDoErro(err)
 			}
 			return err
@@ -444,9 +456,16 @@ func (g *Gateway) ChatStream(ctx context.Context, req port.ChatRequest) (port.Ch
 	span.SetAttribute(agentruntime.AttrRequestModel, req.Model)
 
 	ex := g.newExchange(pipeline.OpChat, req.Principal, req.Board, req.RunID, req.StepID, req.TreeID, req.Model, g.regionOf(req.Region))
+	ex.OriginTool = req.OriginTool
 
 	var inner port.ChatStream
 	runErr := g.pipe.ExecutePreInvoke(ctx, ex, func(ctx context.Context, ex *pipeline.Exchange) error {
+		// AOS-530: o streaming fica fora do ADR-042 (§2.9) — um pedido com imagens é recusado aqui,
+		// qualquer que seja a rota, no mesmo sítio e pelas mesmas razões da recusa por capacidade
+		// em [Gateway.Chat] (antes da credencial, do selo, do adaptador e do custo).
+		if req.HasImages() {
+			return &RouteWithoutImageError{Cause: ImageCauseStreaming}
+		}
 		cred, err := g.credential(ctx, ex)
 		if err != nil {
 			return err
@@ -687,6 +706,7 @@ func (g *Gateway) attribute(ctx context.Context, span agentruntime.Span, ex *pip
 		PolicyVersion:   ex.PolicyVersion,
 		RunID:           ex.RunID,
 		StepID:          ex.StepID,
+		OriginTool:      ex.OriginTool,
 		Timestamp:       g.clock(),
 	}
 	if err := g.attribution.Record(ctx, span, rec); err != nil {
@@ -891,6 +911,9 @@ func errType(err error) string {
 	}
 	if errors.Is(err, ErrRouteVariance) {
 		return "route_variance"
+	}
+	if errors.Is(err, ErrRouteWithoutImage) {
+		return "route_without_image"
 	}
 	return "provider_error"
 }

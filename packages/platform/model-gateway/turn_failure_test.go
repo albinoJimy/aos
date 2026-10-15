@@ -47,6 +47,12 @@ func TestAOS521_ClassifyTurnFailure(t *testing.T) {
 		{"negacao de um estagio da pipeline", embrulhar(&pipeline.StageError{Stage: "authn", Err: errors.New("token expirado")}), TurnFailureGatewayDenied},
 		{"perfil fixado que o no nao tem", embrulhar(&PinnedRouteProfileError{Cause: PinnedCauseModelNotServed}), TurnFailurePinnedProfile},
 		{"estado que a rota exige e nao ha", embrulhar(&StateReturnError{Cause: "x"}), TurnFailurePinnedProfile},
+		// AOS-530: as recusas de imagem e da tool de origem nunca contam como falha do modelo.
+		{"imagem para rota sem a capacidade", embrulhar(&RouteWithoutImageError{Cause: "perfil_sem_imagem"}), TurnFailurePinnedProfile},
+		{"imagem para rota sem perfil", embrulhar(&RouteWithoutImageError{Cause: "rota_sem_perfil"}), TurnFailurePinnedProfile},
+		{"imagem em streaming", embrulhar(&RouteWithoutImageError{Cause: "imagem_em_streaming"}), TurnFailurePinnedProfile},
+		{"parte de imagem invalida", embrulhar(&port.ImagePartError{Cause: port.ImageCauseTotalTooLarge}), TurnFailureGatewayDenied},
+		{"tool de origem invalida", embrulhar(port.ErrBadOriginTool), TurnFailureGatewayDenied},
 		// SEM CLASSE E SEM EXCLUSAO: quem conta trata como falha nao classificada.
 		{"um texto que parece um status nao e um status", embrulhar(errors.New("adapters: provider openai devolveu status 500: x")), ""},
 		{"200 sem usage", embrulhar(&costError{err: ErrUsageAusente}), ""},

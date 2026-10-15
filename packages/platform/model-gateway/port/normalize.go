@@ -17,7 +17,35 @@ var (
 	ErrNoInput = errors.New("port: embeddings sem input")
 	// ErrBadRole — uma mensagem tem um papel desconhecido.
 	ErrBadRole = errors.New("port: papel de mensagem invalido")
+	// ErrBadOriginTool — [ChatRequest.OriginTool] não é um identificador de tool (AOS-530). A
+	// mensagem não repete o valor.
+	ErrBadOriginTool = errors.New("port: origin_tool nao e um identificador de tool (1 a 64 bytes de a-z, 0-9, _ . -, a abrir por letra)")
 )
+
+// maxOriginTool é o tecto em bytes de [ChatRequest.OriginTool].
+const maxOriginTool = 64
+
+// originToolValido aceita o vazio (turno do executor) ou um identificador curto de tool: de 1 a
+// [maxOriginTool] bytes de letras minúsculas, dígitos e `_ . -`, a abrir por letra. É o
+// vocabulário dos nomes de tool do registo (`doc_read`, `ocr_read`); vai para um selo, e um selo
+// não leva texto livre.
+func originToolValido(v string) bool {
+	if v == "" {
+		return true
+	}
+	if len(v) > maxOriginTool || v[0] < 'a' || v[0] > 'z' {
+		return false
+	}
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '_', c == '.', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
 
 // wireChatRequest é a forma JSON enviada ao provider (só os campos wire — os
 // metadados de plataforma de [ChatRequest] com tag "-" são deliberadamente
@@ -85,13 +113,25 @@ func (r ChatRequest) Normalize() (ChatRequest, error) {
 	if len(r.Messages) == 0 {
 		return ChatRequest{}, ErrNoMessages
 	}
+	if !originToolValido(r.OriginTool) {
+		return ChatRequest{}, ErrBadOriginTool
+	}
 	out := r
 	out.Messages = make([]Message, len(r.Messages))
 	for i, m := range r.Messages {
 		if !validRole(m.Role) {
 			return ChatRequest{}, ErrBadRole
 		}
+		// AOS-530: uma parte de imagem só numa mensagem `user`, e só PNG ou JPEG pelos primeiros
+		// bytes, não vazia e até [MaxImageBytes]. Recusada aqui, antes de qualquer estágio.
+		if err := validarImagens(m); err != nil {
+			return ChatRequest{}, err
+		}
 		out.Messages[i] = m
+	}
+	// AOS-530: e a soma das partes de imagem do pedido inteiro, depois de cada parte validada.
+	if err := tectoDoPedido(out.Messages); err != nil {
+		return ChatRequest{}, err
 	}
 	if len(r.Tools) > 0 {
 		out.Tools = make([]Tool, len(r.Tools))
@@ -145,7 +185,24 @@ func (r ChatRequest) MarshalWire(stream bool) ([]byte, error) {
 	}
 	// AOS-515 — O ESTADO OPACO SÓ SAI QUANDO O GATEWAY O MARCOU ([MessageState.Return]). Sem
 	// nenhuma mensagem marcada, o caminho é o de sempre e os bytes são os de sempre.
-	if temEstadoParaSair(w.Messages) {
+	//
+	// AOS-530 — AS PARTES DE IMAGEM saem pelo mesmo corpo montado à mão, mensagem a mensagem
+	// ([mensagemNoWire]): só as mensagens com imagens mudam de forma. Sem nenhuma imagem, o caminho
+	// é o de sempre e os bytes são os de sempre.
+	if temImagens(w.Messages) {
+		// As partes e o tecto agregado voltam a ser conferidos aqui, pela ordem de [Normalize]: um
+		// pedido que não passou por ele não escreve no wire uma parte inválida nem mais imagem do
+		// que o tecto deixa.
+		for _, m := range w.Messages {
+			if err := validarImagens(m); err != nil {
+				return nil, err
+			}
+		}
+		if err := tectoDoPedido(w.Messages); err != nil {
+			return nil, err
+		}
+	}
+	if temEstadoParaSair(w.Messages) || temImagens(w.Messages) {
 		return marshalComEstado(w)
 	}
 	return json.Marshal(w)
