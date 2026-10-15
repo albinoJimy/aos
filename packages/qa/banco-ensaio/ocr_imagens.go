@@ -143,7 +143,7 @@ func suavizar(src *image.Gray) *image.Gray {
 					}
 				}
 			}
-			dst.SetGray(x, y, color.Gray{Y: uint8(soma / n)})
+			dst.SetGray(x, y, color.Gray{Y: uint8(soma / n)}) // #nosec G115 -- media de n valores de 0 a 255, por isso de 0 a 255
 		}
 	}
 	return dst
@@ -178,7 +178,7 @@ func bilinear(src *image.Gray, sx, sy int64) uint8 {
 	}
 	cima := em(x0, y0)*(0x10000-fx) + em(x0+1, y0)*fx
 	baixo := em(x0, y0+1)*(0x10000-fx) + em(x0+1, y0+1)*fx
-	return uint8((cima*(0x10000-fy) + baixo*fy) >> 32)
+	return uint8((cima*(0x10000-fy) + baixo*fy) >> 32) // #nosec G115 -- interpolacao com pesos que somam 2^32 sobre valores de 0 a 255: o resultado fica de 0 a 255
 }
 
 // geradorDoRuido é um splitmix64: pequeno, sem estado global e igual em todas as máquinas.
