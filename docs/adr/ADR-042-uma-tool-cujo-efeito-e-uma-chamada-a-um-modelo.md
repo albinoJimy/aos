@@ -1,12 +1,13 @@
 # ADR-042 — Uma tool cujo efeito é uma chamada a um modelo: o OCR por um modelo de visão, pelo Model Gateway do nó
 
-- **Estado:** Proposto — **por ratificar pelo dono**. Nada do que está aqui está implementado.
+- **Estado:** Aceite — **ratificado pelo dono a 2026-10-15** («ratifico»). Nada do que está aqui
+  está implementado: a implementação é o AOS-530.
 - **Data:** 2026-10-15
 - **Deciders:** Dono do produto (a decisão de fundo, de 2026-10-15: a D2 do desenho
   `docs/reports/desenho-a5-a6-multimodal-2026-10-14.md` muda de «OCR local no gVisor» para «OCR
   por um modelo de visão, através de uma tool», depois da medição do AOS-529; o Tesseract fica
-  como alternativa local). As decisões §2.1 a §2.9 são **propostas** deste ADR e só valem com a
-  ratificação.
+  como alternativa local). As decisões §2.1 a §2.9 deste ADR foram ratificadas pelo dono a
+  2026-10-15.
 - **Tickets:** AOS-530 (a tool `ocr_read`, reescrito a 2026-10-15 para esta decisão). Mede-se com
   o AOS-529 (o banco de ensaio, experiência `ocr`).
 - **Relacionados:** ADR-002 (Reference Monitor mandatório), ADR-003 (NHI e cadeia de delegação),
