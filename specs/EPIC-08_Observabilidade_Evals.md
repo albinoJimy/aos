@@ -2625,9 +2625,21 @@ correr nas mesmas condições em que a tool vai correr.
       geral (`usoDoBanco`) ganhou uma linha a apontar para `aos-ensaio ocr`; a verificação do
       contador do dia que não existe passou para uma função (`verificarContadorDoDia`), partilhada
       com o braço de visão, sem mudar o comportamento.
-- [ ] Medição real registada: o Tesseract (a imagem `aos-ensaio-ocr:tesseract`, construída pelo
+- [x] Medição real registada: o Tesseract (a imagem `aos-ensaio-ocr:tesseract`, construída pelo
       dono a 2026-10-15) e, com autorização do dono, um ou mais modelos de visão, sobre a bateria,
-      com os factos, o tempo, a memória e o custo por imagem. **Por fazer, depois do PR.**
+      com os factos, o tempo, a memória e o custo por imagem.
+      *Nota de 2026-10-15:* o Tesseract correu localmente, no posto do dono; os modelos de visão
+      pela OpenRouter, com autorização do dono. Pela regra do banco (e com os acentos exactos):
+      **Tesseract 82,5% dos factos (76,2%)**, ~0,9 s por imagem, custo zero; **Claude Haiku 5.5
+      100% (100%)**, 2 a 9 s por imagem, ~0,0001 USD por imagem; **Gemini 3.8 Flash 89,2%**,
+      ~0,0034 USD por imagem — mas a resposta da tabela veio **cortada**, provavelmente pelo limite
+      de tokens de saída do adaptador (`TokensDaVisao = 2048`, `ocr_visao.go:59`), por confirmar:
+      os 89,2% não são a medida do Gemini. Ressalvas: imagens sintéticas com a fonte bitmap 5×7;
+      doze imagens no braço de visão (o PDF fica fora). A memória de pico por imagem não é
+      transcrita nesta nota: fica no relatório da corrida, no posto do dono. **A decisão que a
+      medição motivou:** o dono mudou a D2 do desenho — o OCR passa a ser feito por um modelo de
+      visão através de uma tool, pelo Model Gateway do nó (ADR-042, proposto; AOS-530 reescrito),
+      e o Tesseract fica como alternativa local para documentos que não podem sair do servidor.
 
 ### Notas
 
@@ -2676,3 +2688,4 @@ correr nas mesmas condições em que a tool vai correr.
 | 1.25 | 2026-10-15 | AOS-528 medido em parte: o conselheiro não melhora nada com os modelos de hoje — os bons resolvem os casos difíceis sozinhos e o fraco quase não consulta. Multi-fornecedor provado (executor na OpenRouter, conselheiro na conta Kimi) | Equipa AOS |
 | 1.26 | 2026-10-15 | +AOS-529 (fase A5, «A5-ocr-medição»): o banco de ensaio mede um motor de OCR — bateria de imagens sintéticas com e sem acentos (PNG limpo, com ruído e rotação, de meia resolução, JPEG, PDF digitalizado e uma tabela), a experiência `ocr` com o motor plugável (o Tesseract num contentor fixado pelo digest nas condições do gVisor, e um falso), factos pela regra do banco e com acentos exactos, tempo e memória por imagem; sem veredicto. Implementado e provado com o motor falso; a medição real espera por uma imagem do Tesseract | Equipa AOS |
 | 1.27 | 2026-10-15 | AOS-529: correcções da revisão adversarial (um falso que erra factos, o zero sem barra, a pasta montada legível pelo uid do contentor, a falha do PDF classificada por estágio e pelo pico, `--pull never`, os limites dizem runc e chamada isolada) e duas decisões do dono: a imagem do Tesseract construída no posto (`ocr/Dockerfile`, aceite pelo ID) e o braço do modelo de visão pelo proxy do banco, com as chaves, os tectos e o custo do fornecedor dele. A medição real fica para depois do PR | Equipa AOS |
+| 1.28 | 2026-10-15 | AOS-529 medido: o Tesseract local com 82,5% dos factos (76,2% com acentos), ~0,9 s e custo zero por imagem; o Claude Haiku 5.5 pela OpenRouter com 100% (100%), 2 a 9 s e ~0,0001 USD por imagem; o Gemini 3.8 Flash com 89,2% e ~0,0034 USD, com a resposta cortada (provavelmente o limite de tokens de saída do adaptador, por confirmar). Imagens sintéticas, doze no braço de visão. A medição levou o dono a mudar a D2: OCR por um modelo de visão através de uma tool (ADR-042, proposto; AOS-530 reescrito) | Equipa AOS |

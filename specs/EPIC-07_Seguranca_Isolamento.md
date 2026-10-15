@@ -917,10 +917,7 @@ Este epic serve primariamente a dimensão **Segurança** e contribui para **Gove
 
 ---
 
-## AOS-530 — A tool `ocr_read`: verbo `ocr` no executor gVisor, motor no rootfs, digest do media no resultado
-
-<!-- rtm: adrs-mencionados -->
-<!-- Este ticket NÃO implementa nem emenda ADR nenhum: acrescenta um verbo ao executor gVisor e uma entrada opcional ao registo de tools, dentro dos ADR em vigor. -->
+## AOS-530 — A tool `ocr_read`: uma imagem da pasta semeada transcrita por um modelo de visão, pelo Model Gateway do nó
 
 | Campo | Valor |
 |---|---|
@@ -928,74 +925,191 @@ Este epic serve primariamente a dimensão **Segurança** e contribui para **Gove
 | Fase | Arquitectura-alvo da fronteira runtime↔modelo — A5 (multimodal), sub-fase A5.1 «OCR como tool»; rótulo do desenho «A5-ocr» |
 | Tipo | feat |
 | Prioridade | P2 |
-| Estimativa | M |
-| Dependências | AOS-529 (a medição que escolhe o motor). Decisões D1, D2, D4, D5 e D7 do desenho, tomadas pelo dono a 2026-10-15 |
+| Estimativa | L — pode partir-se em três PR, pela ordem do ADR-042 §7: a porta e o perfil; o registo de uso `tool` e o veredicto `ocr` no banco; a tool, o custo e o replay |
+| Dependências | **ADR-042 ratificado pelo dono.** AOS-529 feito (a medição real registada). Decisões D1, D4, D5 e D7 do desenho, tomadas pelo dono a 2026-10-15; a D2 mudada pelo dono a 2026-10-15 (OCR por modelo de visão) |
+| Para ligar em produção | Actos do dono, fora do PR: a **allowlist re-assinada** com o alias `ocr-visao` no `board-eu` (e a release que a embebe); o **registo de entrada assinado** do alias, de uso `tool`, com o relatório `ocr` qualificado; o preço do par na tabela do operador; a rota no proxy; a entrada `ocr_read` no `tools.json` |
 | Bloqueia | A série de produção da A5.1 (D7) |
-| Responsável sugerido | Engenheiro de Segurança / Engenheiro de Plataforma |
-| Documentos de referência | `docs/reports/desenho-a5-a6-multimodal-2026-10-14.md` (§2.1, §2.2, §5.2, §7 D2, D4, D5, D7), `deploy/server/gvisor/`, `deploy/server/model-tools/tools.json` |
+| Responsável sugerido | Engenheiro de Plataforma / Engenheiro de Segurança |
+| Documentos de referência | `docs/adr/ADR-042-uma-tool-cujo-efeito-e-uma-chamada-a-um-modelo.md`; `docs/reports/desenho-a5-a6-multimodal-2026-10-14.md` (§2, §3.2, §5.4, §5.5, §7 D2 a D7); `packages/platform/model-gateway/port/port.go`; `packages/platform/model-gateway/policy/routeentry/`; `packages/cmd/aos/modeltools.go`; `packages/qa/banco-ensaio/ocr_visao.go` |
 
 ### Contexto
 
-Pelas decisões do dono de 2026-10-15 sobre o desenho
-`docs/reports/desenho-a5-a6-multimodal-2026-10-14.md`: ferramentas primeiro (D1); o OCR corre
-localmente, dentro do gVisor, sem rede (D2 (a)), com a capability da `doc_read`, `cap:fs.read`
-— a regra de uma leitura por run é uma defesa medida e não se abre excepção; PNG e JPEG
-primeiro, PDF quando houver um (D2). O media entra pela pasta semeada (D4 (a)). O replay usa o
-texto da tool e o digest do media, sem re-correr a tool (D5 (a)).
+A 2026-10-15 o AOS-529 mediu, sobre treze imagens sintéticas: o Tesseract local com 82,5% dos
+factos (76,2% com acentos exactos), ~0,9 s por imagem e custo zero; o Claude Haiku 5.5 como modelo
+de visão, pela OpenRouter, com 100% (100% com acentos), 2 a 9 s e ~0,0001 USD por imagem. O dono
+mudou a D2 do desenho: **o OCR deixa de ser local e passa a ser feito por um modelo de visão,
+através de uma tool**. O Tesseract fica como alternativa local, para quando os documentos não
+puderem sair do servidor.
 
-Hoje, se a `doc_read` ler uma imagem, o modelo recebe-a em base64 (`stdout` binário,
-`packages/substrate/sandbox/mediated.go:122-135`). O guest conhece um verbo, `read`
-(`deploy/server/gvisor/guest/main.go:69-88`), e o rootfs do sandbox tem só o binário estático do
-guest (`deploy/server/gvisor/component/main.go:128-140`). O motor é o que o AOS-529 medir.
+É a primeira tool cujo efeito é uma chamada a um modelo — o mecanismo que o desenho previa para o
+vídeo («A6-video»), e que pedia um ADR: o **ADR-042** (proposto). O que ele decide, e que este
+ticket implementa:
+
+- a tool é uma `CostingToolFunc` registada no Reference Monitor pela raiz de composição; o efeito
+  é uma chamada ao Model Gateway do nó, nunca ao proxy directamente nem a partir da sandbox;
+- chama o gateway com o **token NHI do run** e o run e o passo da tool call;
+- o modelo é o alias `ocr-visao`, na allowlist assinada, com perfil num registo de entrada assinado
+  de **uso `tool`**, que nunca é candidato (emenda ao ADR-041 §2.1);
+- a imagem vai como **parte de imagem do pedido**, aceite só por uma rota que declare a
+  capacidade `imagem`;
+- o resultado é texto `untrusted` com o digest da imagem e o modelo servido; o custo grava-se no
+  run e conta no tecto em dólares; o replay não volta a chamar o modelo.
+
+Hoje a porta do gateway só leva texto no pedido (`port.Message.Content` é uma `string`,
+`port.go:75-77`) e recusa partes que não são texto na resposta (`ErrContentPartNotText`,
+`port.go:165`); o perfil da rota só conhece a capacidade `tools` (`route_profile.go:98`); um
+registo de entrada assinado cujo alias não é o do titular é sempre candidato
+(`cmd/aos/modelo_candidato.go:72-82`); nenhuma tool do nó usa `RegisterCosting`; e o custo de uma
+tool não chega ao durável (`kernel/reference-monitor/decision.go:151-159`).
 
 ### Objectivo
 
-Uma imagem na pasta semeada chega a um run como texto lido por OCR, por uma tool mediada, com o
-digest da imagem e a versão do motor no resultado, sem rede e sem mudar o kernel, o gateway, o
-prompt, o replay nem o `aos-orq`.
+Uma imagem na pasta semeada chega a um run como texto transcrito por um modelo de visão, por uma
+tool mediada pelo RM, com o digest da imagem e o modelo servido no resultado, o custo no run e no
+tecto em dólares, e replay sem nova chamada — sem que o titular veja a imagem e sem mudar o nó para
+quem não liga a tool.
 
 ### Âmbito
 
-- **Verbo `ocr` no guest**, com a mesma regra de caminho do `read` (nada fora da raiz semeada);
-  o `Command` vem do registo, nunca do modelo.
-- **O motor no rootfs do sandbox**, versão fixa e verificada (digest), com os dados das línguas
-  que o AOS-529 medir; a imagem do `gvisor` deixa de ter só o guest.
-- **O resultado é texto UTF-8** (`stdout_text`), num formato fixo: o `sha256` do ficheiro lido,
-  a versão do motor e o texto.
-- **Os limites:** os de hoje (45 s por chamada, 1 GB e 512 processos para o serviço), salvo se o
-  AOS-529 mostrar que não chegam — e então sobe-se o limite da chamada `ocr`, com o número medido.
-- **Entrada `ocr_read` no `tools.json` só pelo dono**: `capability: cap:fs.read`,
-  `egress: none`, `mutation: none`, `reversible`, `resource_value: doc://{doc_id}`, região do
-  board. O PR traz a entrada como exemplo no runbook, não no ficheiro.
-- **Fora de âmbito:** o kernel, o Model Gateway, o prompt, o replay e o `aos-orq` (nada muda
-  neles); o custo das tools (D6, zero declarado); PDF, salvo se o AOS-529 o medir e o dono o
-  pedir; vídeo e áudio.
+- **A porta do gateway, `1.12.0`:** partes de imagem no **pedido** (tipo e bytes; o adaptador
+  OpenAI escreve-as como `image_url` numa data URL); um metadado de plataforma com a tool que fez o
+  pedido, no selo de atribuição; a capacidade **`imagem`** no perfil da rota. Um pedido com uma
+  parte de imagem para uma rota sem `imagem` é recusado antes de sair. As respostas continuam só
+  texto (`ErrContentPartNotText` fica).
+- **O registo de entrada assinado ganha o campo `uso`** (`run`, a omissão, ou `tool`). Um registo
+  `tool` não é candidato, não ganha adaptador de run, não entra no canary nem no disjuntor, e um run
+  não se fixa nele; com fatia maior que zero recusa o arranque. Para uso `tool` o relatório citado
+  é da experiência `ocr`, modo `real`, com veredicto `qualificado`.
+- **O banco de ensaio dá um veredicto na experiência `ocr`**, contra limiares do dono (proposta da
+  D7: factos presentes em pelo menos 90%), e prepara o registo de uso `tool` para o dono assinar,
+  como o `aos-ensaio qualificar` faz para os candidatos.
+- **A tool `ocr_read` no nó:** um bloco de ligação novo no registo de tools (por exemplo
+  `"modelo": {"alias": "ocr-visao"}`), exclusivo do bloco `sandbox`; a leitura da imagem de uma
+  montagem só de leitura da pasta semeada (variável própria, não `AOS_SANDBOX_SEED_DIR`),
+  confinada com `os.Root`, só PNG e JPEG pelos primeiros bytes, até 4 MiB (proposta); a instrução
+  fixa e versionada que o AOS-529 mediu; sem tools oferecidas ao modelo de visão; `max_tokens`
+  4096 (proposta); prazo de 60 s por chamada (proposta).
+- **O resultado `aos-ocr/v1`:** o texto, o `sha256`, o tamanho e o formato da imagem, o alias, o
+  modelo servido, o digest do perfil, o digest da instrução e o motor (`modelo`).
+- **O custo:** a reserva antes do efeito, calculada pela tabela de preços a partir dos tectos de
+  tokens da tool, negada se não couber no que resta do tecto em dólares do run; o custo medido
+  pelo gateway gravado num evento durável do run por (`run_id`, `step_id`), idempotente, somado ao
+  consumo durável do run — também quando a tool falha depois de o provider responder.
+- **Arranque fail-closed:** com a `ocr_read` no `tools.json`, o nó não arranca sem a montagem da
+  pasta, sem o alias na allowlist em vigor, sem um registo de uso `tool` para o alias, ou, com a
+  contabilidade de custo composta, sem preço para o par.
+- **O compose e o runbook:** a montagem da pasta no serviço `aos` (só quando ligada), a rota
+  `ocr-visao` no proxy e a entrada `ocr_read` como **exemplo no runbook**, não no `tools.json`.
+- **A alternativa local, descrita e não implementada:** o Tesseract no gVisor, como outra ligação
+  da mesma tool (`motor: local`), para documentos que não podem sair do servidor. O runbook diz
+  quando usá-la e o que falta para a ter (as notas abaixo).
+- **Fora de âmbito:** o titular a ver imagens; vídeo e áudio; PDF; upload por API; ensinar o
+  `aos-orq` a extrair só o texto do resultado; implementar o Tesseract; ligar a tool em produção —
+  é decisão do dono, pelos passos do runbook.
 
 ### Critérios de Aceitação
 
-- [ ] O guest responde ao verbo `ocr` com o texto, o `sha256` do ficheiro e a versão do motor, e
-      recusa um caminho fora da raiz semeada e um verbo desconhecido, como hoje.
-- [ ] O motor está no rootfs com versão fixa e digest verificado no build da imagem; o sandbox
-      continua sem rede, com raiz só de leitura, sem capabilities e com o uid 65532.
-- [ ] Uma imagem da bateria do AOS-529 lida pelo executor gVisor real devolve os mesmos factos
-      que o banco mediu para o mesmo motor, dentro de 45 s.
-- [ ] Um run com a `ocr_read` no `tools.json` lê uma imagem pela mediação do RM, o WORM sela o
-      recurso `doc://<id>`, o resultado chega ao modelo como texto (não base64), e o replay
-      reproduz o `prompt_hash` sem re-correr a tool; uma segunda leitura no mesmo run, com
-      `cap:fs.read` armada, é negada como a da `doc_read`.
-- [ ] Nada muda no kernel, no gateway nem no `aos-orq` (diff vazio nesses módulos); sem a
-      entrada no `tools.json`, o nó comporta-se como antes.
+- [ ] **A porta `1.12.0`.** Um pedido com uma parte de imagem chega ao provider falso como
+      `image_url` numa data URL com os bytes exactos; para uma rota cujo perfil não declara
+      `imagem` é recusado **antes de sair** (o provider falso conta zero pedidos); uma resposta com
+      uma parte que não é texto continua recusada; os digests dos perfis de hoje e os pedidos às
+      rotas de hoje não mudam um byte (testes pinados de antes verdes).
+- [ ] **O titular não vê imagens.** Nenhum turno do executor leva uma parte de imagem, com ou sem a
+      `ocr_read` ligada: provado sobre o pedido que o provider falso recebe num run que chama a
+      tool.
+- [ ] **O registo de uso `tool`.** Com `AOS_MODEL_CANDIDATE=on`, um candidato real e um registo de
+      uso `tool`, o nó arranca e serve o candidato; o registo `tool` não tem adaptador de run e um
+      run fixado nele é recusado; um registo `tool` com fatia maior que zero, ou com um relatório
+      que não é `ocr` qualificado em modo `real`, recusa o arranque; um registo sem `uso` é lido
+      como hoje (mesmo digest, mesma decisão).
+- [ ] **O veredicto `ocr` no banco.** Com motores falsos, o que lê tudo sai `qualificado` e o que
+      erra factos abaixo do limiar sai `recusado`; o registo de uso `tool` só se prepara com
+      `qualificado`.
+- [ ] **Recusa sem o alias autorizado.** Com a `ocr_read` no `tools.json`: um alias fora da
+      allowlist em vigor, ou sem registo assinado de uso `tool`, ou sem preço com a contabilidade
+      composta, impede o arranque; e um pedido a um alias que o estágio da allowlist nega não chega
+      ao provider.
+- [ ] **A tool mediada.** Um run com a `ocr_read` lê uma imagem da bateria do AOS-529 pela mediação
+      do RM; o WORM sela o recurso `doc://<id>`; o resultado `aos-ocr/v1` chega ao modelo como
+      texto, com o digest certo da imagem e o modelo servido; o resultado é `untrusted` e o
+      contexto do run passa a `untrusted`; uma segunda leitura no mesmo run, com `cap:fs.read`
+      armada, é negada como a da `doc_read`.
+- [ ] **Identidade.** O selo de atribuição do gateway para a chamada da tool leva o principal
+      resolvido do token do run, o `run_id` e o `step_id` da tool call e a tool de origem; sem
+      credencial no contexto a tool falha sem ler o ficheiro; provado pelo caminho directo, pelo
+      durável e depois de uma retoma.
+- [ ] **Limites antes do custo.** Um `doc_id` fora da raiz (com `..`, absoluto ou por ligação
+      simbólica), um ficheiro em falta, maior que o tecto, ou que não é PNG nem JPEG pelos
+      primeiros bytes, falha com causa própria e o provider falso conta zero pedidos.
+- [ ] **Falhas do modelo.** Uma resposta cortada (`length`) falha com `ocr_cortado`, uma vazia com
+      `ocr_vazio`, um prazo esgotado com causa própria, e um modelo servido diferente do perfil
+      falha em `enforce`; nenhuma falha leva o texto do modelo; não há nova tentativa dentro da tool.
+- [ ] **Nenhum binário em eventos.** Depois de um run que lê uma imagem com uma sequência de bytes
+      marcadora: nem os bytes nem o seu base64 aparecem em nenhum evento do Event Store, span,
+      métrica, linha de log ou selo — procurados em todo o log do run e do nó.
+- [ ] **Teste de fuga do texto.** Com um modelo de visão falso que devolve um texto marcador único:
+      o marcador não aparece em claro em nenhum evento do Event Store (fora do conteúdo cifrado por
+      titular do step-ledger e da captura), span, métrica, linha de log, nem no selo do gateway; e
+      deixa de ser legível depois do apagamento do titular.
+- [ ] **Custo no run.** O evento de custo da tool call tem o mesmo valor que o gateway calculou pela
+      tabela de preços; o consumo durável do run soma-o aos turnos; uma retoma lê-o; com o tecto em
+      dólares quase gasto, a reserva não cabe e a tool é negada sem pedido ao provider; uma resposta
+      cortada grava o custo na mesma.
+- [ ] **Replay sem nova chamada.** O replay do run reproduz todos os `prompt_hash` com o provider
+      falso a contar zero pedidos novos e sem nenhum evento de custo novo.
+- [ ] **Inércia.** Sem a `ocr_read` no `tools.json`, o nó é o de antes: o arranque, o pedido ao
+      titular byte a byte e o `/metrics`.
+- [ ] **O Tesseract descrito como alternativa local NÃO implementada**, no runbook e neste ticket,
+      com o que falta para a ter.
+- [ ] **Sobre JetStream.** O smoke de um run com a `ocr_read` corre sobre o Event Store JetStream,
+      não só sobre ficheiro.
+- [ ] **Em produção**, depois dos actos do dono: uma série pequena de planos com imagens sintéticas
+      lidas pela `ocr_read`, com os factos entregues ao nó seguinte, o custo no run e o replay de
+      todos — o critério da A5.1 (D7).
+- [ ] Os gates locais verdes (`make ci`), com a RTM regenerada.
 
 ### Notas
 
-- O executor gVisor corre privilegiado (`deploy/server/docker-compose.prod.yml`, serviço
-  `gvisor`); o motor corre DENTRO do sandbox, não no componente.
-- Um motor com bibliotecas dinâmicas (o Tesseract precisa da Leptonica e de outras) não cabe num
-  rootfs só com um binário estático: o rootfs passa a ser uma árvore copiada da imagem, e o
-  componente monta-a só de leitura. A forma é do implementador, dentro dos critérios.
-- Se o motor escolhido no AOS-529 não for local (por exemplo um modelo de visão pelo gateway),
-  este ticket não serve: isso é a D2 (d), com rede e custo, e precisa de outro ticket e de um ADR
-  (uma tool cujo efeito é uma chamada ao modelo, §5.5 do desenho).
+- **A forma das partes de imagem na porta** (um campo novo de `Message`, ou uma lista de partes ao
+  lado de `Content`) é do implementador, dentro do ADR-042 §2.4: retro-compatível, sem mudar o wire
+  de um pedido só de texto.
+- **O nome do evento de custo** e a forma de o somar ao consumo durável (`integration/budget.go`,
+  `ConsumoDuravel`) fixam-se no PR; ficam no catálogo de eventos (`tecnica/13`).
+- **Por confirmar no PR:** que o `usage` devolvido pelo proxy para um pedido com imagem conta os
+  tokens da imagem; o limite de tamanho e dimensões do fornecedor; se uma tool call que falhou
+  consome a leitura única de `cap:fs.read`.
+- **A instrução** é a do AOS-529 (`ocr_visao.go`, `InstrucaoDaVisao`); mudá-la muda a medição, e
+  pede uma nova corrida do banco e um registo novo.
+
+### A alternativa local (Tesseract no gVisor) — referência, não implementada
+
+O que ficou da versão anterior deste ticket, para quando for preciso ler documentos sem os tirar
+do servidor:
+
+- Um verbo `ocr` no guest (`deploy/server/gvisor/guest/main.go:69-88`), com a mesma regra de
+  caminho do `read`; o `Command` vem do registo, nunca do modelo.
+- O motor no rootfs do sandbox, com versão fixa e digest verificado no build. Um motor com
+  bibliotecas dinâmicas (o Tesseract precisa da Leptonica e de outras) não cabe num rootfs só com
+  um binário estático (`deploy/server/gvisor/component/main.go:128-140`): o rootfs passa a ser uma
+  árvore copiada de uma imagem, montada só de leitura pelo componente. O Tesseract não lê PDF; o
+  AOS-529 rasterizou-o com o `pdftoppm`, que teria de ir também.
+- Os limites do gVisor: 45 s por chamada (`component/main.go:60`), sem rede (`:147-157`), raiz só
+  de leitura, sem capabilities, uid 65532; a memória (1 GB) e os processos (512) são do serviço
+  `gvisor` inteiro (`deploy/server/docker-compose.prod.yml:937-939`), não de cada chamada. O
+  AOS-529 mediu o Tesseract dentro destes limites a ~0,9 s por imagem.
+- O executor gVisor corre privilegiado; o motor correria dentro do sandbox, não no componente.
+- O resultado seria o mesmo `aos-ocr/v1`, com `motor: local`, a versão do motor, sem modelo
+  servido e com custo zero declarado (D6).
+
+### Histórico
+
+Este ticket nasceu a 2026-10-15 como **OCR local no gVisor** — um verbo `ocr` no executor, o
+motor no rootfs, sem rede e sem custo —, pela D2 (a) do desenho. Mudou no mesmo dia, pela medição
+do AOS-529 (o Haiku a 100% dos factos contra 82,5% do Tesseract, a ~0,0001 USD por imagem) e pela
+decisão do dono, para **OCR por um modelo de visão através do Model Gateway**, segundo o ADR-042.
+Da versão local ficam, como referência da alternativa, as notas sobre o rootfs e os limites do
+gVisor (secção acima); a regra de uma leitura por run com `cap:fs.read` e o recurso `doc://{doc_id}`
+mantêm-se.
 
 ---
 
@@ -1005,3 +1119,4 @@ prompt, o replay nem o `aos-orq`.
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
 | 1.1 | 2026-10-15 | +AOS-530 (fase A5, «A5-ocr»): a tool `ocr_read` — verbo `ocr` no executor gVisor, motor no rootfs com versão fixa, texto e digest do media no resultado; nada no kernel nem no gateway; a entrada no `tools.json` só pelo dono. Depende do AOS-529 | Equipa AOS |
+| 1.2 | 2026-10-15 | AOS-530 reescrito: a D2 do desenho mudou pela medição do AOS-529 (o Haiku a 100% dos factos, o Tesseract local a 82,5%) — a tool `ocr_read` passa a transcrever a imagem por um modelo de visão através do Model Gateway do nó, segundo o ADR-042 (proposto): alias `ocr-visao` na allowlist re-assinada, registo de entrada de uso `tool`, parte de imagem só nesta chamada, custo no run e no tecto em dólares, replay sem nova chamada. O OCR local no gVisor fica descrito como alternativa, não implementada | Equipa AOS |
