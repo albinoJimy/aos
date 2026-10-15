@@ -513,7 +513,7 @@ func TestAOS530_Gateway_ToolDeOrigem_NoSelo(t *testing.T) {
 // A tool de origem é um identificador curto; outra coisa é recusada pela porta, antes de tudo.
 func TestAOS530_Gateway_ToolDeOrigemInvalida_Recusa(t *testing.T) {
 	t.Parallel()
-	for _, origem := range []string{"OCR_read", "1ocr", "ocr read", "ocr/read", "_ocr", strings.Repeat("a", 65), "ocr\nread"} {
+	for _, origem := range []string{"OCR_read", "ocR_read", "1ocr", "ocr read", "ocr/read", "_ocr", strings.Repeat("a", 65), "ocr\nread"} {
 		m := aos530Compor(t, "", aos530PerfilComImagem(aos530Modelo))
 		req := aos530PedidoComImagem(aos530Modelo)
 		req.OriginTool = origem
@@ -529,5 +529,26 @@ func TestAOS530_Gateway_ToolDeOrigemInvalida_Recusa(t *testing.T) {
 		if _, err := req.Normalize(); err != nil {
 			t.Fatalf("origem %q recusada: %v", origem, err)
 		}
+	}
+}
+
+// O STREAMING TAMBÉM SELA A TOOL DE ORIGEM: um ChatStream sem imagens com OriginTool leva a
+// obligation `model_call_origin` no selo de atribuição.
+func TestAOS530_Gateway_StreamingSelaToolDeOrigem(t *testing.T) {
+	t.Parallel()
+	m := aos530Compor(t, "", aos530PerfilComImagem(aos530Modelo))
+	req := aos530PedidoComImagem(aos530Modelo)
+	req.Messages[1].Images = nil
+	req.OriginTool = "ocr_read"
+	s, err := m.gw.ChatStream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if _, err := port.CollectStream(s); err != nil {
+		t.Fatalf("CollectStream: %v", err)
+	}
+	selos := aos530Selos(t, m)
+	if len(selos) != 1 || len(selos[0].Obligations) != 1 || selos[0].Obligations[0].Type != attribution.ObligationOrigin || selos[0].Obligations[0].Params["tool"] != "ocr_read" {
+		t.Fatalf("o selo do streaming tinha de levar a tool de origem: %+v", selos)
 	}
 }

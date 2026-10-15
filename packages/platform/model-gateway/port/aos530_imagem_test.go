@@ -3,6 +3,7 @@ package port_test
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -72,11 +73,11 @@ func TestAOS530_Normalize_RecusaCadaForma(t *testing.T) {
 	}
 }
 
-// Os limites aceites: exactamente 4 MiB, PNG e JPEG, várias partes.
+// Os limites aceites: PNG e JPEG, várias partes, a soma exactamente no tecto de 4 MiB.
 func TestAOS530_Normalize_AceitaOsLimites(t *testing.T) {
 	t.Parallel()
 	png := aos530PNG()
-	noTecto := append(append([]byte(nil), png...), make([]byte, port.MaxImageBytes-len(png))...)
+	noTecto := append(append([]byte(nil), png...), make([]byte, port.MaxImageBytes-len(png)-len(aos530JPEG()))...)
 	req := aos530Pedido(port.Message{Role: port.RoleUser, Content: "le", Images: []port.ImagePart{
 		{MediaType: port.ImageMediaPNG, Data: noTecto},
 		{MediaType: port.ImageMediaJPEG, Data: aos530JPEG()},
@@ -265,5 +266,81 @@ func TestAOS530_ToolDeOrigem_ForaDoWire(t *testing.T) {
 	}
 	if cru, _ := json.Marshal(comOrigem); strings.Contains(string(cru), "ocr_read") {
 		t.Fatalf("a tool de origem saiu no JSON do pedido: %s", cru)
+	}
+}
+
+// aos530Imagem devolve um PNG válido com exactamente n bytes.
+func aos530Imagem(n int) port.ImagePart {
+	png := aos530PNG()
+	return port.ImagePart{MediaType: port.ImageMediaPNG, Data: append(append([]byte(nil), png...), make([]byte, n-len(png))...)}
+}
+
+// O TECTO POR PARTE no limite exacto: MaxImageBytes passa, MaxImageBytes+1 recusa.
+func TestAOS530_TectoPorParte_LimiteExacto(t *testing.T) {
+	t.Parallel()
+	if _, err := aos530Pedido(port.Message{Role: port.RoleUser, Images: []port.ImagePart{aos530Imagem(port.MaxImageBytes)}}).Normalize(); err != nil {
+		t.Fatalf("uma parte de exactamente %d bytes foi recusada: %v", port.MaxImageBytes, err)
+	}
+	req := aos530Pedido(port.Message{Role: port.RoleUser, Images: []port.ImagePart{aos530Imagem(port.MaxImageBytes + 1)}})
+	var ie *port.ImagePartError
+	if _, err := req.Normalize(); !errors.As(err, &ie) || ie.Cause != port.ImageCauseTooLarge {
+		t.Fatalf("Normalize = %v; quero %s", err, port.ImageCauseTooLarge)
+	}
+	if _, err := req.MarshalWire(false); !errors.As(err, &ie) || ie.Cause != port.ImageCauseTooLarge {
+		t.Fatalf("MarshalWire = %v; quero %s", err, port.ImageCauseTooLarge)
+	}
+}
+
+// O TECTO DO PEDIDO INTEIRO: a soma das partes de todas as mensagens. Soma = MaxImageBytes passa;
+// mais um byte, em qualquer parte de qualquer mensagem, recusa — no Normalize e no wire.
+func TestAOS530_TectoAgregado_LimiteExacto(t *testing.T) {
+	t.Parallel()
+	const quarto = port.MaxImageBytes / 4
+	casos := []struct {
+		nome  string
+		msgs  []port.Message
+		causa string
+	}{
+		{"uma mensagem, quatro partes que somam o tecto",
+			[]port.Message{{Role: port.RoleUser, Images: []port.ImagePart{aos530Imagem(quarto), aos530Imagem(quarto), aos530Imagem(quarto), aos530Imagem(quarto)}}}, ""},
+		{"duas mensagens que somam o tecto",
+			[]port.Message{{Role: port.RoleUser, Images: []port.ImagePart{aos530Imagem(quarto), aos530Imagem(quarto)}}, {Role: port.RoleUser, Images: []port.ImagePart{aos530Imagem(2 * quarto)}}}, ""},
+		{"uma mensagem, um byte acima",
+			[]port.Message{{Role: port.RoleUser, Images: []port.ImagePart{aos530Imagem(quarto), aos530Imagem(quarto), aos530Imagem(quarto), aos530Imagem(quarto + 1)}}}, port.ImageCauseTotalTooLarge},
+		{"duas mensagens, um byte acima",
+			[]port.Message{{Role: port.RoleUser, Images: []port.ImagePart{aos530Imagem(quarto), aos530Imagem(quarto + 1)}}, {Role: port.RoleUser, Content: "t", Images: []port.ImagePart{aos530Imagem(2 * quarto)}}}, port.ImageCauseTotalTooLarge},
+		{"duas partes no tecto cada uma",
+			[]port.Message{{Role: port.RoleUser, Images: []port.ImagePart{aos530Imagem(port.MaxImageBytes)}}, {Role: port.RoleUser, Images: []port.ImagePart{aos530Imagem(port.MaxImageBytes)}}}, port.ImageCauseTotalTooLarge},
+	}
+	for _, c := range casos {
+		req := aos530Pedido(c.msgs...)
+		_, errN := req.Normalize()
+		_, errW := req.MarshalWire(false)
+		for via, err := range map[string]error{"Normalize": errN, "MarshalWire": errW} {
+			var ie *port.ImagePartError
+			switch {
+			case c.causa == "" && err != nil:
+				t.Fatalf("%s: %s recusou um pedido no tecto: %v", c.nome, via, err)
+			case c.causa != "" && (!errors.As(err, &ie) || ie.Cause != c.causa):
+				t.Fatalf("%s: %s = %v; quero %s", c.nome, via, err, c.causa)
+			}
+		}
+	}
+}
+
+// `%#v` também não mostra os bytes — nem em base64, nem como literal Go de bytes em hex.
+func TestAOS530_GoSyntax_SemBytes(t *testing.T) {
+	t.Parallel()
+	png := aos530PNG()
+	parte := port.ImagePart{MediaType: port.ImageMediaPNG, Data: png}
+	msg := port.Message{Role: port.RoleUser, Images: []port.ImagePart{parte}}
+	proibidos := []string{"0x89, 0x50", "0x49, 0x48, 0x44, 0x52", hex.EncodeToString(png[8:16]), "[]uint8", "[]byte"}
+	for _, v := range []any{parte, &parte, msg, aos530Pedido(msg), []port.ImagePart{parte}} {
+		s := fmt.Sprintf("%#v", v)
+		for _, p := range proibidos {
+			if strings.Contains(s, p) {
+				t.Fatalf("%%#v de %T mostra os bytes (%q): %s", v, p, s)
+			}
+		}
 	}
 }

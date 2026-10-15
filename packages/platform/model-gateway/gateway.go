@@ -488,10 +488,6 @@ func (g *Gateway) ChatStream(ctx context.Context, req port.ChatRequest) (port.Ch
 		_, _, _, _ = armarDevolucao(&req, RouteProfile{}, false)
 		s, err := g.adapter.ChatStream(ctx, req, cred)
 		if err != nil {
-			if req.HasImages() {
-				// AOS-530: o corpo do erro do provider pode ecoar a imagem, e não sobe.
-				return semCorpoDoErro(err)
-			}
 			return err
 		}
 		inner = s

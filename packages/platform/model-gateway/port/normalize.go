@@ -129,6 +129,10 @@ func (r ChatRequest) Normalize() (ChatRequest, error) {
 		}
 		out.Messages[i] = m
 	}
+	// AOS-530: e a soma das partes de imagem do pedido inteiro, depois de cada parte validada.
+	if err := tectoDoPedido(out.Messages); err != nil {
+		return ChatRequest{}, err
+	}
 	if len(r.Tools) > 0 {
 		out.Tools = make([]Tool, len(r.Tools))
 		for i, t := range r.Tools {
@@ -185,6 +189,19 @@ func (r ChatRequest) MarshalWire(stream bool) ([]byte, error) {
 	// AOS-530 — AS PARTES DE IMAGEM saem pelo mesmo corpo montado à mão, mensagem a mensagem
 	// ([mensagemNoWire]): só as mensagens com imagens mudam de forma. Sem nenhuma imagem, o caminho
 	// é o de sempre e os bytes são os de sempre.
+	if temImagens(w.Messages) {
+		// As partes e o tecto agregado voltam a ser conferidos aqui, pela ordem de [Normalize]: um
+		// pedido que não passou por ele não escreve no wire uma parte inválida nem mais imagem do
+		// que o tecto deixa.
+		for _, m := range w.Messages {
+			if err := validarImagens(m); err != nil {
+				return nil, err
+			}
+		}
+		if err := tectoDoPedido(w.Messages); err != nil {
+			return nil, err
+		}
+	}
 	if temEstadoParaSair(w.Messages) || temImagens(w.Messages) {
 		return marshalComEstado(w)
 	}

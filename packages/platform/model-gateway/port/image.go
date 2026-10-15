@@ -35,8 +35,9 @@ const (
 	ImageMediaJPEG = "image/jpeg"
 )
 
-// MaxImageBytes é o tecto, em bytes, de uma parte de imagem: 4 MiB (ADR-042 §2.4, proposta a
-// confirmar contra o limite do fornecedor). Uma parte maior é recusada antes de sair.
+// MaxImageBytes é o tecto, em bytes, de uma parte de imagem E da soma de todas as partes de
+// imagem de um pedido: 4 MiB (ADR-042 §2.4, proposta a confirmar contra o limite do fornecedor).
+// Uma parte maior, ou um pedido cujas partes somem mais, é recusado antes de sair.
 const MaxImageBytes = 4 << 20
 
 // ImagePart é uma parte de imagem de uma mensagem `user` de um pedido. MediaType é
@@ -62,6 +63,9 @@ const (
 	ImageCauseMagic = "tipo_nao_bate_com_os_bytes"
 	// ImageCauseRole — a parte está numa mensagem que não é `user`.
 	ImageCauseRole = "imagem_fora_de_mensagem_user"
+	// ImageCauseTotalTooLarge — cada parte cabe, mas a soma das partes de imagem de todas as
+	// mensagens do pedido passa de [MaxImageBytes].
+	ImageCauseTotalTooLarge = "imagens_acima_do_tecto"
 )
 
 // ImagePartError é o erro de uma parte de imagem recusada. Casa com [ErrImagePart].
@@ -161,6 +165,22 @@ func validarImagens(m Message) error {
 	for _, p := range m.Images {
 		if err := p.Validate(); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// tectoDoPedido recusa um pedido cujas partes de imagem, somadas por todas as mensagens, passem de
+// [MaxImageBytes]. Sem o tecto agregado, o tecto por parte deixava passar um pedido de N partes de
+// 4 MiB cada.
+func tectoDoPedido(msgs []Message) error {
+	total := 0
+	for i := range msgs {
+		for _, p := range msgs[i].Images {
+			total += len(p.Data)
+			if total > MaxImageBytes {
+				return &ImagePartError{Cause: ImageCauseTotalTooLarge}
+			}
 		}
 	}
 	return nil
