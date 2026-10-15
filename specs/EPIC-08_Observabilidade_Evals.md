@@ -2363,6 +2363,138 @@ conteúdo em que se possa confiar e com as respostas à mão quando for preciso 
 
 ---
 
+## AOS-528 — O conselheiro: o executor barato consulta um modelo mais forte por uma tool, de qualquer fornecedor
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa nem emenda ADR nenhum: muda o banco de ensaio, que vive fora da imagem do nó. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-08 — Observabilidade e Evals |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — depois da A4 (resíduo (c) da §7 do acompanhamento: «a cascata não foi construída») |
+| Tipo | feat |
+| Prioridade | P2: decide se vale a pena construir alguma forma de escolha de modelo por passo; nada em produção depende dele |
+| Estimativa | M |
+| Dependências | AOS-525 (a bateria por degraus, a regra dos factos proibidos e as respostas guardadas), AOS-512 a AOS-518 (o banco, o proxy efémero, os tectos), feitos. O modo real só corre com autorização do dono |
+| Bloqueia | Uma decisão do dono sobre construir, ou não, o conselheiro no nó |
+| Responsável sugerido | Engenheiro de Qualidade |
+| Documentos de referência | `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (§5, de 2026-10-12 a 2026-10-14; §7, «Resíduos da fase A4», resíduo (c)), `docs/runbooks/PROC-BANCO-DE-ENSAIO.md`, `packages/qa/banco-ensaio/README.md` |
+
+### Contexto
+
+A fase A4 mediu que uma **cascata** de modelos (o barato primeiro, o caro quando o barato
+falha) não se justificava com as tarefas que temos (acompanhamento §5):
+
+- **A bateria 1.0.0 não separou modelos** (2026-10-12): seis modelos pela OpenRouter, nenhuma
+  primeira tentativa sem tool call; o único `recusado` (um modelo de 8 mil milhões de parâmetros)
+  foi-o por um nó em quarenta.
+- **A bateria 2.0.0, por degraus, só separou o mais barato** (2026-10-13, 5 passagens por
+  modelo): o llama-3.1-8b falhou volume e documento longo por inteiro; o Claude Haiku, o
+  DeepSeek, o Kimi K2.7, o Gemini e o Claude Sonnet — de 0,03 a 0,52 USD por corrida — cumpriram
+  os sete degraus (as falhas do Haiku em D5 e do DeepSeek em D7 eram o proibido citado numa
+  negação, não conteúdo errado).
+- **O canary fechou com o Haiku a 0 primeiras falhas em 165** (2026-10-14), contra 14 em 165 do
+  Kimi, e o Haiku passou a titular de produção. O dono fechou a A4 no mesmo dia; o resíduo (c)
+  diz que, se o trabalho ficar mais difícil, a bateria por degraus e o canary são o caminho para
+  medir de novo.
+
+O dono quer avaliar uma alternativa que resolve três dos quatro obstáculos da cascata — o
+**conselheiro**: o modelo executor, barato, pode consultar a meio do turno um modelo mais forte
+através de uma TOOL, e decide ele quando consultar. Não há regra de escalada a afinar, não se
+repete o trabalho todo com o modelo caro, e o modelo caro só é pago quando é chamado. O quarto
+obstáculo — haver tarefas em que o barato falha e o caro acerta — só se mede com tarefas mais
+difíceis do que as que temos.
+
+**Requisito do dono:** tem de funcionar com **vários fornecedores e vários modelos** — o executor
+e o conselheiro podem vir de fornecedores diferentes (executor Haiku pela OpenRouter e conselheiro
+Kimi pela conta Kimi, ou DeepSeek com Gemini). Não se usa a ferramenta `advisor` nativa da
+Anthropic (só existe na API directa e devolve o conselho cifrado): o conselheiro é uma tool nossa.
+
+### Objectivo
+
+Dar ao dono, no banco de ensaio, a medida que decide se o conselheiro compensa: em casos
+difíceis, quantos cumpre o executor sozinho, quantos cumpre com o conselheiro, quantas vezes
+consulta, e quanto custa cada caso cumprido — com o executor e o conselheiro de quaisquer
+fornecedores que o banco conheça.
+
+### Âmbito
+
+- **Bateria 3.0.0, «difícil».** Pasta embebida própria, documentos sintéticos sem acentos com a
+  marca de sempre, nomes e códigos novos, digest próprio. Casos em que um modelo barato tem
+  probabilidade real de falhar: dedução em vários passos sobre vários documentos; documentos
+  contraditórios com uma regra explícita de qual prevalece; um documento longo (40 a 60 KB) com a
+  resposta em duas passagens afastadas; várias restrições ao mesmo tempo. Cada facto exigido
+  ocorre literalmente nos documentos; factos proibidos são as respostas erradas plausíveis. A
+  1.0.0 e a 2.0.0 ficam como estão.
+- **A tool `aconselhar`**, registada no Reference Monitor do nó de ensaio e oferecida só quando a
+  corrida a liga: argumentos `pergunta` e, opcional, `contexto`; chama o modelo conselheiro e
+  devolve o texto da resposta como resultado da tool. O conselheiro configura-se à parte
+  (fornecedor e modelo), com as mesmas chaves, tectos e listas do ficheiro do dono, e passa pelo
+  MESMO proxy efémero numa segunda rota com alias próprio. As consultas contam no contador e nos
+  tectos do fornecedor do conselheiro, com o preço do modelo dele; o pior caso declarado inclui-as.
+- **A experiência `conselheiro`**: a bateria 3.0.0 em braços — `so-executor` e
+  `executor+conselheiro` — na mesma corrida e com a mesma semente, com o relatório por braço e
+  por caso. Sem veredicto.
+- **Falsos** que provam que a medida distingue: o executor que não consulta e erra, o que
+  consulta e segue o conselho, o que consulta e o ignora; e um conselheiro que dá o conselho
+  certo, ou o errado.
+- **Fora de âmbito:** o conselheiro no nó de produção; a medição com modelos reais (só com
+  autorização do dono, depois deste ticket); o modo `proxy` com conselheiro (o provider falso em
+  contentor não faz de conselheiro); a ferramenta `advisor` da Anthropic.
+
+### Critérios de Aceitação
+
+- [x] A bateria 3.0.0 carrega com digest próprio, a validação é fail-closed (sem factos
+      proibidos, facto no objectivo, objectivo repetido, degrau, facto fora dos documentos), e a
+      1.0.0 e a 2.0.0 mantêm os digests.
+      *Nota de 2026-10-15:* sete casos (X1 a X7) e dezassete documentos em `bateria3/`, digest
+      `sha256:1475fdf0…7c37` (depois da revisão adversarial: nomes neutros nos documentos de X2 e
+      X3, um quarto documento e três formatos de data em X2, e em X7 o calendário passa a ser do
+      modelo). `TestAOS528_Bateria3_TemDigestProprioEAsOutrasMantemOSeu`,
+      `…_OsCasosPedemOQueDizem` e `…_OCarregamentoEFailClosed`.
+- [x] O proxy efémero sobe com duas rotas quando há conselheiro — cada uma com a chave e a base do
+      seu fornecedor, pelo ambiente e nunca pelos argumentos — e, sem conselheiro, com a
+      configuração de antes, byte a byte.
+      *Nota de 2026-10-15:* `TestAOS528_Proxy_…`. A imagem real do proxy com duas rotas não foi
+      levantada (precisava de Docker com a imagem descarregada e não foi corrida aqui).
+- [x] As consultas contam no contador e nos tectos do fornecedor do conselheiro, e o custo no
+      preço do modelo dele; um modelo de conselheiro fora da lista do dono é recusado; um tecto do
+      conselheiro que não chega recusa a corrida antes de enviar, e um que se esgota a meio pára-a.
+      *Nota de 2026-10-15:* no modo real com o lançador de teste
+      (`TestAOS528_Real_ConselheiroDeOutroFornecedor`: executor Kimi e conselheiro Anthropic, e
+      os dois no Kimi) e no motor da tool (`TestAOS528_OTectoDoConselheiroParaAConsulta`).
+- [x] O pior caso declarado inclui as consultas (`--max-consultas`, omissão 2), é dito por
+      fornecedor e é imposto — no tecto do dia e por run.
+      *Nota de 2026-10-15:* `TestAOS528_OPiorCasoIncluiAsConsultasEEImposto`. Executor 336
+      pedidos por passagem (168 sem conselheiro); conselheiro 21 por consulta permitida.
+- [x] Os braços distinguem os falsos (a), (b) e (c) e o conselheiro certo do errado, e o custo
+      por caso cumprido está certo.
+      *Nota de 2026-10-15:* `TestAOS528_OsBracosDistinguemOsFalsos` e
+      `TestAOS528_CustoPorCasoCumpridoEContasPorBraco`. Os falsos provam que a medida distingue;
+      não dizem nada de um modelo real.
+- [x] A pergunta e o conselho não aparecem no relatório, no resumo nem nas saídas; com
+      `--guardar-respostas` ficam no ficheiro de respostas do run, e só lá.
+      *Nota de 2026-10-15:* `TestAOS528_Fuga_PerguntaEConselhoSoNasRespostasGuardadas`.
+- [x] As experiências de antes, o falso por omissão e os testes pinados (AOS-516, digests da
+      1.0.0 e da 2.0.0) não mudam.
+      *Nota de 2026-10-15:* `TestAOS528_AsExperienciasDeAntesNaoMudam` e a suite inteira do
+      módulo verde, com os testes pinados do AOS-516 e do AOS-525 por tocar.
+- [ ] Medição real registada na §5 do acompanhamento: pelo menos um par executor/conselheiro de
+      fornecedores diferentes, os dois braços e a corrida do tecto, com a resposta, por extenso, a
+      «há casos em que o barato falha sozinho e cumpre com o conselheiro, e a que custo por caso
+      cumprido?». **Por fazer, com autorização do dono.**
+
+### Notas
+
+- O modo real corre um processo de cada vez, com `--so-plano` primeiro, e só com autorização do
+  dono. Subagentes não correm o modo real.
+- O tecto (o modelo forte sozinho) é outra corrida da mesma experiência, sem conselheiro e com a
+  mesma semente: o nó de ensaio tem um executor por corrida.
+- A taxa de consulta depende do texto da tool e do esforço do modelo executor: é uma medida do
+  par (executor, texto da tool), não do conselheiro.
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -2391,3 +2523,4 @@ conteúdo em que se possa confiar e com as respostas à mão quando for preciso 
 | 1.21 | 2026-10-13 | AOS-525: a bateria 2.0.0 por degraus (sete casos de dificuldade crescente, com factos proibidos) e a experiência `degraus`, que dá as taxas por degrau e não dá veredicto; a 1.0.0 e o seu digest não mudam; cada degrau tem um modelo falso que o cumpre e um que o falha. Com as correcções da revisão adversarial: uma passagem com um erro passageiro sai das taxas do degrau, seis turnos por run (pior caso 180 pedidos por passagem), factos proibidos em todos os degraus e comparados sem hífenes nem espaços. A medição com modelos reais continua por fazer | Equipa AOS |
 | 1.22 | 2026-10-13 | AOS-525 medido: a bateria 2.0.0 passada a seis modelos reais (5 passagens cada). Separa o modelo mais barato (falha volume e documento longo por inteiro) dos outros cinco, e não separa os cinco entre si; as falhas do Haiku em D5 e do DeepSeek em D7 são o limite do proibido citado numa negação, não conteúdo errado. Registo na §5 do acompanhamento | Equipa AOS |
 | 1.23 | 2026-10-13 | AOS-525: cobertura do módulo medida (86,8% → 88,1%) e o critério dos gates marcado. Fica por marcar só o critério 2, na metade «recusada fora da bateria sintética», que não se aplica (o banco só tem baterias embebidas) e espera pela palavra do dono | Equipa AOS |
+| 1.24 | 2026-10-15 | +AOS-528 (depois da A4, resíduo (c)): o conselheiro no banco de ensaio — a bateria 3.0.0 «difícil» (sete casos de dedução, contradições com regra, documento longo e restrições), a tool `aconselhar` com o conselheiro de qualquer fornecedor numa segunda rota do proxy efémero, com contas e tectos do fornecedor dele, e a experiência `conselheiro` em dois braços (com e sem a tool) que dá casos cumpridos, taxa de consulta e custo por caso cumprido, sem veredicto. Implementado e provado com falsos; a medição real fica por fazer, com autorização do dono | Equipa AOS |

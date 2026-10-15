@@ -115,6 +115,7 @@ func Comportamentos() []Comportamento {
 		ComportamentoDegrauCumpre, ComportamentoDegrauOmite, ComportamentoDegrauDistractor, ComportamentoDegrauUmaLeitura,
 		ComportamentoDegrauUmPorTurno,
 		ComportamentoRespeitaToolChoice, ComportamentoRecusaToolChoice,
+		ComportamentoConselhoCumpre, ComportamentoConselhoNaoConsulta, ComportamentoConselhoSegue, ComportamentoConselhoIgnora,
 	}
 }
 
@@ -322,6 +323,11 @@ func (f *ProviderFalso) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Os comportamentos da bateria por degraus (AOS-525) respondem pelo seu próprio caminho,
 		// em falso_degraus.go: o que está abaixo é o de sempre, byte a byte.
 		servirDegrau(w, comportamento, p, doUtilizador, dasTools, tokensDeEntrada)
+		return
+	}
+	if comportamentoDoConselheiro(comportamento) {
+		// Os da experiência `conselheiro` (AOS-528), em falso_conselheiro.go.
+		servirConselho(w, comportamento, p, doUtilizador, dasTools, tokensDeEntrada)
 		return
 	}
 	temTools := len(p.Tools) > 0

@@ -52,12 +52,15 @@ const ImagemDoProxy = "ghcr.io/berriai/litellm@sha256:154e23bb5f31b1f10e16392a8e
 
 // Os nomes das variáveis de ambiente DENTRO do contentor do proxy.
 const (
-	envChaveMestra  = "LITELLM_MASTER_KEY"
-	envChaveDaRota  = "ENSAIO_API_KEY"
-	envBaseDaRota   = "ENSAIO_API_BASE"
-	portaDoProxy    = "4000"
-	portaDoFalso    = "8080"
-	esperaPeloProxy = 4 * time.Minute
+	envChaveMestra = "LITELLM_MASTER_KEY"
+	envChaveDaRota = "ENSAIO_API_KEY"
+	envBaseDaRota  = "ENSAIO_API_BASE"
+	// A chave e a base da SEGUNDA rota, a do conselheiro (AOS-528).
+	envChaveDoConselheiro = "ENSAIO_CONSELHEIRO_API_KEY"
+	envBaseDoConselheiro  = "ENSAIO_CONSELHEIRO_API_BASE"
+	portaDoProxy          = "4000"
+	portaDoFalso          = "8080"
+	esperaPeloProxy       = 4 * time.Minute
 
 	// prefixoDoDocker abre o nome de todos os contentores e redes que o banco cria.
 	prefixoDoDocker = "aos512-"
@@ -95,9 +98,36 @@ type PedidoDeProxy struct {
 	// FormaDoFalso é a forma do estado no wire de chat do falso do estado ([FormaOpenRouter] ou
 	// vazio). Só com Estado.
 	FormaDoFalso string
+	// Conselheiro, quando presente, é a SEGUNDA rota do proxy (AOS-528): a do modelo conselheiro,
+	// com o seu alias, o seu adaptador, a sua chave e a sua base — eventualmente de outro
+	// fornecedor. nil ⇒ uma rota só, e a configuração de sempre, byte a byte. Não vale com
+	// BinarioDoFalso: o provider falso em contentor não faz de conselheiro.
+	Conselheiro *RotaDoConselheiroNoProxy
 
 	apiKey  string
 	apiBase string
+}
+
+// RotaDoConselheiroNoProxy é a segunda rota do proxy efémero (AOS-528). Os segredos ficam em
+// campos não exportados, como na primeira.
+type RotaDoConselheiroNoProxy struct {
+	// Prefixo é o adaptador do proxy (`openai`, `anthropic` ou `openrouter`), Modelo o nome do
+	// modelo no fornecedor, e Alias o `model_name` da rota — o que o conselheiro pede.
+	Prefixo, Modelo, Alias string
+
+	apiKey, apiBase string
+}
+
+// String não mostra os segredos.
+func (r RotaDoConselheiroNoProxy) String() string { return "rota do conselheiro [segredos ocultos]" }
+
+// GoString idem.
+func (r RotaDoConselheiroNoProxy) GoString() string { return r.String() }
+
+// ComSegredos devolve a rota com a chave e a base da API do fornecedor do conselheiro.
+func (r RotaDoConselheiroNoProxy) ComSegredos(apiKey, apiBase string) *RotaDoConselheiroNoProxy {
+	r.apiKey, r.apiBase = apiKey, apiBase
+	return &r
 }
 
 // String não mostra os segredos.
@@ -296,25 +326,48 @@ func configDoProxy(prefixo, modelo string, comBase bool) (string, error) {
 // configDoProxyCom é [configDoProxy] com o alias da rota efémera dado (AOS-519). Um alias que não
 // passe em [NomeDaRotaAceite] é recusado: o nome vai para uma linha do YAML.
 func configDoProxyCom(alias, prefixo, modelo string, comBase bool) (string, error) {
-	if !NomeDaRotaAceite(alias) {
-		return "", fmt.Errorf("%w: alias da rota com caracteres que o banco nao aceita", ErrProxy)
-	}
-	if prefixo != "openai" && prefixo != "anthropic" && prefixo != PrefixoDaOpenRouter {
-		return "", fmt.Errorf("%w: adaptador do proxy desconhecido", ErrProxy)
-	}
-	if !nomeDeModeloAceite(modelo) {
-		return "", fmt.Errorf("%w: nome de modelo com caracteres que o banco nao aceita", ErrProxy)
-	}
+	return configDoProxyComRotas([]rotaDaConfig{{alias: alias, prefixo: prefixo, modelo: modelo, comBase: comBase, envChave: envChaveDaRota, envBase: envBaseDaRota}})
+}
+
+// rotaDaConfig é uma rota da configuração do proxy: o alias, o adaptador, o modelo e os NOMES das
+// variáveis de ambiente da chave e da base (os valores nunca entram na configuração).
+type rotaDaConfig struct {
+	alias, prefixo, modelo string
+	comBase                bool
+	envChave, envBase      string
+}
+
+// configDoProxyComRotas escreve a configuração do proxy com as rotas dadas, pela ordem (AOS-528:
+// a do nó de ensaio e a do conselheiro). Com uma rota só é, byte a byte, a de [configDoProxyCom].
+// Dois aliases iguais são recusados: o proxy serviria um deles com a chave do outro.
+func configDoProxyComRotas(rotas []rotaDaConfig) (string, error) {
 	var b strings.Builder
-	// O alias vai ENTRE ASPAS: `null`, `true`, `123` e `-` passam em [NomeDaRotaAceite] e, sem
-	// aspas, o YAML não os lê como texto — a rota ficava com outro nome (ou sem nome) e o proxy
-	// respondia «modelo desconhecido» a todos os pedidos. O alfabeto do alias não tem aspas nem
-	// barra invertida, pelo que não há nada para escapar.
-	b.WriteString("model_list:\n  - model_name: \"" + alias + "\"\n    litellm_params:\n")
-	b.WriteString("      model: " + prefixo + "/" + modelo + "\n")
-	b.WriteString("      api_key: os.environ/" + envChaveDaRota + "\n")
-	if comBase {
-		b.WriteString("      api_base: os.environ/" + envBaseDaRota + "\n")
+	b.WriteString("model_list:\n")
+	vistos := map[string]bool{}
+	for _, r := range rotas {
+		if !NomeDaRotaAceite(r.alias) {
+			return "", fmt.Errorf("%w: alias da rota com caracteres que o banco nao aceita", ErrProxy)
+		}
+		if vistos[r.alias] {
+			return "", fmt.Errorf("%w: duas rotas com o mesmo alias", ErrProxy)
+		}
+		vistos[r.alias] = true
+		if r.prefixo != "openai" && r.prefixo != "anthropic" && r.prefixo != PrefixoDaOpenRouter {
+			return "", fmt.Errorf("%w: adaptador do proxy desconhecido", ErrProxy)
+		}
+		if !nomeDeModeloAceite(r.modelo) {
+			return "", fmt.Errorf("%w: nome de modelo com caracteres que o banco nao aceita", ErrProxy)
+		}
+		// O alias vai ENTRE ASPAS: `null`, `true`, `123` e `-` passam em [NomeDaRotaAceite] e, sem
+		// aspas, o YAML não os lê como texto — a rota ficava com outro nome (ou sem nome) e o proxy
+		// respondia «modelo desconhecido» a todos os pedidos. O alfabeto do alias não tem aspas nem
+		// barra invertida, pelo que não há nada para escapar.
+		b.WriteString("  - model_name: \"" + r.alias + "\"\n    litellm_params:\n")
+		b.WriteString("      model: " + r.prefixo + "/" + r.modelo + "\n")
+		b.WriteString("      api_key: os.environ/" + r.envChave + "\n")
+		if r.comBase {
+			b.WriteString("      api_base: os.environ/" + r.envBase + "\n")
+		}
 	}
 	// `drop_params: true` é o da configuração do proxy do nó (deploy/node/dev-hardened/litellm).
 	// `num_retries: 0`: um pedido do banco é UM pedido ao fornecedor — sem isto o proxy podia
@@ -348,8 +401,58 @@ func arranqueDoContentorDoProxy(contentor, rede, chaveMestra, apiKey, apiBase st
 		fmt.Sprint(int(vida.Seconds())), fmt.Sprint(int(tolerancia.Seconds()))), ambiente
 }
 
+// arranqueDoProxyComRotas devolve o que o [LancadorDocker] precisa para levantar o proxy de um
+// pedido: a configuração (a rota do executor e, havendo, a do conselheiro, AOS-528), os argumentos
+// do `docker run` e o ambiente do processo docker. `apiBase` é a base da rota do executor (a do
+// pedido, ou a do provider falso em contentor). Não toca no Docker: é a parte que os testes
+// exercitam sem ele.
+func arranqueDoProxyComRotas(p PedidoDeProxy, apiBase, contentor, rede, chaveMestra string, vida, tolerancia time.Duration) (cfg string, args, ambiente []string, err error) {
+	alias := p.Alias
+	if alias == "" {
+		alias = AliasDaRota
+	}
+	rotas := []rotaDaConfig{{alias: alias, prefixo: p.Prefixo, modelo: p.Modelo, comBase: apiBase != "", envChave: envChaveDaRota, envBase: envBaseDaRota}}
+	if c := p.Conselheiro; c != nil {
+		rotas = append(rotas, rotaDaConfig{alias: c.Alias, prefixo: c.Prefixo, modelo: c.Modelo, comBase: c.apiBase != "", envChave: envChaveDoConselheiro, envBase: envBaseDoConselheiro})
+	}
+	if cfg, err = configDoProxyComRotas(rotas); err != nil {
+		return "", nil, nil, err
+	}
+	args, ambiente = arranqueDoContentorDoProxy(contentor, rede, chaveMestra, p.apiKey, apiBase, vida, tolerancia)
+	if p.Conselheiro != nil {
+		args, ambiente = comAmbienteDoConselheiro(args, ambiente, p.Conselheiro)
+	}
+	return cfg, args, ambiente, nil
+}
+
+// comAmbienteDoConselheiro acrescenta ao arranque do proxy a chave e a base da rota do conselheiro
+// (AOS-528), pelo mesmo caminho das da primeira rota: o valor no AMBIENTE do processo docker, e
+// nos argumentos só o nome (`-e NOME`), antes do `--entrypoint`.
+func comAmbienteDoConselheiro(args, ambiente []string, c *RotaDoConselheiroNoProxy) ([]string, []string) {
+	extra := []string{"-e", envChaveDoConselheiro}
+	ambiente = append(ambiente, envChaveDoConselheiro+"="+c.apiKey)
+	if c.apiBase != "" {
+		extra = append(extra, "-e", envBaseDoConselheiro)
+		ambiente = append(ambiente, envBaseDoConselheiro+"="+c.apiBase)
+	}
+	for i, a := range args {
+		if a == "--entrypoint" {
+			return append(append(append([]string(nil), args[:i]...), extra...), args[i:]...), ambiente
+		}
+	}
+	return append(args, extra...), ambiente
+}
+
 // Lancar implementa [LancadorDeProxy].
 func (l *LancadorDocker) Lancar(ctx context.Context, p PedidoDeProxy) (*ProxyVivo, error) {
+	if p.Conselheiro != nil {
+		// Antes de tocar no Docker: o redactor passa a conhecer os segredos da segunda rota, e um
+		// pedido que não se pode servir é recusado (AOS-528).
+		l.Redactor.Acrescentar(p.Conselheiro.apiKey, p.Conselheiro.apiBase)
+		if p.BinarioDoFalso != "" {
+			return nil, fmt.Errorf("%w: o provider falso em contentor nao faz de conselheiro", ErrProxy)
+		}
+	}
 	if ok, motivo := DockerDisponivel(ctx); !ok {
 		return nil, fmt.Errorf("%w: %s", ErrSemDocker, motivo)
 	}
@@ -427,11 +530,7 @@ func (l *LancadorDocker) Lancar(ctx context.Context, p PedidoDeProxy) (*ProxyViv
 		}
 	}
 
-	alias := p.Alias
-	if alias == "" {
-		alias = AliasDaRota
-	}
-	cfg, err := configDoProxyCom(alias, p.Prefixo, p.Modelo, apiBase != "")
+	cfg, args, ambiente, err := arranqueDoProxyComRotas(p, apiBase, proxy, rede, chaveMestra, vida, tolerancia)
 	if err != nil {
 		return falhar(err)
 	}
@@ -439,7 +538,6 @@ func (l *LancadorDocker) Lancar(ctx context.Context, p PedidoDeProxy) (*ProxyViv
 	if err := os.WriteFile(caminhoDaCfg, []byte(cfg), 0o600); err != nil {
 		return falhar(err)
 	}
-	args, ambiente := arranqueDoContentorDoProxy(proxy, rede, chaveMestra, p.apiKey, apiBase, vida, tolerancia)
 	if _, err := l.docker(ctx, ambiente, args...); err != nil {
 		return falhar(err)
 	}

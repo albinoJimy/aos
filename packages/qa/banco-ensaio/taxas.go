@@ -154,6 +154,12 @@ type Observacao struct {
 	// Qualificacao sao as medidas que so a experiencia `qualificacao` regista (AOS-518). Ausente
 	// nas outras experiencias.
 	Qualificacao *MedidasDoRun `json:"medidas_da_qualificacao,omitempty"`
+	// BracoDoConselheiro é o braço da experiência `conselheiro` (AOS-528): [BracoSoExecutor] ou
+	// [BracoComConselheiro]. Ausente nas outras experiências.
+	BracoDoConselheiro string `json:"braco_do_conselheiro,omitempty"`
+	// Conselho são as consultas do run ao conselheiro — só contagens. Só nos runs do braço com
+	// conselheiro, mesmo que não tenham consultado.
+	Conselho *ConsultasDoRun `json:"conselho,omitempty"`
 
 	erroDaUltimaChamada string
 	// corridaCancelada diz que o run não fechou cumprido e que, quando acabou, o contexto da
@@ -234,6 +240,11 @@ type Taxas struct {
 	// lista FECHADA dos membros do topo (AOS-519, `routeentry.ReportTopFields`): um membro novo
 	// no topo era uma alteração ao nó, que este trabalho não faz.
 	PorDegrau *TaxasPorDegrau `json:"por_degrau,omitempty"`
+	// Conselheiro é o que a experiência `conselheiro` acrescenta (AOS-528, conselheiro_relatorio.go):
+	// por braço e por caso, os casos cumpridos, a taxa de consulta e o custo. Só nas taxas de TODAS
+	// as observações dessa experiência — e aqui, e não no topo do relatório, porque a lista dos
+	// membros do topo é fechada na leitura do nó (`routeentry`).
+	Conselheiro *RelatorioDoConselheiro `json:"conselheiro,omitempty"`
 }
 
 // desfechoRepetivel diz se um desfecho é dos que o banco volta a tentar: o run que acabou sem

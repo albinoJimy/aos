@@ -52,6 +52,12 @@ type Plano struct {
 	Casos []string `json:"casos"`
 	// Bracos são os braços da corrida.
 	Bracos []Braco `json:"bracos"`
+	// BracosDoConselheiro são os braços da experiência `conselheiro` (AOS-528): [BracoSoExecutor]
+	// e, com conselheiro, [BracoComConselheiro]. Vazio nas outras experiências — e ausente do JSON,
+	// para o digest da configuração delas não mudar.
+	BracosDoConselheiro []string `json:"bracos_do_conselheiro,omitempty"`
+	// MaxConsultas é o máximo de consultas ao conselheiro por run do braço com ele; zero sem ele.
+	MaxConsultas int `json:"max_consultas,omitempty"`
 }
 
 // PlanoDaBateria devolve o plano de uma corrida da bateria inteira num braço.
@@ -88,8 +94,15 @@ func PlanoDaQualificacao(b *Bateria, semente uint64) Plano {
 var ErrPlano = errors.New("banco-ensaio: plano de corrida invalido")
 
 func (p Plano) validar(b *Bateria) error {
-	if p.Experiencia != ExperienciaBateria && p.Experiencia != ExperienciaSeparadores && p.Experiencia != ExperienciaQualificacao && p.Experiencia != ExperienciaDegraus {
+	if p.Experiencia != ExperienciaBateria && p.Experiencia != ExperienciaSeparadores && p.Experiencia != ExperienciaQualificacao && p.Experiencia != ExperienciaDegraus && p.Experiencia != ExperienciaConselheiro {
 		return fmt.Errorf("%w: experiencia desconhecida", ErrPlano)
+	}
+	// A bateria difícil (AOS-528) só corre na experiência `conselheiro`, e esta só sobre ela.
+	if (p.Experiencia == ExperienciaConselheiro) != b.EDificil() {
+		return fmt.Errorf("%w: a experiencia conselheiro corre a bateria dificil, e so ela", ErrPlano)
+	}
+	if err := p.validarDoConselheiro(b); err != nil {
+		return err
 	}
 	// Cada bateria tem as suas experiências (AOS-525): a por degraus só corre na experiência
 	// `degraus`, e as outras experiências só correm sobre a bateria sem degraus.
@@ -123,8 +136,10 @@ func (p Plano) validar(b *Bateria) error {
 	return nil
 }
 
-// PedidosMaximos é o número MÁXIMO de pedidos que a corrida pode fazer: por cada amostra, braço
-// e nó, `Tentativas × MaxTurnos`. Na experiência dos separadores é o número exacto.
+// PedidosMaximos é o número MÁXIMO de pedidos que a corrida pode fazer ao modelo EXECUTOR: por
+// cada amostra, braço e nó, `Tentativas × MaxTurnos`. Na experiência dos separadores é o número
+// exacto. Na experiência `conselheiro` conta os dois braços dela; os pedidos ao conselheiro são os
+// de [Plano.PedidosMaximosDoConselheiro].
 func (p Plano) PedidosMaximos(b *Bateria) (int64, error) {
 	if err := p.validar(b); err != nil {
 		return 0, err
@@ -134,7 +149,8 @@ func (p Plano) PedidosMaximos(b *Bateria) (int64, error) {
 		c, _ := b.Caso(id)
 		nos += int64(len(c.Nos))
 	}
-	return int64(p.Amostras) * int64(len(p.Bracos)) * nos * int64(p.Tentativas) * int64(p.MaxTurnos), nil
+	bracosDoConselheiro := int64(max(1, len(p.BracosDoConselheiro)))
+	return int64(p.Amostras) * int64(len(p.Bracos)) * bracosDoConselheiro * nos * int64(p.Tentativas) * int64(p.MaxTurnos), nil
 }
 
 // passo é uma unidade da sequência: um caso, num braço, numa amostra.
@@ -142,6 +158,8 @@ type passo struct {
 	caso    Caso
 	braco   Braco
 	amostra int
+	// conselho é o braço do conselheiro (AOS-528); vazio fora da experiência `conselheiro`.
+	conselho string
 }
 
 // sequencia devolve a ordem da corrida. Os braços correm INTERCALADOS, em blocos: cada amostra
@@ -157,10 +175,14 @@ func (p Plano) sequencia(b *Bateria) []passo {
 			j := int(gerador.proximo() % uint64(i+1)) // #nosec G115 -- o resto e menor do que i+1, que e um int positivo
 			ordem[i], ordem[j] = ordem[j], ordem[i]
 		}
+		// Os braços do conselheiro (AOS-528) correm também em blocos, baralhados pela mesma semente.
+		conselhos := p.ordemDosBracosDoConselheiro(gerador)
 		for _, braco := range ordem {
-			for _, id := range p.Casos {
-				c, _ := b.Caso(id)
-				out = append(out, passo{caso: c, braco: braco, amostra: amostra})
+			for _, conselho := range conselhos {
+				for _, id := range p.Casos {
+					c, _ := b.Caso(id)
+					out = append(out, passo{caso: c, braco: braco, amostra: amostra, conselho: conselho})
+				}
 			}
 		}
 	}
@@ -275,6 +297,12 @@ type CfgDaCorrida struct {
 	QualificaDevolucao bool
 	// Qualificacao configura a experiência `qualificacao` (AOS-518). Obrigatória nela, e só nela.
 	Qualificacao *CfgDaQualificacao
+	// Conselho configura a experiência `conselheiro` (AOS-528): o conselheiro, a rota dele e os
+	// preços declarados. Obrigatório nela, e só nela.
+	Conselho *CfgDoConselho
+
+	// sondaDoConselheiro é a sonda da rota do conselheiro, quando houve.
+	sondaDoConselheiro *Sonda
 
 	// fase, quando presente, é avisada do início da sonda, da corrida e do controlo (AOS-522).
 	// É só um relógio: não entra no relatório nem no digest da configuração.
@@ -315,6 +343,9 @@ func Correr(ctx context.Context, cfg CfgDaCorrida) (*Relatorio, error) {
 	if err := cfg.validarQualificacao(); err != nil {
 		return nil, err
 	}
+	if err := cfg.validarConselho(); err != nil {
+		return nil, err
+	}
 	// O pior caso de uma qualificação inclui a corrida de controlo, quando o perfil a pede.
 	previstos += cfg.pedidosDoControlo()
 	switch cfg.Modo {
@@ -323,6 +354,11 @@ func Correr(ctx context.Context, cfg CfgDaCorrida) (*Relatorio, error) {
 		// FAIL-CLOSED: o modo real exige o contador, e o MESMO contador tem de ser o que o
 		// transporte do nó de ensaio consulta antes de cada pedido.
 		if cfg.Contador == nil || cfg.No.contador != cfg.Contador {
+			return nil, ErrModoRealSemTecto
+		}
+		// E o conselheiro, quando há, conta no contador do fornecedor dele: o mesmo ficheiro e a
+		// mesma trava do contador da corrida ([Contador.Irmao]).
+		if cs := cfg.conselheiro(); cs != nil && (cs.contador == nil || cs.contador.raiz() != cfg.Contador.raiz()) {
 			return nil, ErrModoRealSemTecto
 		}
 	default:
@@ -343,6 +379,11 @@ func Correr(ctx context.Context, cfg CfgDaCorrida) (*Relatorio, error) {
 			}
 			return nil, err
 		}
+		// O conselheiro (AOS-528): as consultas — e a sonda dele — cabem no tecto do fornecedor
+		// DELE; no mesmo fornecedor, somadas às do executor.
+		if err := cfg.caberDoConselheiro(aEnviar); err != nil {
+			return nil, err
+		}
 	}
 	relogio := cfg.Relogio
 	if relogio == nil {
@@ -359,12 +400,20 @@ func Correr(ctx context.Context, cfg CfgDaCorrida) (*Relatorio, error) {
 			// A rota não responde: nenhum caso corre. Gastou-se, no máximo, um pedido.
 			return construirRelatorio(cfg, relogio().UTC(), previstos, cfg.terminouDaQualificacao(terminouDaSonda(s)), sonda, nil, nil)
 		}
+		// A rota do conselheiro também se sonda, antes do primeiro caso (AOS-528).
+		if cs := cfg.conselheiro(); cs != nil {
+			doConselheiro := cs.Sondar(ctx)
+			cfg.sondaDoConselheiro = &doConselheiro
+			if doConselheiro.Resultado != SondaOK {
+				return construirRelatorio(cfg, relogio().UTC(), previstos, terminouDaSonda(doConselheiro), sonda, nil, nil)
+			}
+		}
 	}
 	if err := cfg.registarQualificacao(); err != nil {
 		return nil, err
 	}
 	cfg.marcarFase(FaseDaCorrida)
-	obs, terminou := cicloDaCorrida(ctx, cfg, cfg.No, cfg.Plano, parar)
+	obs, terminou := cicloDaCorrida(ctx, cfg, cfg.No, cfg.Plano, cfg.comParagemDoConselheiro(parar))
 	terminou = cfg.terminouDaQualificacao(terminou)
 	controlo := cfg.correrControlo(ctx, terminou, obs, parar)
 	r, err := construirRelatorio(cfg, relogio().UTC(), previstos, terminou, sonda, obs, controlo)
@@ -402,7 +451,7 @@ ciclo:
 		}
 		saidas := map[string]string{}
 		for _, no := range ps.caso.Nos {
-			pedido := PedidoDeRun{Caso: ps.caso, No: no, Braco: ps.braco, Amostra: ps.amostra, MaxTurnos: plano.MaxTurnos}
+			pedido := PedidoDeRun{Caso: ps.caso, No: no, Braco: ps.braco, Amostra: ps.amostra, MaxTurnos: plano.MaxTurnos, BracoDoConselheiro: ps.conselho}
 			switch {
 			case no.EntradaDe != "":
 				anterior, ok := saidas[no.EntradaDe]

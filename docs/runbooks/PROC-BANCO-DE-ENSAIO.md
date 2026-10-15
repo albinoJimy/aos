@@ -230,6 +230,79 @@ de factos por comparação de texto, não um juiz: não diz que a resposta é bo
 qualificação, e nenhum registo de entrada se assina com base nela. O que se regista na §5 do
 acompanhamento são as contagens por modelo e por degrau, com as amostras e a data.
 
+## O conselheiro, com dois fornecedores (AOS-528)
+
+A experiência `conselheiro` corre a **bateria 3.0.0** («difícil», sete casos) em dois braços na
+mesma corrida e com a mesma semente: `so-executor` (o executor sozinho) e `executor+conselheiro`
+(o executor com a tool `aconselhar`, que consulta um modelo mais forte). **Não dá veredicto**:
+dá, por braço e por caso, os casos cumpridos, a taxa de consulta, os pedidos e o custo estimado
+do executor e do conselheiro separados, e o custo por caso cumprido. Os casos, a tool e os
+campos do relatório estão no README do banco, secção «O conselheiro e a experiência
+`conselheiro`».
+
+**Quem corre:** o dono, com autorização para os dois fornecedores. O modo real **não** corre em
+CI nem por um agente.
+
+**As chaves necessárias.** As do executor e as do conselheiro, no MESMO ficheiro de chaves, pelos
+campos de sempre: para o Kimi `KIMI_API_KEY`, `KIMI_API_BASE`, `KIMI_MODELOS` e
+`TECTO_PEDIDOS_DIA_KIMI`; para a Anthropic `ANTHROPIC_API_KEY`, `ANTHROPIC_MODELO`,
+`TECTO_PEDIDOS_DIA_ANTHROPIC` (e `TECTO_USD_DIA_ANTHROPIC`, opcional); para a OpenRouter
+`OPENROUTER_API_KEY`, `OPENROUTER_MODELO` (uma lista; o conselheiro escolhe dela com
+`--conselheiro-modelo`) e `TECTO_PEDIDOS_DIA_OPENROUTER` (e `TECTO_USD_DIA_OPENROUTER`). Um
+modelo de conselheiro fora da lista do ficheiro é recusado, como o do executor. Com tecto em
+dólares num dos fornecedores, `--precos` tem de ter o preço do modelo dele.
+`--destino-fora-da-lista` só vale para o executor.
+
+```powershell
+cd C:\Jimy\AOS\packages\qa\banco-ensaio
+$e = "$env:USERPROFILE\.aos-ensaio"
+
+# 0. Sem modelo real: os dois braços com o conselheiro falso (não gasta nada).
+go run .\cmd\aos-ensaio falso --experiencia conselheiro --conselheiro-falso certo --saida $env:TEMP\ensaio
+
+# 1. O plano: executor Haiku pela OpenRouter, conselheiro Kimi pela conta Kimi. Não envia nada.
+& $e\aos-ensaio.exe real --chaves $e\chaves.env --fornecedor openrouter --modelo anthropic/<haiku> --experiencia conselheiro --conselheiro-fornecedor kimi --conselheiro-modelo <kimi> --precos $e\precos.json --amostras 3 --so-plano
+
+# 2. A corrida, com as respostas guardadas (as perguntas e os conselhos ficam nelas).
+& $e\aos-ensaio.exe real --chaves $e\chaves.env --fornecedor openrouter --modelo anthropic/<haiku> --experiencia conselheiro --conselheiro-fornecedor kimi --conselheiro-modelo <kimi> --precos $e\precos.json --amostras 3 --guardar-respostas
+
+# 3. O tecto: o modelo forte sozinho, outra corrida com a mesma semente, sem conselheiro.
+& $e\aos-ensaio.exe real --chaves $e\chaves.env --fornecedor kimi --modelo <kimi> --experiencia conselheiro --precos $e\precos.json --amostras 3 --so-plano
+```
+
+O mesmo vale para outros pares: DeepSeek com Gemini são dois modelos da OpenRouter
+(`--fornecedor openrouter --modelo deepseek/<…> --conselheiro-fornecedor openrouter
+--conselheiro-modelo google/<…>`), e aí as duas contas somam na mesma linha do contador e o tecto
+do dia é um só.
+
+| | |
+|---|---|
+| **Pior caso** | Executor: 336 pedidos por passagem (dois braços, sete nós, três tentativas, oito turnos), mais 1 de sonda. Conselheiro: 7 × 3 × `--max-consultas` por passagem (42 com a omissão de 2), mais 1 de sonda. Com `--amostras 3` e dois fornecedores: 1009 no do executor e 127 no do conselheiro; no mesmo fornecedor, 1136 nele. A corrida do tecto (sem conselheiro): 168 por passagem, mais 1. O plano escreve o «PIOR CASO POR FORNECEDOR», e a corrida não arranca se o de algum não couber no que resta do dia dele. |
+| **Contas** | Cada consulta conta no contador do fornecedor do CONSELHEIRO (o mesmo `contador.json`, na linha dele) e no tecto do dia dele; o custo estimado, pelo preço do modelo dele. O relatório traz-as à parte (`taxas.conselheiro.pedidos_do_conselheiro`, `taxas.conselheiro.custo_do_conselheiro`). |
+| **Tokens** | O caso X4 lê um documento de cerca de 50 KB; o executor decide quanto dele manda ao conselheiro. |
+| **Amostras** | Com uma passagem cada caso tem uma amostra por braço. Para comparar braços, três ou mais, e lêem-se os intervalos de 95% do JSON. |
+| **Código de saída** | 0 se a corrida completou, sejam quais forem os números; 4 se parou a meio (também se o tecto do conselheiro se esgotou); 3 se o pior caso de algum fornecedor não coube. |
+
+**Como se lê.** A tabela `CONSELHEIRO` do resumo, braço a braço: `cumpridos` (a regra do
+degrau cumprido), `interrompidas` (lê-se primeiro, como nos degraus), `consulta` (runs que
+consultaram, sobre os que tinham a tool), `cons/run`, os pedidos e o custo de cada modelo e o
+**custo por caso cumprido**. Por baixo, caso a caso, os cumpridos de cada braço e as consultas.
+Um caso em que o braço com conselheiro cumpre e o outro não é o que a experiência procura; antes
+de o contar, **lêem-se as respostas** (a pergunta, o contexto e o conselho estão no ficheiro do
+run).
+
+**O que isto não prova.** A bateria é sintética e pequena. O conselheiro só vê o que o executor
+lhe passa — um conselho errado pode ser culpa do que lhe mandaram. A taxa de consulta depende do
+texto da tool e do esforço do modelo executor, e não é uma propriedade do conselheiro. A consulta
+não passa pelo Model Gateway do nó de ensaio. O custo é estimado e conta as passagens
+interrompidas. O tecto é outra corrida: uma deriva da rota entre as duas não se reparte. O modo
+`proxy` não tem conselheiro. Acertar por palpite rende cerca de 1 em 3 a 1 em 4 em X1, X2, X3, X6
+e X7 (a resposta é um de três ou quatro valores parecidos), e X5 mede obediência a instruções,
+onde o conselheiro ajuda pouco. Um run com uma consulta sem resposta por causa passageira sai da
+amostra, acerte ou erre. Uma consulta que esgota o prazo não regista uso: o gasto do conselheiro
+pode ficar subestimado. O que se regista na §5 do acompanhamento são as contagens por
+braço e por caso, os modelos e fornecedores, as amostras e a data.
+
 ## A qualificação da devolução do estado opaco (AOS-516)
 
 Um perfil candidato com `devolver` diferente de `nunca` faz o banco ligar, sozinho, o que a

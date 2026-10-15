@@ -338,19 +338,25 @@ type Sonda struct {
 // tecto do dia como um pedido — e diz, em vocabulário fechado, se a rota responde. Não passa
 // pelo runtime nem pelo gateway: não é uma observação e não entra em taxa nenhuma.
 func (n *NoDeEnsaio) Sondar(ctx context.Context) Sonda {
+	return sondarRota(ctx, n.cliente, n.base, n.credencial, n.alias, n.contador)
+}
+
+// sondarRota é a sonda de uma rota do proxy: a do nó de ensaio ou, desde o AOS-528, a do
+// conselheiro, cada uma com o seu cliente contado e o seu contador.
+func sondarRota(ctx context.Context, cliente *http.Client, base, credencial, alias string, contador *Contador) Sonda {
 	corpo, _ := json.Marshal(map[string]any{
-		"model":      n.alias,
+		"model":      alias,
 		"messages":   []map[string]string{{"role": "user", "content": TextoDaSonda}},
 		"max_tokens": tokensDaSonda,
 	})
 	pedido := &pedidoHTTP{}
-	req, err := http.NewRequestWithContext(context.WithValue(ctx, chaveDaChamada, pedido), http.MethodPost, n.base+"/chat/completions", bytes.NewReader(corpo))
+	req, err := http.NewRequestWithContext(context.WithValue(ctx, chaveDaChamada, pedido), http.MethodPost, base+"/chat/completions", bytes.NewReader(corpo))
 	if err != nil {
 		return Sonda{Resultado: TipoOutro}
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+n.credencial)
-	resp, err := n.cliente.Do(req)
+	req.Header.Set("Authorization", "Bearer "+credencial)
+	resp, err := cliente.Do(req)
 	switch {
 	case errors.Is(err, ErrTectoAtingido):
 		return Sonda{Resultado: SondaTecto}
@@ -374,8 +380,8 @@ func (n *NoDeEnsaio) Sondar(ctx context.Context) Sonda {
 	lido, _ := io.ReadAll(io.LimitReader(resp.Body, maxCorpoDeErro))
 	_ = json.Unmarshal(lido, &doc)
 	s.tokensDeEntrada, s.tokensDeSaida = doc.Usage.PromptTokens, doc.Usage.CompletionTokens
-	if n.contador != nil {
-		if uerr := n.contador.RegistarUso(s.tokensDeEntrada, s.tokensDeSaida); uerr != nil {
+	if contador != nil {
+		if uerr := contador.RegistarUso(s.tokensDeEntrada, s.tokensDeSaida); uerr != nil {
 			s.Resultado = SondaContador
 		}
 	}

@@ -1,0 +1,112 @@
+{
+  "versao": "3.0.0",
+  "marca": "DOCUMENTO SINTETICO AOS-512",
+  "system": "You are a careful assistant working inside an automated runtime. Do exactly what the objective asks, using the tools offered when the objective needs a document. Answer in plain text.",
+  "casos": [
+    {
+      "id": "X1",
+      "descricao": "deducao em tres passos sobre tres documentos: a caldeira que falhou num dia, a bomba de reserva dela, e a prateleira dessa bomba; os codigos parecidos sao as respostas erradas",
+      "nos": [
+        {
+          "id": "cadeia",
+          "objectivo": "Read the documents ocorrencias-caldeiras.txt, bombas-reserva.txt and prateleiras-armazem.txt with the arquivo tool. Find the boiler that failed on 3 March, then the spare pump assigned to that boiler, then the shelf where that pump is stored. Answer with the code of that shelf, and with no other shelf code.",
+          "tools": ["arquivo"],
+          "exige": ["arquivo"],
+          "factos_de": ["ocorrencias-caldeiras.txt", "bombas-reserva.txt", "prateleiras-armazem.txt"],
+          "factos": ["P-0917"],
+          "factos_proibidos": ["P-0719", "P-9071"]
+        }
+      ]
+    },
+    {
+      "id": "X2",
+      "descricao": "quatro documentos contraditorios, com nomes neutros, e uma regra explicita de qual prevalece (a data mais recente), com as datas em tres formatos diferentes, contra um numero de revisao mais alto e uma nota intermedia com outro nome",
+      "nos": [
+        {
+          "id": "data-recente",
+          "objectivo": "Read the documents obra-ribeira-a.txt, obra-ribeira-b.txt, obra-ribeira-c.txt and obra-ribeira-d.txt with the arquivo tool. They disagree about who is the engineer responsible for the footbridge works. The rule is: the document with the most recent date prevails, whatever its revision number or its kind. Answer with the name of the responsible engineer according to that rule, and with no other name.",
+          "tools": ["arquivo"],
+          "exige": ["arquivo"],
+          "factos_de": ["obra-ribeira-a.txt", "obra-ribeira-b.txt", "obra-ribeira-c.txt", "obra-ribeira-d.txt"],
+          "factos": ["Cristovao Abreu-Taveira"],
+          "factos_proibidos": ["Severino Lobato-Fragoso", "Valdemar Quintela-Rosa", "Odete Carrilho-Mendes"]
+        }
+      ]
+    },
+    {
+      "id": "X3",
+      "descricao": "documentos contraditorios, com nomes neutros, e uma regra explicita de qual prevalece (a fonte de maior autoridade, que so se le no texto), em que a fonte mais recente e a de menor autoridade",
+      "nos": [
+        {
+          "id": "autoridade",
+          "objectivo": "Read the documents valvula-a.txt, valvula-b.txt and valvula-c.txt with the arquivo tool. They name different parts suppliers for the safety valve, and each one says who issued it. The rule is: the safety authority prevails over the manufacturer, and the manufacturer prevails over any internal message, whatever the dates. Answer with the name of the supplier that the rule selects, and with no other supplier name.",
+          "tools": ["arquivo"],
+          "exige": ["arquivo"],
+          "factos_de": ["valvula-a.txt", "valvula-b.txt", "valvula-c.txt"],
+          "factos": ["Valverde-Esteves"],
+          "factos_proibidos": ["Couto-Brandao", "Pimentel-Sarmento"]
+        }
+      ]
+    },
+    {
+      "id": "X4",
+      "descricao": "documento longo (cerca de 50 KB) em que a resposta depende de duas passagens afastadas: a transferencia do guindaste perto do inicio e a tabela dos operadores perto do fim, com um nome da frente certa a meio",
+      "nos": [
+        {
+          "id": "duas-passagens",
+          "objectivo": "Read the document diario-estaleiro.txt with the arquivo tool. Find the crane that was moved to the work front Sul-7, and then the person who operates that crane. Answer with the name of that operator, and with no other name.",
+          "tools": ["arquivo"],
+          "exige": ["arquivo"],
+          "factos_de": ["diario-estaleiro.txt"],
+          "factos": ["Amilcar Fontoura-Reis"],
+          "factos_proibidos": ["Rogerio Antunes-Calado", "Elisio Braganca-Mota"]
+        }
+      ]
+    },
+    {
+      "id": "X5",
+      "descricao": "instrucao com varias restricoes ao mesmo tempo: dar dois factos de um documento e calar quatro outros que estao ao lado deles",
+      "nos": [
+        {
+          "id": "restricoes",
+          "objectivo": "Read the document nota-encomenda-tejo.txt with the arquivo tool. Then answer with the code of the active order and the delivery dock. Do not mention the cancelled order, the supplier, the price code or the reserve dock anywhere in your answer.",
+          "tools": ["arquivo"],
+          "exige": ["arquivo"],
+          "factos_de": ["nota-encomenda-tejo.txt"],
+          "factos": ["EN-4471", "D-19"],
+          "factos_proibidos": ["EN-7144", "Mesquita-Alvim", "PZ-8820", "D-91"]
+        }
+      ]
+    },
+    {
+      "id": "X6",
+      "descricao": "consulta a uma tabela com condicao: a zona sai do destino, noutro documento, e o codigo sai da zona e de comparar o peso com um limiar",
+      "nos": [
+        {
+          "id": "tabela",
+          "objectivo": "Read the documents guia-remessa-sul.txt, zonas-entrega.txt and tabela-portes.txt with the arquivo tool. Work out the delivery zone of the shipment from its destination, and then the postage code from that zone and the gross weight of the shipment. Answer with that postage code, and with no other postage code.",
+          "tools": ["arquivo"],
+          "exige": ["arquivo"],
+          "factos_de": ["guia-remessa-sul.txt", "zonas-entrega.txt", "tabela-portes.txt"],
+          "factos": ["PT-6330"],
+          "factos_proibidos": ["PT-6303", "PT-3360", "PT-3306"]
+        }
+      ]
+    },
+    {
+      "id": "X7",
+      "descricao": "regras com excepcoes e um calendario: so um tecnico esta disponivel no dia, e so se ve calculando o dia da semana da data a partir de outro dia conhecido, contando qual e o terceiro sabado do mes e lendo as datas das ferias",
+      "nos": [
+        {
+          "id": "excepcoes",
+          "objectivo": "Read the documents escala-inspecao.txt and disponibilidade-tecnicos.txt with the arquivo tool. Work out which technician is available on the day of the inspection. Answer with the name of that technician, and with no other name.",
+          "tools": ["arquivo"],
+          "exige": ["arquivo"],
+          "factos_de": ["escala-inspecao.txt", "disponibilidade-tecnicos.txt"],
+          "factos": ["Benedita Ramalho-Quintas"],
+          "factos_proibidos": ["Adelino Corte-Real", "Celestino Viegas-Albano"]
+        }
+      ]
+    }
+  ]
+}
