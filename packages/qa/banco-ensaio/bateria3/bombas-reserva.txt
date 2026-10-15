@@ -1,0 +1,7 @@
+DOCUMENTO SINTETICO AOS-512 - escrito para o banco de ensaio; nao contem dados de nenhum titular.
+
+Lista ficticia das bombas de reserva atribuidas a cada caldeira do pavilhao de Vale de Orca.
+
+Caldeira CB-14: bomba de reserva BR-2055.
+Caldeira CB-41: bomba de reserva BR-5520.
+Caldeira CB-44: bomba de reserva BR-5502.

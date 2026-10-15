@@ -1,0 +1,8 @@
+DOCUMENTO SINTETICO AOS-512 - escrito para o banco de ensaio; nao contem dados de nenhum titular.
+
+Tabela ficticia dos codigos de porte do entreposto de Barra do Tejo-Velho.
+
+Zona A, ate 20 kg inclusive: codigo de porte PT-3306.
+Zona A, mais de 20 kg: codigo de porte PT-3360.
+Zona B, ate 20 kg inclusive: codigo de porte PT-6303.
+Zona B, mais de 20 kg: codigo de porte PT-6330.

@@ -1,0 +1,8 @@
+DOCUMENTO SINTETICO AOS-512 - escrito para o banco de ensaio; nao contem dados de nenhum titular.
+
+Registo ficticio das ocorrencias das caldeiras do pavilhao ficticio de Vale de Orca, em marco de 2026.
+
+1 de marco: a caldeira CB-14 fez a revisao anual, sem avarias.
+3 de marco: a caldeira CB-41 parou por falha da bomba de circulacao e ficou fora de servico.
+5 de marco: a caldeira CB-44 deu um alarme de pressao, reposto no mesmo turno, sem falha.
+9 de marco: a caldeira CB-14 voltou a arrancar depois da limpeza.

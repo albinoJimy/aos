@@ -121,20 +121,9 @@ func (b *Bateria) validarDegraus() error {
 		}
 		vistos[c.Degrau], anterior = true, c.Degrau
 		for _, n := range c.Nos {
-			// O objectivo é o que identifica o nó para o provider falso dos degraus, e é o que o
-			// modelo lê: um facto escrito nele podia ser copiado sem ler documento nenhum.
-			objectivo := dobrarParaComparar(n.Objectivo)
-			for _, f := range append(append([]string(nil), n.Factos...), n.FactosProibidos...) {
-				if strings.Contains(objectivo, dobrarParaComparar(f)) {
-					return fmt.Errorf("%w: %s/%s tem um facto escrito no proprio objectivo", ErrBateria, c.ID, n.ID)
-				}
+			if err := validarObjectivo(c.ID, n, &objectivos); err != nil {
+				return err
 			}
-			for _, outro := range objectivos {
-				if strings.Contains(outro, n.Objectivo) || strings.Contains(n.Objectivo, outro) {
-					return fmt.Errorf("%w: %s/%s tem um objectivo igual ao de outro no, ou um contido no outro", ErrBateria, c.ID, n.ID)
-				}
-			}
-			objectivos = append(objectivos, n.Objectivo)
 		}
 	}
 	for d := 1; d <= anterior; d++ {
@@ -142,6 +131,28 @@ func (b *Bateria) validarDegraus() error {
 			return fmt.Errorf("%w: falta o degrau %d (os degraus nao tem buracos)", ErrBateria, d)
 		}
 	}
+	return nil
+}
+
+// validarObjectivo confere o objectivo de um nó de uma bateria cujos providers falsos o
+// reconhecem pelo objectivo (a por degraus e a difícil, AOS-528): nenhum facto — exigido ou
+// proibido — escrito nele, e nenhum igual ao de outro nó nem contido nele. `objectivos` são os
+// dos nós já vistos, e o deste junta-se-lhes.
+func validarObjectivo(caso string, n No, objectivos *[]string) error {
+	// O objectivo é o que identifica o nó para o provider falso, e é o que o modelo lê: um facto
+	// escrito nele podia ser copiado sem ler documento nenhum.
+	objectivo := dobrarParaComparar(n.Objectivo)
+	for _, f := range append(append([]string(nil), n.Factos...), n.FactosProibidos...) {
+		if strings.Contains(objectivo, dobrarParaComparar(f)) {
+			return fmt.Errorf("%w: %s/%s tem um facto escrito no proprio objectivo", ErrBateria, caso, n.ID)
+		}
+	}
+	for _, outro := range *objectivos {
+		if strings.Contains(outro, n.Objectivo) || strings.Contains(n.Objectivo, outro) {
+			return fmt.Errorf("%w: %s/%s tem um objectivo igual ao de outro no, ou um contido no outro", ErrBateria, caso, n.ID)
+		}
+	}
+	*objectivos = append(*objectivos, n.Objectivo)
 	return nil
 }
 
@@ -239,82 +250,128 @@ type TaxasPorDegrau struct {
 	Degraus []TaxasDoDegrau `json:"degraus"`
 }
 
+// contagemDoCaso é o que as passagens por um caso deram, pela regra do degrau cumprido
+// ([RegraDoDegrauCumprido]). Serve os degraus e, desde o AOS-528, os braços do conselheiro.
+type contagemDoCaso struct {
+	// passagens são as que chegaram a começar (uma por amostra), contando as interrompidas.
+	passagens, interrompidas int
+	porCausa                 map[string]int
+	// cumpridas são as passagens não interrompidas com todos os nós cumpridos e sem facto
+	// ausente nem proibido presente.
+	cumpridas int
+	// nos e nosCumpridos contam os nós que entram nas contas das passagens não interrompidas.
+	nos, nosCumpridos int
+	// medidas são as amostras cujas passagens entram nas contas.
+	medidas map[int]bool
+}
+
+// contarPassagensDoCaso aplica a regra do degrau cumprido às passagens de um caso. `obs` pode
+// trazer observações de outros casos: só contam as deste. `classificar` é a classificação do
+// estado final de um nó: [estadoFinalDoNo], ou uma que a estenda.
+func contarPassagensDoCaso(c Caso, obs []Observacao, classificar func(Observacao) (classe, causa string)) contagemDoCaso {
+	// tentativas guarda, por amostra e por nó, as tentativas, pela ordem da corrida. A última é a
+	// que decide o nó: o banco não volta a tentar um nó que concluiu.
+	tentativas := map[int]map[string][]Observacao{}
+	for _, o := range obs {
+		if o.Caso != c.ID {
+			continue
+		}
+		if tentativas[o.Amostra] == nil {
+			tentativas[o.Amostra] = map[string][]Observacao{}
+		}
+		tentativas[o.Amostra][o.No] = append(tentativas[o.Amostra][o.No], o)
+	}
+	k := contagemDoCaso{porCausa: map[string]int{}, medidas: map[int]bool{}}
+	for amostra, porNo := range tentativas {
+		ultima := func(no string) (Observacao, bool) {
+			l := porNo[no]
+			if len(l) == 0 {
+				return Observacao{}, false
+			}
+			return l[len(l)-1], true
+		}
+		k.passagens++
+		causa, medidos := lerPassagem(c, porNo, ultima, classificar)
+		if causa != "" {
+			k.interrompidas++
+			k.porCausa[causa]++
+			continue
+		}
+		k.medidas[amostra] = true
+		// Uma passagem cortada por uma interrupção depois de uma falha firme nunca é inteira.
+		inteira := medidos == len(c.Nos)
+		for _, n := range c.Nos[:medidos] {
+			k.nos++
+			o, correu := ultima(n.ID)
+			fechou := correu && o.Desfecho == DesfechoCumprido
+			if fechou {
+				k.nosCumpridos++
+			}
+			if !fechou || o.Factos == FactosAusentes || o.Proibidos == ProibidosPresente {
+				inteira = false
+			}
+		}
+		if inteira {
+			k.cumpridas++
+		}
+	}
+	return k
+}
+
+// lerPassagem diz como uma passagem se conta. Com `causa` não vazia, SAI das taxas: foi
+// interrompida por uma causa passageira — pela classificação dada, que de base é a da
+// qualificação ([estadoFinalDoNo]) — sem que nada estivesse já firmemente falhado. Sem causa,
+// conta, e `medidos` é o número de nós do caso que entram nas contas: todos, ou só os que vêm
+// antes da interrupção quando UMA FALHA FIRME JÁ TINHA SIDO OBSERVADA.
+//
+// Uma razão firme ganha a uma passageira, como na qualificação, porque as contagens só crescem:
+// um nó que não cumpriu por culpa do modelo, um facto ausente ou um proibido presente num nó
+// concluído não deixam de o ser por o nó seguinte ter levado um 429.
+func lerPassagem(c Caso, porNo map[string][]Observacao, ultima func(no string) (Observacao, bool), classificar func(Observacao) (string, string)) (causa string, medidos int) {
+	firme := false
+	// semSaida são os nós que não deixaram saída por culpa do modelo: os que não concluíram e, em
+	// cadeia, os que por isso não correram.
+	semSaida := map[string]bool{}
+	for i, n := range c.Nos {
+		o, correu := ultima(n.ID)
+		switch {
+		case correu:
+			classe, motivo := classificar(o)
+			if classe != noInterrompido {
+				semSaida[n.ID] = o.Desfecho != DesfechoCumprido
+				firme = firme || semSaida[n.ID] || o.Factos == FactosAusentes || o.Proibidos == ProibidosPresente
+				continue
+			}
+			// Interrompido. Uma tentativa anterior DESTE nó que falhou por culpa do modelo (não
+			// pediu a tool, respondeu vazio) também é uma falha firme já observada.
+			for _, anterior := range porNo[n.ID] {
+				if cl, _ := classificar(anterior); cl == noNaoCumprido {
+					return "", i + 1
+				}
+			}
+			if firme {
+				return "", i
+			}
+			return motivo, 0
+		case semSaida[n.EntradaDe]:
+			semSaida[n.ID] = true
+		default:
+			// Nada o impedia de correr: foi a corrida que parou antes.
+			if firme {
+				return "", i
+			}
+			return InterrompidaPelaParagem, 0
+		}
+	}
+	return "", len(c.Nos)
+}
+
 // CalcularTaxasPorDegrau calcula as taxas de cada degrau da bateria sobre as observações de uma
 // corrida. É determinista: a mesma lista dá os mesmos números.
 func CalcularTaxasPorDegrau(b *Bateria, obs []Observacao) []TaxasDoDegrau {
-	type passagem struct {
-		caso    string
-		amostra int
-	}
-	type unidade struct {
-		passagem
-		no string
-	}
 	porCaso := map[string][]Observacao{}
-	passagens := map[passagem]bool{}
-	// tentativas guarda, por nó de cada passagem, as suas tentativas, pela ordem da corrida. A
-	// última é a que decide o nó: o banco não volta a tentar um nó que concluiu.
-	tentativas := map[unidade][]Observacao{}
 	for _, o := range obs {
 		porCaso[o.Caso] = append(porCaso[o.Caso], o)
-		ps := passagem{o.Caso, o.Amostra}
-		passagens[ps] = true
-		u := unidade{ps, o.No}
-		tentativas[u] = append(tentativas[u], o)
-	}
-	ultima := func(ps passagem, no string) (Observacao, bool) {
-		l := tentativas[unidade{ps, no}]
-		if len(l) == 0 {
-			return Observacao{}, false
-		}
-		return l[len(l)-1], true
-	}
-	// lerPassagem diz como uma passagem se conta. Com `causa` não vazia, SAI das taxas: foi
-	// interrompida por uma causa passageira — a classificação é a da qualificação
-	// ([estadoFinalDoNo]) — sem que nada estivesse já firmemente falhado. Sem causa, conta, e
-	// `medidos` é o número de nós do caso que entram nas contas: todos, ou só os que vêm antes
-	// da interrupção quando UMA FALHA FIRME JÁ TINHA SIDO OBSERVADA.
-	//
-	// Uma razão firme ganha a uma passageira, como na qualificação, porque as contagens só
-	// crescem: um nó que não cumpriu por culpa do modelo, um facto ausente ou um proibido
-	// presente num nó concluído não deixam de o ser por o nó seguinte ter levado um 429.
-	lerPassagem := func(c Caso, ps passagem) (causa string, medidos int) {
-		firme := false
-		// semSaida são os nós que não deixaram saída por culpa do modelo: os que não concluíram
-		// e, em cadeia, os que por isso não correram.
-		semSaida := map[string]bool{}
-		for i, n := range c.Nos {
-			o, correu := ultima(ps, n.ID)
-			switch {
-			case correu:
-				classe, motivo := estadoFinalDoNo(o)
-				if classe != noInterrompido {
-					semSaida[n.ID] = o.Desfecho != DesfechoCumprido
-					firme = firme || semSaida[n.ID] || o.Factos == FactosAusentes || o.Proibidos == ProibidosPresente
-					continue
-				}
-				// Interrompido. Uma tentativa anterior DESTE nó que falhou por culpa do modelo
-				// (não pediu a tool, respondeu vazio) também é uma falha firme já observada.
-				for _, anterior := range tentativas[unidade{ps, n.ID}] {
-					if cl, _ := estadoFinalDoNo(anterior); cl == noNaoCumprido {
-						return "", i + 1
-					}
-				}
-				if firme {
-					return "", i
-				}
-				return motivo, 0
-			case semSaida[n.EntradaDe]:
-				semSaida[n.ID] = true
-			default:
-				// Nada o impedia de correr: foi a corrida que parou antes.
-				if firme {
-					return "", i
-				}
-				return InterrompidaPelaParagem, 0
-			}
-		}
-		return "", len(c.Nos)
 	}
 	var out []TaxasDoDegrau
 	for d := 1; d <= b.Degraus(); d++ {
@@ -331,38 +388,15 @@ func CalcularTaxasPorDegrau(b *Bateria, obs []Observacao) []TaxasDoDegrau {
 			}
 			t.Casos = append(t.Casos, c.ID)
 			capacidades = append(capacidades, c.Descricao)
-			medidas := map[int]bool{}
-			for ps := range passagens {
-				if ps.caso != c.ID {
-					continue
-				}
-				t.Passagens++
-				causa, medidos := lerPassagem(c, ps)
-				if causa != "" {
-					t.Interrompidas++
-					t.InterrompidasPorCausa[causa]++
-					continue
-				}
-				medidas[ps.amostra] = true
-				// Uma passagem cortada por uma interrupção depois de uma falha firme nunca é inteira.
-				inteira := medidos == len(c.Nos)
-				for _, n := range c.Nos[:medidos] {
-					nos++
-					o, correu := ultima(ps, n.ID)
-					fechou := correu && o.Desfecho == DesfechoCumprido
-					if fechou {
-						nosCumpridos++
-					}
-					if !fechou || o.Factos == FactosAusentes || o.Proibidos == ProibidosPresente {
-						inteira = false
-					}
-				}
-				if inteira {
-					cumpridas++
-				}
+			k := contarPassagensDoCaso(c, porCaso[c.ID], estadoFinalDoNo)
+			t.Passagens += k.passagens
+			t.Interrompidas += k.interrompidas
+			for causa, n := range k.porCausa {
+				t.InterrompidasPorCausa[causa] += n
 			}
+			nos, nosCumpridos, cumpridas = nos+k.nos, nosCumpridos+k.nosCumpridos, cumpridas+k.cumpridas
 			for _, o := range porCaso[c.ID] {
-				if medidas[o.Amostra] {
+				if k.medidas[o.Amostra] {
 					doDegrau = append(doDegrau, o)
 				}
 			}

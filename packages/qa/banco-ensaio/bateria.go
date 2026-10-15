@@ -45,7 +45,8 @@ var ficheirosDaBateria embed.FS
 const pastaDaBateria = "bateria"
 
 // Bateria é um conjunto fixo e versionado de casos sintéticos: a 1.0.0 (T1 a T6, desenho A2
-// §5.1) ou a 2.0.0, por degraus (D1 a D7, AOS-525, degraus.go).
+// §5.1), a 2.0.0, por degraus (D1 a D7, AOS-525, degraus.go), ou a 3.0.0, difícil (X1 a X7,
+// AOS-528, conselheiro.go).
 type Bateria struct {
 	// Versao é a versão declarada no ficheiro dos casos.
 	Versao string `json:"versao"`
@@ -62,6 +63,9 @@ type Bateria struct {
 	// porDegraus diz que a bateria foi carregada como bateria por degraus (AOS-525, degraus.go):
 	// todos os casos trazem o seu degrau, e só a experiência `degraus` a corre.
 	porDegraus bool
+	// dificil diz que a bateria foi carregada como a bateria difícil (AOS-528, conselheiro.go):
+	// só a experiência `conselheiro` a corre.
+	dificil bool
 }
 
 // Caso é um caso da bateria: um ou mais nós, corridos por ordem.

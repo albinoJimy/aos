@@ -154,6 +154,41 @@ type Contador struct {
 	esgotado bool
 	enviados int64
 	travado  bool
+	// dono, quando presente, é o contador que abriu o ficheiro e tem a trava ([Contador.Irmao],
+	// AOS-528): este lê e grava o mesmo ficheiro sob a exclusão do dono, e não tem trava própria.
+	dono *Contador
+}
+
+// raiz é o contador que tem a trava e a exclusão: o dono, ou o próprio.
+func (c *Contador) raiz() *Contador {
+	if c.dono != nil {
+		return c.dono
+	}
+	return c
+}
+
+// Irmao devolve um contador do MESMO ficheiro, sob a mesma trava e a mesma exclusão, para outro
+// fornecedor ou outro modelo (AOS-528: o conselheiro de uma corrida). Com o mesmo fornecedor o
+// tecto do dia é o mesmo — os pedidos dos dois somam na mesma linha —, e o gasto estimado de cada
+// um sai do preço do seu modelo. Com outro, conta na linha desse fornecedor, contra os tectos dele.
+// As recusas são as de [AbrirContador]: tecto de pedidos não positivo, tecto em dólares sem preço.
+// Fechar um irmão não remove a trava: só o dono a remove.
+func (c *Contador) Irmao(f Fornecedor, t Tectos, precos *TabelaDePrecos, modelo string) (*Contador, error) {
+	if t.PedidosDia <= 0 {
+		return nil, ErrSemTecto
+	}
+	i := &Contador{caminho: c.caminho, fornecedor: f, tectos: t, relogio: c.relogio, dono: c.raiz()}
+	if t.TemUSD {
+		if t.MicroUSDDia <= 0 {
+			return nil, ErrSemTecto
+		}
+		p, err := precos.PrecoDe(modelo)
+		if err != nil {
+			return nil, err
+		}
+		i.preco = p
+	}
+	return i, nil
 }
 
 // AbrirContador abre (ou cria, se ainda não existir) o contador no caminho dado, para um
@@ -230,6 +265,9 @@ func (c *Contador) travar() error {
 // Fechar liberta o contador: remove o ficheiro de exclusão. Depois de fechado, o contador
 // recusa reservas — um pedido não pode sair sem a exclusão.
 func (c *Contador) Fechar() {
+	if c.dono != nil {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.travado {
@@ -296,12 +334,27 @@ type relatorioDeHoje struct {
 	Custo struct {
 		MicroUSDHoje *int64 `json:"micro_usd_estimado_hoje"`
 	} `json:"custo"`
+	// Taxas.Conselheiro é o bloco do conselheiro (AOS-528): os pedidos dele contam no fornecedor dele.
+	Taxas struct {
+		Conselheiro *struct {
+			Rota *struct {
+				Fornecedor string `json:"fornecedor"`
+			} `json:"rota_do_conselheiro"`
+			Pedidos *struct {
+				Enviados int64 `json:"enviados"`
+			} `json:"pedidos_do_conselheiro"`
+			Custo *struct {
+				MicroUSDHoje *int64 `json:"micro_usd_estimado_hoje"`
+			} `json:"custo_do_conselheiro"`
+		} `json:"conselheiro"`
+	} `json:"taxas"`
 }
 
 // UsoDosRelatoriosDeHoje soma, dos relatórios de corridas REAIS de hoje que houver nas pastas
 // dadas, os pedidos enviados a um fornecedor; devolve também o maior gasto estimado do dia que
 // esses relatórios registam, e quantos relatórios contou. É o que diz se a contagem do dia se
-// perdeu quando o contador não existe, e o que a reconstrói.
+// perdeu quando o contador não existe, e o que a reconstrói. Os pedidos do conselheiro de uma
+// corrida (AOS-528) contam no fornecedor dele, seja ou não o do executor.
 func UsoDosRelatoriosDeHoje(pastas []string, f Fornecedor, dia string) (pedidos, microUSD int64, relatorios int) {
 	vistos := map[string]bool{}
 	for _, pasta := range pastas {
@@ -317,13 +370,26 @@ func UsoDosRelatoriosDeHoje(pastas []string, f Fornecedor, dia string) (pedidos,
 				continue
 			}
 			var r relatorioDeHoje
-			if json.Unmarshal(cru, &r) != nil || r.Modo != ModoReal || r.Rota.Fornecedor != string(f) || r.Pedidos.DiaUTC != dia {
+			if json.Unmarshal(cru, &r) != nil || r.Modo != ModoReal || r.Pedidos.DiaUTC != dia {
 				continue
 			}
-			relatorios++
-			pedidos += r.Pedidos.Enviados
-			if r.Custo.MicroUSDHoje != nil && *r.Custo.MicroUSDHoje > microUSD {
-				microUSD = *r.Custo.MicroUSDHoje
+			conta := false
+			if r.Rota.Fornecedor == string(f) {
+				conta = true
+				pedidos += r.Pedidos.Enviados
+				if r.Custo.MicroUSDHoje != nil && *r.Custo.MicroUSDHoje > microUSD {
+					microUSD = *r.Custo.MicroUSDHoje
+				}
+			}
+			if c := r.Taxas.Conselheiro; c != nil && c.Rota != nil && c.Rota.Fornecedor == string(f) && c.Pedidos != nil {
+				conta = true
+				pedidos += c.Pedidos.Enviados
+				if c.Custo != nil && c.Custo.MicroUSDHoje != nil && *c.Custo.MicroUSDHoje > microUSD {
+					microUSD = *c.Custo.MicroUSDHoje
+				}
+			}
+			if conta {
+				relatorios++
 			}
 		}
 	}
@@ -333,16 +399,24 @@ func UsoDosRelatoriosDeHoje(pastas []string, f Fornecedor, dia string) (pedidos,
 // ReconstruirContador cria um contador que NÃO existe com a contagem de hoje dada (a dos
 // relatórios). Não toca num contador que exista.
 func ReconstruirContador(caminho string, f Fornecedor, dia string, pedidos, microUSD int64) error {
+	return reconstruirContadorDe(caminho, dia, map[Fornecedor]usoDoDia{f: {Pedidos: pedidos, MicroUSD: microUSD}})
+}
+
+// reconstruirContadorDe é [ReconstruirContador] com a contagem de hoje de cada fornecedor dado
+// (AOS-528: o do executor e o do conselheiro).
+func reconstruirContadorDe(caminho, dia string, usos map[Fornecedor]usoDoDia) error {
 	if _, err := os.Stat(caminho); !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("%w: so se reconstroi um contador que nao existe", ErrContador)
 	}
 	if err := os.MkdirAll(filepath.Dir(caminho), 0o700); err != nil {
 		return fmt.Errorf("%w: %v", ErrContador, err)
 	}
+	doDia := map[string]usoDoDia{}
+	for f, u := range usos {
+		doDia[string(f)] = u
+	}
 	c := &Contador{caminho: caminho}
-	return c.gravar(ficheiroDoContador{Versao: versaoDoContador, Dias: map[string]map[string]usoDoDia{
-		dia: {string(f): {Pedidos: pedidos, MicroUSD: microUSD}},
-	}})
+	return c.gravar(ficheiroDoContador{Versao: versaoDoContador, Dias: map[string]map[string]usoDoDia{dia: doDia}})
 }
 
 func (c *Contador) dia() string { return c.relogio().UTC().Format("2006-01-02") }
@@ -403,9 +477,10 @@ func (c *Contador) gravar(f ficheiroDoContador) error {
 // sido lido, verificado contra os tectos e REGRAVADO com o pedido contado. Qualquer erro
 // significa que o pedido não pode sair.
 func (c *Contador) Reservar() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if !c.travado {
+	r := c.raiz()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.travado {
 		return fmt.Errorf("%w: o contador ja foi fechado", ErrContador)
 	}
 	f, err := c.ler()
@@ -440,8 +515,9 @@ func (c *Contador) RegistarUso(tokensDeEntrada, tokensDeSaida int64) error {
 	if !c.tectos.TemUSD {
 		return nil
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	r := c.raiz()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	f, err := c.ler()
 	if err != nil {
 		return err
@@ -484,8 +560,9 @@ type Estado struct {
 
 // Estado lê o contador.
 func (c *Contador) Estado() (Estado, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	r := c.raiz()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	f, err := c.ler()
 	if err != nil {
 		return Estado{}, err
@@ -522,7 +599,8 @@ func (c *Contador) Cabe(pedidos int64) error {
 
 // Esgotado diz se alguma reserva deste processo bateu no tecto.
 func (c *Contador) Esgotado() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	r := c.raiz()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return c.esgotado
 }

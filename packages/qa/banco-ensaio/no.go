@@ -122,6 +122,10 @@ type CfgDoNo struct {
 	// argumentos das suas tool calls nativas (AOS-525, ver respostas.go). nil ⇒ o texto não sai do
 	// nó de ensaio, como sempre.
 	GuardarRespostas func(RespostaDoRun)
+	// Conselheiro, quando presente, liga a tool `aconselhar` (AOS-528, aconselhar.go): é
+	// registada no Reference Monitor e posta no tool set do nó, e só é oferecida aos runs do
+	// braço com conselheiro ([PedidoDeRun.BracoDoConselheiro]). nil ⇒ o nó de sempre.
+	Conselheiro *Conselheiro
 }
 
 // ErrPerfilDoEnsaio — o perfil candidato não serve o nó de ensaio.
@@ -168,6 +172,8 @@ type NoDeEnsaio struct {
 	alias string
 	// guardar é o receptor das respostas ([CfgDoNo.GuardarRespostas]); nil ⇒ não se guardam.
 	guardar func(RespostaDoRun)
+	// conselheiro é o da tool `aconselhar` ([CfgDoNo.Conselheiro]); nil ⇒ o nó não a tem.
+	conselheiro *Conselheiro
 
 	mu      sync.Mutex
 	motivos map[string][]string
@@ -338,6 +344,12 @@ func NovoNoDeEnsaio(ctx context.Context, cfg CfgDoNo) (*NoDeEnsaio, error) {
 	if err := registarTools(mon, cfg.Bateria); err != nil {
 		return nil, fmt.Errorf("banco-ensaio: registar as tools: %w", err)
 	}
+	if cfg.Conselheiro != nil {
+		// A tool do conselheiro passa pelo Reference Monitor como as outras (AOS-528).
+		if err := mon.Register(ToolAconselhar, cfg.Conselheiro.aconselhar); err != nil {
+			return nil, fmt.Errorf("banco-ensaio: registar a tool do conselheiro: %w", err)
+		}
+	}
 	store, err := eventstore.New()
 	if err != nil {
 		return nil, err
@@ -345,7 +357,7 @@ func NovoNoDeEnsaio(ctx context.Context, cfg CfgDoNo) (*NoDeEnsaio, error) {
 
 	n := &NoDeEnsaio{
 		bateria: cfg.Bateria, porta: porta, devolucao: devolucao, qualifica: cfg.Qualificacao, limite: cfg.Limite, hostEsperado: cfg.HostEsperado,
-		alias: alias, guardar: cfg.GuardarRespostas, mon: mon, recusa: recusa, store: store, emissor: iss, contador: cfg.Contador,
+		alias: alias, guardar: cfg.GuardarRespostas, conselheiro: cfg.Conselheiro, mon: mon, recusa: recusa, store: store, emissor: iss, contador: cfg.Contador,
 		base: base, credencial: cfg.Credencial, cliente: cliente,
 		runtimes: map[Braco]*agentruntime.Runtime{}, motivos: map[string][]string{},
 	}
@@ -357,7 +369,7 @@ func NovoNoDeEnsaio(ctx context.Context, cfg CfgDoNo) (*NoDeEnsaio, error) {
 		doEstado = append(doEstado, modelgateway.WithProviderStateCapture(modelgateway.DefaultProviderStateMaxBytes, porta.verCaptura))
 	}
 	var doNo []port.Tool
-	for _, t := range ToolsDoBanco() {
+	for _, t := range toolsDoNo(cfg.Conselheiro != nil) {
 		doNo = append(doNo, port.Tool{Type: "function", Function: port.FunctionDef{Name: t.Nome, Description: t.Descricao, Parameters: t.Parametros}})
 	}
 	for _, b := range Bracos() {
@@ -410,6 +422,17 @@ type PedidoDeRun struct {
 	AvisoDeNovaTentativa bool
 	// MaxTurnos limita os turnos do run (e, por isso, os pedidos). Zero ⇒ [MaxTurnosPorOmissao].
 	MaxTurnos int
+	// BracoDoConselheiro é o braço da experiência `conselheiro` (AOS-528): com
+	// [BracoComConselheiro] o run tem a tool `aconselhar`. Vazio fora dessa experiência.
+	BracoDoConselheiro string
+}
+
+// toolsDoNo devolve as tools do nó de ensaio: as do banco e, num nó com conselheiro, a dele.
+func toolsDoNo(comConselheiro bool) []ToolDoBanco {
+	if comConselheiro {
+		return append(ToolsDoBanco(), ToolDoConselho())
+	}
+	return ToolsDoBanco()
 }
 
 // MaxTurnosPorOmissao é o tecto de turnos de um run da bateria 1.0.0. Um turno é uma INVOCAÇÃO
@@ -425,16 +448,24 @@ const MaxTurnosPorOmissao = 4
 func (n *NoDeEnsaio) Correr(ctx context.Context, p PedidoDeRun) (obs Observacao, saida string) {
 	obs = Observacao{
 		Caso: p.Caso.ID, No: p.No.ID, Braco: string(p.Braco), Amostra: p.Amostra, Tentativa: p.Tentativa,
-		ExigeTool: len(p.No.Exige) > 0, Factos: FactosNaoAplicavel,
+		ExigeTool: len(p.No.Exige) > 0, Factos: FactosNaoAplicavel, BracoDoConselheiro: p.BracoDoConselheiro,
 	}
-	var chamadas []chamadaObservada
+	var (
+		chamadas  []chamadaObservada
+		consultas []ConsultaGuardada
+	)
 	if n.guardar != nil {
 		// Um registo por run, seja qual for o caminho por que ele acaba: o que se entrega é a
 		// observação já fechada e a saída que o run devolve.
-		defer func() { n.guardar(respostaDoRun(obs, chamadas, saida)) }()
+		defer func() {
+			r := respostaDoRun(obs, chamadas, saida)
+			r.Consultas = consultas
+			n.guardar(r)
+		}()
 	}
 	rt, ok := n.runtimes[p.Braco]
-	if !ok {
+	comConselheiro := p.BracoDoConselheiro == BracoComConselheiro
+	if !ok || (comConselheiro && n.conselheiro == nil) {
 		obs.Desfecho = DesfechoErroOutro
 		return obs, ""
 	}
@@ -454,6 +485,12 @@ func (n *NoDeEnsaio) Correr(ctx context.Context, p PedidoDeRun) (obs Observacao,
 				specs = append(specs, agentruntime.ToolSpec{Name: t.Nome, Version: "1.0.0", Digest: digestDaTool(t)})
 			}
 		}
+	}
+	if comConselheiro {
+		// A tool do conselheiro, só no braço que a liga (AOS-528).
+		t := ToolDoConselho()
+		doRun[t.Nome] = true
+		specs = append(specs, agentruntime.ToolSpec{Name: t.Nome, Version: "1.0.0", Digest: digestDaTool(t)})
 	}
 	if p.No.Nega != "" {
 		n.recusa.negar(runID, p.No.Nega)
@@ -494,10 +531,16 @@ func (n *NoDeEnsaio) Correr(ctx context.Context, p PedidoDeRun) (obs Observacao,
 	}
 
 	n.porta.abrir(runID)
+	if n.conselheiro != nil {
+		n.conselheiro.abrir(comConselheiro)
+	}
 	ctx = context.WithValue(ctx, chaveDoBraco, p.Braco)
 	ctx = context.WithValue(ctx, chaveDoToken, tok.Compact)
 	ctx = context.WithValue(ctx, chaveDasToolsDoRun, doRun)
 	res, err := rt.Run(ctx, goal)
+	if n.conselheiro != nil {
+		obs.Conselho, consultas = n.conselheiro.fechar()
+	}
 
 	var capturas capturasDoRun
 	chamadas, capturas = n.porta.fechar(runID)

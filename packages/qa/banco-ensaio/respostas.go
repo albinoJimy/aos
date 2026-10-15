@@ -85,6 +85,11 @@ type RespostaDoRun struct {
 	// procurados. Vazio quando o run não fechou cumprido; o texto de cada resposta está em Turnos.
 	TextoFinal string          `json:"texto_final"`
 	Turnos     []TurnoGuardado `json:"turnos"`
+	// BracoDoConselheiro e Consultas são da experiência `conselheiro` (AOS-528): o braço, e cada
+	// consulta ao conselheiro por extenso — a pergunta, o contexto e o conselho. Ausentes nas
+	// outras experiências.
+	BracoDoConselheiro string             `json:"braco_do_conselheiro,omitempty"`
+	Consultas          []ConsultaGuardada `json:"consultas,omitempty"`
 }
 
 // respostaDoRun monta o que se guarda de um run a partir do que o banco viu passar na porta do
@@ -92,7 +97,7 @@ type RespostaDoRun struct {
 func respostaDoRun(obs Observacao, chamadas []chamadaObservada, saida string) RespostaDoRun {
 	r := RespostaDoRun{
 		Caso: obs.Caso, No: obs.No, Braco: obs.Braco, Amostra: obs.Amostra, Tentativa: obs.Tentativa,
-		Desfecho: obs.Desfecho, TextoFinal: saida, Turnos: []TurnoGuardado{},
+		Desfecho: obs.Desfecho, TextoFinal: saida, Turnos: []TurnoGuardado{}, BracoDoConselheiro: obs.BracoDoConselheiro,
 	}
 	for _, c := range chamadas {
 		if c.erro != "" {

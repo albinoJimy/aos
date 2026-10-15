@@ -55,7 +55,8 @@ go run ./cmd/aos-ensaio bateria
 
 Esta é a bateria **1.0.0**, a das experiências `bateria`, `separadores` e `qualificacao`. A
 **2.0.0**, por degraus, vive em `bateria2/` e só corre na experiência `degraus`: ver «A bateria
-por degraus e a experiência `degraus`».
+por degraus e a experiência `degraus`». A **3.0.0**, «difícil», vive em `bateria3/` e só corre na
+experiência `conselheiro`: ver «O conselheiro e a experiência `conselheiro`».
 
 ## Os três modos
 
@@ -139,7 +140,7 @@ existir, a trava do contador. Não envia nada. Ver «O proxy efémero e os órf�
 
 | Opção | Modos | O que faz |
 |---|---|---|
-| `--experiencia bateria\|separadores\|qualificacao\|degraus` | todos | `qualificacao`: ver «A qualificação do modelo». `bateria` (omissão): T1 a T6 num braço. `separadores`: quatro braços sobre T1, 53 amostras por braço, um turno e um pedido por amostra — 212 pedidos. `degraus` (AOS-525): a bateria 2.0.0, sete degraus no braço A, taxas por degrau e sem veredicto — até 180 pedidos por passagem, com seis turnos por run; não aceita `--braco` nem `--estado`. |
+| `--experiencia bateria\|separadores\|qualificacao\|degraus\|conselheiro` | todos | `qualificacao`: ver «A qualificação do modelo». `bateria` (omissão): T1 a T6 num braço. `separadores`: quatro braços sobre T1, 53 amostras por braço, um turno e um pedido por amostra — 212 pedidos. `degraus` (AOS-525): a bateria 2.0.0, sete degraus no braço A, taxas por degrau e sem veredicto — até 180 pedidos por passagem, com seis turnos por run; não aceita `--braco` nem `--estado`. `conselheiro` (AOS-528): a bateria 3.0.0 em dois braços, com e sem a tool `aconselhar`, sem veredicto — ver «O conselheiro e a experiência `conselheiro`». |
 | `--amostras N` | todos | Passagens pela bateria (omissão 1), ou amostras por braço nos separadores. |
 | `--semente N` | todos | Fixa a ordem dos braços dentro de cada bloco. Vai no relatório. |
 | `--braco A\|B\|C\|D` | todos | O braço da bateria (omissão `A`). |
@@ -153,7 +154,7 @@ existir, a trava do contador. Não envia nada. Ver «O proxy efémero e os órf�
 | `--chaves F` | real | Caminho do ficheiro de chaves. Obrigatório (ou `AOS_ENSAIO_CHAVES`). |
 | `--fornecedor kimi\|anthropic\|openrouter` | real | O fornecedor. |
 | `--modelo M` | real | Um dos modelos do ficheiro (omissão: o primeiro). |
-| `--precos F` | real | Tabela de preços. Obrigatória quando há tecto em dólares. |
+| `--precos F` | real; e falso e proxy na experiência `conselheiro` | Tabela de preços. Obrigatória quando há tecto em dólares. Na experiência `conselheiro`, dá o custo estimado por braço e por caso cumprido (pelo modelo de cada um). |
 | `--perfil F` | todos | **Perfil de rota candidato** (AOS-513), em JSON, na forma dos campos de um perfil do gateway: `requested` (o nome que o nó pede: `rota-de-ensaio` ou, desde o AOS-519, o alias de produção — de 1 a 64 letras, dígitos, `_` e `-`, sem ponto; é o nome da rota efémera do proxy e o que a allowlist do nó de ensaio admite), `expected_model`, `wire_class`, `capabilities` e, opcionais, `params` (`thinking`, `reasoning_effort`, `max_tokens`, `reasoning` e, desde o AOS-526, a regra `tool_choice` — ver «A regra `params.tool_choice`»), `projection_version` e `devolver`. A leitura é fechada: uma chave ou um valor fora do conjunto recusa a corrida antes de qualquer pedido. O digest do perfil vai no relatório (`digests.perfil`) e entra no digest da configuração. É assim que um perfil se qualifica **antes** de entrar na tabela de perfis do nó. |
 | `--estado exige\|proibe` | falso, proxy | O provider falso do **estado opaco** (AOS-516) em vez do do roteiro: emite raciocínio assinado em cada turno com tools e exige-o de volta (no modo falso, byte a byte, pelo falso exigente do AOS-515), ou recusa qualquer estado. No modo proxy pede `--perfil` com `expected_model` `anthropic/<modelo>`: a rota do proxy é essa, e o falso fala o wire de mensagens da Anthropic. |
 | `--forma-do-falso openrouter` | falso, proxy | Só com `--estado`: o falso emite e exige a forma da **OpenRouter** (`reasoning` e `reasoning_details` com assinatura, no topo da mensagem). No modo proxy o `expected_model` do perfil é então `openrouter/<autor>/<modelo>` ou `openai/<autor>/<modelo>`. |
@@ -162,6 +163,10 @@ existir, a trava do contador. Não envia nada. Ver «O proxy efémero e os órf�
 | `--so-plano` | real | Valida tudo, mostra o destino da chave e quantos pedidos faria, e não envia nenhum. |
 | `--destino-fora-da-lista HOST` | real | Aceita um destino da chave que não é um host do fornecedor. `HOST` tem de ser exactamente o host do ficheiro; o `https` continua a ser exigido. |
 | `--reconstruir-contador` | real | Recria um contador desaparecido a partir dos relatórios de hoje. |
+| `--conselheiro-fornecedor kimi\|anthropic\|openrouter` | real | Só na experiência `conselheiro` (AOS-528): o fornecedor do conselheiro, com as chaves, os tectos e as listas do mesmo ficheiro de chaves. Liga o braço `executor+conselheiro`. |
+| `--conselheiro-modelo M` | real | O modelo do conselheiro, da lista do ficheiro para o fornecedor dele (omissão: o primeiro). Fora da lista, recusado. |
+| `--conselheiro-falso certo\|errado` | falso | O conselheiro falso: responde com os factos certos, ou com os errados, do que o executor lhe mandar. Liga o braço `executor+conselheiro`. |
+| `--max-consultas N` | falso, real | Consultas por run do braço com conselheiro (1 a 5; omissão 2). Entra no pior caso. |
 
 No modo real **não há `--contador`**: o contador é sempre `contador.json`, na pasta do dono
 (`~/.aos-ensaio`; desde o AOS-518 já não depende de onde está o ficheiro de chaves). Uma flag que apontasse para outro ficheiro punha a contagem do dia a zero.
@@ -571,6 +576,144 @@ degrau tem quem o cumpra e quem o falhe, e o relatório distingue-os pela razão
   cumpre de quem falha, e por que razão. A medição real fica por fazer.
 - O modo `proxy` desta experiência (o falso dentro do contentor, atrás da imagem do proxy) não
   foi corrido.
+
+## O conselheiro e a experiência `conselheiro` (AOS-528)
+
+A fase A4 mediu que uma cascata de modelos não se justificava: com as tarefas que temos, o
+modelo barato acertou em tudo. A alternativa que o dono quer avaliar é o **conselheiro**: o
+executor barato pode consultar, a meio do run, um modelo mais forte por uma **tool**
+(`aconselhar`), e decide ele quando. **Não é a ferramenta `advisor` da Anthropic** (só existe na
+API directa dela e devolve o conselho cifrado): é uma tool do banco, registada no Reference
+Monitor do nó de ensaio como `arquivo` e `guardar`, e o conselheiro é **qualquer modelo de
+qualquer fornecedor** que o banco conheça — o executor e o conselheiro podem vir de fornecedores
+diferentes (Haiku pela OpenRouter e Kimi pela conta Kimi, ou DeepSeek com Gemini).
+
+```
+go run ./cmd/aos-ensaio bateria --experiencia conselheiro                                    # o digest e os sete casos
+go run ./cmd/aos-ensaio falso --experiencia conselheiro --conselheiro-falso certo --saida /tmp/ensaio
+go run ./cmd/aos-ensaio falso --experiencia conselheiro --conselheiro-falso errado --roteiro conselho_ignora --saida /tmp/ensaio
+```
+
+### A bateria 3.0.0
+
+Vive em `bateria3/` (`casos.json` e dezassete documentos), com digest próprio, e só a
+experiência `conselheiro` a corre; **a 1.0.0 e a 2.0.0 não mudam** (digests presos em
+`TestAOS528_Bateria3_TemDigestProprioEAsOutrasMantemOSeu`). Sete casos de um nó, cada um com a
+capacidade dita por extenso na `descricao`, documentos sintéticos sem acentos com a marca de
+sempre, nomes e códigos novos. Todos os nós têm factos **exigidos** e **proibidos** (as respostas
+erradas plausíveis), e cada facto exigido está, literalmente, nos documentos: a resposta certa é
+um valor que lá está, mas que só se identifica depois de vários passos.
+
+| Caso | Capacidade | Exigidos | Proibidos |
+|---|---|---|---|
+| X1 | dedução em três passos sobre três documentos (dia → caldeira → bomba → prateleira) | `P-0917` | `P-0719`, `P-9071` |
+| X2 | quatro documentos de nomes neutros que se contradizem; prevalece a data mais recente, com as datas em três formatos (por extenso, `AAAA-MM-DD` e `DD/MM/AAAA`), contra um número de revisão mais alto e uma nota intermédia com outro nome | `Cristovao Abreu-Taveira` | `Severino Lobato-Fragoso`, `Valdemar Quintela-Rosa`, `Odete Carrilho-Mendes` |
+| X3 | três documentos de nomes neutros (`valvula-a`, `-b`, `-c`); prevalece a fonte de maior autoridade, que só se lê no texto, e a mais recente é a de menor | `Valverde-Esteves` | `Couto-Brandao`, `Pimentel-Sarmento` |
+| X4 | documento longo (cerca de 50 KB), resposta de duas passagens a mais de 40 KB uma da outra, com um nome da frente certa a meio | `Amilcar Fontoura-Reis` | `Rogerio Antunes-Calado`, `Elisio Braganca-Mota` |
+| X5 | várias restrições ao mesmo tempo: dar dois factos e calar quatro ao lado deles | `EN-4471`, `D-19` | `EN-7144`, `Mesquita-Alvim`, `PZ-8820`, `D-91` |
+| X6 | tabela com condição: a zona sai do destino, noutro documento, e o código da zona e de um limiar de peso | `PT-6330` | `PT-6303`, `PT-3360`, `PT-3306` |
+| X7 | regras com excepções e um calendário: o documento dá a data da inspecção e o dia da semana de OUTRO dia (1 de Outubro de 2026, quinta-feira); o dia da semana, o terceiro sábado e as férias são contas do modelo | `Benedita Ramalho-Quintas` | `Adelino Corte-Real`, `Celestino Viegas-Albano` |
+
+### A tool `aconselhar`
+
+Argumentos `pergunta` (obrigatório) e `contexto` (opcional): **é tudo o que o conselheiro vê** —
+não o objectivo, não os documentos. O conselho volta ao executor como resultado da tool (dado,
+não instrução). Só é oferecida aos runs do braço `executor+conselheiro`; um nó de ensaio sem
+conselheiro não a regista nem a oferece, e o digest da configuração das corridas sem ele não
+muda (a tool não está em `ToolsDoBanco`).
+
+- **Pelo mesmo proxy, numa segunda rota.** No modo `real` o proxy efémero sobe com **duas
+  rotas**: a do executor (o alias de sempre) e `rota-conselheiro`, cada uma com o adaptador, a
+  chave (`ENSAIO_CONSELHEIRO_API_KEY`) e a base (`ENSAIO_CONSELHEIRO_API_BASE`) do seu
+  fornecedor, pelo ambiente do processo `docker` — nunca pelos argumentos. Sem conselheiro, a
+  configuração é a de antes, byte a byte (`TestAOS528_Proxy_SemConselheiroAConfigEADeAntes`). A
+  consulta sai do banco directamente para essa rota, como a sonda: **não** passa pelo Model
+  Gateway do nó de ensaio.
+- **Contas e tectos do fornecedor DELE.** O conselheiro tem um contador «irmão» do da corrida
+  (`Contador.Irmao`): o mesmo `contador.json` e a mesma trava, na linha do fornecedor dele, com os
+  tectos dele e o preço do modelo dele. No mesmo fornecedor do executor, as duas contas somam na
+  mesma linha e o tecto é um só. Um tecto em dólares sem preço do modelo do conselheiro recusa a
+  corrida, como para o executor.
+- **O pior caso declarado inclui as consultas.** Executor: `amostras × 2 braços × 7 nós × 3
+  tentativas × 8 turnos` (336 por passagem; 168 sem conselheiro). Conselheiro: `amostras × 7 nós ×
+  3 tentativas × --max-consultas` (42 por passagem com 2). Mais uma sonda por rota. O plano di-lo
+  por fornecedor («PIOR CASO POR FORNECEDOR») e a corrida não arranca se o de algum não couber no
+  que resta do dia dele. A consulta a mais num run é recusada pela tool, sem pedido.
+- **Uma consulta é uma observação.** Por run do braço com conselheiro, o campo `conselho` da
+  observação conta as chamadas da tool (`pedidas`), as respondidas, as vazias, as recusadas pelo
+  limite, as falhadas por causa passageira ou de parâmetro, os pedidos, os códigos HTTP e os
+  tokens. Nada de texto. Com `--guardar-respostas`, cada ficheiro de run desse braço leva
+  `consultas`: a pergunta, o contexto e o conselho.
+- **O tecto do dia do conselheiro atingido a meio** pára a corrida (`tecto_atingido`): a
+  consulta não sai, e o braço deixava de medir o conselheiro.
+
+### A experiência
+
+Os dois braços — `so-executor` e `executor+conselheiro` — correm **na mesma corrida e com a
+mesma semente**, intercalados em blocos por amostra (a ordem dos braços é baralhada pela
+semente). O relatório traz o bloco `taxas.conselheiro` (nas taxas, e não no topo: a lista dos membros do topo é fechada na leitura do nó), e o resumo a tabela:
+
+```
+CONSELHEIRO (bateria 3.0.0; sem veredicto; conselheiro fornecedor=falso modelo=modelo-falso-do-conselheiro, ate 2 consulta(s) por run; …)
+  pior caso de pedidos por fornecedor (com as sondas): falso=378
+  braco                 cumpridos interrompidas consulta  cons/run ped.exec ped.cons USD exec    USD cons    USD por caso cumprido
+  so-executor           0/7       0 de 7        -         -        14       0        0.030960    0.000000    - (nenhum caso cumprido)
+  executor+conselheiro  7/7       0 de 7        7/7       1.00     21       7        0.060486    0.049038    0.015646
+```
+
+- **Caso cumprido** é a regra do degrau cumprido (`regra_do_caso_cumprido`): o nó fechou o
+  contrato, com os factos exigidos e sem nenhum proibido. Uma passagem interrompida por causa
+  passageira sai da amostra; no braço com conselheiro, também a de um run com uma consulta sem
+  resposta por causa passageira (`conselheiro_sem_resposta`) — **acerte ou erre**: tirar só os
+  que erraram deixava os acertos e subia o braço com um conselheiro instável.
+- **Taxa de consulta**: runs medidos em que o executor chamou a tool, sobre os que a tinham (no
+  braço sem conselheiro, `-`). **Consultas por run**: a média.
+- **Pedidos e custo** do executor e do conselheiro, separados, de **todos** os runs do braço
+  (o que se pagou), estimados pelos tokens e pelos preços de `--precos`; **custo por caso
+  cumprido** é o total a dividir pelos casos cumpridos.
+- **O tecto — o modelo forte sozinho — é outra corrida**, da mesma experiência, sem conselheiro
+  e com o modelo forte como executor, com a mesma `--semente`: o nó de ensaio tem um executor por
+  corrida (uma rota, um alias, uma allowlist). Os casos comparam-se entre os dois relatórios pelo
+  digest da bateria.
+
+### Os falsos
+
+O executor falso tem quatro comportamentos novos, só desta experiência, que leem os documentos
+que o objectivo nomeia (todos no primeiro turno) e respondem com valores deles:
+`conselho_cumpre` (certo sozinho, nunca consulta), `conselho_nao_consulta` (a — nunca consulta e
+erra), `conselho_segue` (b — consulta e responde com o que o conselho trouxe; sem a tool, erra) e
+`conselho_ignora` (c — consulta e erra na mesma). O roteiro por omissão desta experiência é
+`conselho_segue`. O conselheiro falso (`--conselheiro-falso certo|errado`) responde com os
+factos exigidos — ou com os proibidos — que encontrar no que o executor lhe mandou.
+`TestAOS528_OsBracosDistinguemOsFalsos` prova que os braços os distinguem.
+
+### O que a experiência `conselheiro` não prova
+
+- **Não dá veredicto**: não diz se o conselheiro compensa.
+- **Sintética e pequena**: sete casos de um nó. Com poucas passagens os intervalos de 95% são
+  quase todo o intervalo; uma diferença entre braços lê-se com `--amostras` e os intervalos.
+- **O conselheiro só vê o que o executor lhe passa.** Um conselho errado pode ser culpa do que
+  o executor mandou, e o relatório não separa as duas causas.
+- **A taxa de consulta depende do texto da tool** (fixo, no digest da configuração), do prompt de
+  sistema e do esforço do modelo executor. Não é uma propriedade do conselheiro.
+- **A consulta não passa pelo Model Gateway** do nó de ensaio: do conselheiro mede-se o código
+  HTTP, os tokens e se trouxe texto — não a forma da resposta.
+- **O custo é uma estimativa**, conta os runs das passagens interrompidas, e não é a factura.
+- **O tecto é outra corrida**: uma deriva da rota entre as duas não se reparte.
+- **Um proibido conta onde quer que apareça**, mesmo numa negação, como nos degraus.
+- **Acertar por palpite não é raro.** Em X1, X2, X3, X6 e X7 a resposta é um de três ou quatro
+  valores parecidos que estão nos documentos: um modelo que dá um só deles ao acaso acerta cerca
+  de 1 em 3 a 1 em 4. Uma diferença entre braços lê-se contra essa base, e com amostras.
+- **X5 mede obediência a instruções** (calar valores ao lado dos pedidos): a falha está na
+  escrita da resposta do executor, e o conselheiro ajuda pouco aí.
+- **Uma consulta que esgota o prazo, ou um 200 ilegível, não regista uso**: o fornecedor pode
+  tê-la cobrado, e o gasto estimado e o tecto em dólares do conselheiro ficam subestimados —
+  como os do executor no mesmo caso.
+- **Um contador desaparecido reconstrói-se** (`--reconstruir-contador`) dos relatórios de hoje
+  para todos os fornecedores que neles aparecem — o do executor, o do conselheiro e outros; um
+  gasto feito fora desses relatórios não se reconstitui.
+- **Os falsos não dizem nada de um modelo real**; o modo `proxy` não tem conselheiro (o falso em
+  contentor não faz de conselheiro). A medição real fica por fazer, com autorização do dono.
 
 ## A devolução do estado opaco (AOS-516)
 

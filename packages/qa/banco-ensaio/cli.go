@@ -132,6 +132,12 @@ type opcoes struct {
 	formaDoFalso  string
 	// guardarRespostas liga as respostas guardadas a pedido (AOS-525, ver respostas.go).
 	guardarRespostas bool
+	// As quatro abaixo são da experiência `conselheiro` (AOS-528): o conselheiro real (fornecedor
+	// e modelo, modo real), o falso (modo falso) e o máximo de consultas por run.
+	conselheiroFornecedor string
+	conselheiroModelo     string
+	conselheiroFalso      string
+	maxConsultas          int
 }
 
 const usoDoBanco = `aos-ensaio — banco de ensaio da fronteira runtime-modelo (AOS-512). NAO toca em producao.
@@ -140,14 +146,15 @@ const usoDoBanco = `aos-ensaio — banco de ensaio da fronteira runtime-modelo (
   aos-ensaio proxy   --binario-do-falso F [opcoes] imagem real do proxy a frente do provider falso (Docker)
   aos-ensaio real    --chaves F --fornecedor kimi|anthropic|openrouter [opcoes]
                                                    modelo real pelo proxy efemero (Docker); tectos do ficheiro
-  aos-ensaio bateria [--experiencia degraus]       mostra o digest e os casos da bateria (com
-                                                   --experiencia degraus, os da bateria 2.0.0)
+  aos-ensaio bateria [--experiencia degraus|conselheiro]
+                                                   mostra o digest e os casos da bateria (com
+                                                   --experiencia degraus, os da 2.0.0; conselheiro, os da 3.0.0)
   aos-ensaio limpar  [--chaves F | --contador F]   remove contentores e redes aos512-* que tenham ficado de uma
                                                    corrida anterior (um proxy orfao guarda a chave no ambiente)
                                                    e a trava do contador de um processo que ja morreu
 
 opcoes comuns:
-  --experiencia bateria|separadores|qualificacao|degraus   (omissao: bateria)
+  --experiencia bateria|separadores|qualificacao|degraus|conselheiro   (omissao: bateria)
                                       qualificacao (AOS-518): a bateria 8 vezes com --perfil (obrigatorio) e um
                                       VEREDICTO calculado — qualificado (saida 0; 9 nos modos falso e proxy, que nao
                                       valem para producao), recusado (7) ou inconclusivo (8; 4 se parou a meio; 3 se
@@ -158,6 +165,13 @@ opcoes comuns:
                                       completou, sejam quais forem as taxas). Pior caso: 180 pedidos por passagem
                                       (--amostras). Nao aceita --braco nem --estado; nos modos falso e proxy o
                                       roteiro por omissao e degrau_cumpre.
+                                      conselheiro (AOS-528): a bateria 3.0.0 (dificil), no braco A, em dois bracos
+                                      intercalados — so-executor e executor+conselheiro, este com a tool aconselhar —,
+                                      com os casos cumpridos, a taxa de consulta e o custo POR BRACO e por caso, SEM
+                                      veredicto. Sem conselheiro corre so o braco so-executor (a corrida do tecto:
+                                      o modelo forte como executor). Pior caso do executor: 168 pedidos por passagem
+                                      e braco; do conselheiro: 21 por consulta permitida e passagem. Nos modos falso e
+                                      proxy o roteiro por omissao e conselho_segue.
   --amostras N                        passagens pela bateria (omissao 1); nos separadores sao 53 por braco
   --semente N                         fixa a ordem dos bracos (vai no relatorio)
   --braco A|B|C|D                     braco da bateria (omissao A)
@@ -184,6 +198,15 @@ so falso e proxy:   --roteiro cumpre,texto,...   --tecto-pedidos N --contador FI
                     --forma-do-falso openrouter  so com --estado: o falso emite e exige a forma da OpenRouter
                                                  (reasoning e reasoning_details); no modo proxy o expected_model
                                                  do perfil e entao openrouter/<autor>/<modelo> ou openai/<autor>/<modelo>
+so conselheiro:     --conselheiro-falso certo|errado   (so falso) o conselheiro falso: responde com os factos
+                                                 certos, ou com os errados, do que o executor lhe mandar
+                    --conselheiro-fornecedor kimi|anthropic|openrouter  (so real) o fornecedor do conselheiro,
+                                                 pelas chaves, tectos e listas do ficheiro de chaves
+                    --conselheiro-modelo M       (so real) o modelo do conselheiro, da lista do ficheiro
+                    --max-consultas N            consultas por run do braco com conselheiro (1 a 5; omissao 2)
+                    --precos FICHEIRO            tambem nos modos falso e proxy: o custo estimado por braco
+                    (os comportamentos conselho_cumpre, conselho_nao_consulta, conselho_segue e
+                    conselho_ignora do --roteiro so valem nesta experiencia)
 so real:            --modelo M  --precos FICHEIRO  --so-plano
                     --destino-fora-da-lista HOST   aceita um destino da chave fora da lista do fornecedor;
                                                    HOST tem de ser exactamente o host do ficheiro (https na mesma)
@@ -265,6 +288,10 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 	fs.StringVar(&o.hostEsperado, "host-esperado", "", "")
 	fs.StringVar(&o.formaDoFalso, "forma-do-falso", "", "")
 	fs.BoolVar(&o.guardarRespostas, "guardar-respostas", false, "")
+	fs.StringVar(&o.conselheiroFornecedor, "conselheiro-fornecedor", "", "")
+	fs.StringVar(&o.conselheiroModelo, "conselheiro-modelo", "", "")
+	fs.StringVar(&o.conselheiroFalso, "conselheiro-falso", "", "")
+	fs.IntVar(&o.maxConsultas, "max-consultas", 0, "")
 	fs.Usage = func() { fmt.Fprint(stderr, usoDoBanco) }
 	if err := fs.Parse(resto); err != nil {
 		return SaidaUso
@@ -277,9 +304,14 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 	// A BATERIA É A DA EXPERIÊNCIA (AOS-525): a por degraus só na experiência `degraus`; em
 	// todas as outras, e em todos os subcomandos, a 1.0.0 de sempre.
 	degraus := Experiencia(o.experiencia) == ExperienciaDegraus
+	conselho := Experiencia(o.experiencia) == ExperienciaConselheiro
 	carregar := CarregarBateria
-	if degraus {
+	switch {
+	case degraus:
 		carregar = CarregarBateriaPorDegraus
+	case conselho:
+		// A bateria difícil (AOS-528) só na experiência `conselheiro`.
+		carregar = CarregarBateriaDificil
 	}
 	bateria, err := carregar()
 	if err != nil {
@@ -303,12 +335,22 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 		return SaidaUso
 	}
 
+	if msg := recusaDasOpcoesDoConselheiro(modo, o, conselho); msg != "" {
+		fmt.Fprintf(stderr, "aos-ensaio: %s\n", msg)
+		return SaidaUso
+	}
 	plano, err := planoDasOpcoes(bateria, o)
 	if err != nil {
 		fmt.Fprintf(stderr, "aos-ensaio: %v\n", err)
 		return SaidaUso
 	}
 	previstos, err := plano.PedidosMaximos(bateria)
+	if err != nil {
+		fmt.Fprintf(stderr, "aos-ensaio: %v\n", err)
+		return SaidaUso
+	}
+	// O pior caso do conselheiro (AOS-528): as consultas, por run do braço com ele. Zero sem ele.
+	previstosDoConselheiro, err := plano.PedidosMaximosDoConselheiro(bateria)
 	if err != nil {
 		fmt.Fprintf(stderr, "aos-ensaio: %v\n", err)
 		return SaidaUso
@@ -391,6 +433,19 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 		fmt.Fprintln(stderr, "aos-ensaio: --estado nao vale na experiencia degraus (o provider falso do estado nao responde aos degraus)")
 		return SaidaUso
 	}
+	if conselho && o.estado != "" {
+		fmt.Fprintln(stderr, "aos-ensaio: --estado nao vale na experiencia conselheiro (o provider falso do estado nao responde a bateria dificil)")
+		return SaidaUso
+	}
+	if conselho {
+		// A configuração do conselho existe sempre nesta experiência: os preços servem também a
+		// corrida só com o executor (a do tecto).
+		cfg.Conselho = &CfgDoConselho{}
+		if aliasDoPerfil(perfil) == AliasDoConselheiro {
+			fmt.Fprintf(stderr, "aos-ensaio: o nome pedido do perfil e o alias da rota do conselheiro (%s): escolha outro\n", AliasDoConselheiro)
+			return SaidaUso
+		}
+	}
 	if o.turnosDoFalso < 0 || o.turnosDoFalso > 15 || (o.turnosDoFalso != 0 && o.estado == "") || o.exigeID {
 		fmt.Fprintln(stderr, "aos-ensaio: --turnos-do-falso (1 a 15) so vale com --estado; --exige-id e so do subcomando interno falso-provider")
 		return SaidaUso
@@ -451,7 +506,7 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 	// O prazo máximo de vida dos contentores, derivado do plano: o pior caso de cada pedido (o
 	// timeout de 120 s mais a pausa) vezes o máximo de pedidos, com folga para o arranque. É a
 	// última rede: antes dele actua o vigia do sinal de vida.
-	vida := time.Duration(previstos)*(120*time.Second+o.pausa) + 15*time.Minute
+	vida := time.Duration(previstos+previstosDoConselheiro)*(120*time.Second+o.pausa) + 15*time.Minute
 	if vida > 12*time.Hour {
 		vida = 12 * time.Hour
 	}
@@ -469,8 +524,8 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 
 	switch modo {
 	case ModoFalso, ModoProxy:
-		if o.chaves != "" || o.fornecedor != "" || o.precos != "" || o.soPlano || o.foraDaLista != "" || o.reconstruir {
-			fmt.Fprintln(stderr, "aos-ensaio: --chaves, --fornecedor, --precos, --so-plano, --destino-fora-da-lista e --reconstruir-contador sao so do modo real")
+		if o.chaves != "" || o.fornecedor != "" || (o.precos != "" && !conselho) || o.soPlano || o.foraDaLista != "" || o.reconstruir {
+			fmt.Fprintln(stderr, "aos-ensaio: --chaves, --fornecedor, --precos (salvo na experiencia conselheiro), --so-plano, --destino-fora-da-lista e --reconstruir-contador sao so do modo real")
 			return SaidaUso
 		}
 		if o.estado != "" && o.roteiro != "" {
@@ -478,10 +533,13 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 			return SaidaUso
 		}
 		roteiro := RoteiroPorOmissao()
-		if degraus {
+		switch {
+		case degraus:
 			// O roteiro de sempre devolve tudo o que as tools entregam: na bateria por degraus isso
 			// eram os distractores na saída. O dos degraus responde só com os factos pedidos.
 			roteiro = RoteiroDosDegraus()
+		case conselho:
+			roteiro = RoteiroDoConselheiro()
 		}
 		if o.roteiro != "" {
 			if roteiro, err = LerRoteiro(o.roteiro); err != nil {
@@ -495,6 +553,15 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 			for _, c := range roteiro {
 				if comportamentoDosDegraus(c) {
 					fmt.Fprintf(stderr, "aos-ensaio: o comportamento %s do --roteiro so vale na experiencia degraus\n", c)
+					return SaidaUso
+				}
+			}
+		}
+		if !conselho {
+			// Idem para os da experiência `conselheiro` (AOS-528): só respondem à bateria difícil.
+			for _, c := range roteiro {
+				if comportamentoDoConselheiro(c) {
+					fmt.Fprintf(stderr, "aos-ensaio: o comportamento %s do --roteiro so vale na experiencia conselheiro\n", c)
 					return SaidaUso
 				}
 			}
@@ -529,9 +596,47 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 			defer cfg.Contador.Fechar()
 		}
 		if cfg.Contador != nil {
-			if err := cfg.Contador.Cabe(previstos); err != nil {
+			// O conselheiro falso conta no mesmo fornecedor (`falso`): o tecto é um só.
+			if err := cfg.Contador.Cabe(previstos + previstosDoConselheiro); err != nil {
 				return naoCoube(err)
 			}
+		}
+		if conselho {
+			if cerr := precosDoConselho(cfg.Conselho, o.precos, "modelo-falso-do-banco", "modelo-falso-do-conselheiro"); cerr != nil {
+				fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", cerr)
+				return SaidaRecusada
+			}
+		}
+		if modo == ModoFalso && o.conselheiroFalso != "" {
+			// O CONSELHEIRO FALSO (AOS-528): outro servidor em processo, a segunda rota.
+			ouvinte, lerr := net.Listen("tcp", "127.0.0.1:0")
+			if lerr != nil {
+				fmt.Fprintf(stderr, "aos-ensaio: %v\n", lerr)
+				return SaidaErro
+			}
+			srv := &http.Server{Handler: &ConselheiroFalso{Modo: o.conselheiroFalso}, ReadHeaderTimeout: 10 * time.Second}
+			go func() { _ = srv.Serve(ouvinte) }()
+			defer func() { _ = srv.Close() }()
+			var contadorDoConselheiro *Contador
+			if cfg.Contador != nil {
+				if contadorDoConselheiro, err = cfg.Contador.Irmao(FornecedorFalso, Tectos{PedidosDia: o.tecto}, nil, ""); err != nil {
+					fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", err)
+					return SaidaRecusada
+				}
+			}
+			conselheiro, cerr := NovoConselheiro(CfgDoConselheiro{
+				BaseURL: "http://" + ouvinte.Addr().String() + "/v1", Credencial: "credencial-do-conselheiro-falso",
+				Contador: contadorDoConselheiro, MaxConsultas: plano.MaxConsultas,
+			})
+			if cerr != nil {
+				fmt.Fprintf(stderr, "aos-ensaio: %v\n", cerr)
+				return SaidaErro
+			}
+			cfg.Conselho.Conselheiro = conselheiro
+			cfg.Conselho.Rota = RotaDoRelatorio{Fornecedor: string(FornecedorFalso), Modelo: "modelo-falso-do-conselheiro"}
+			cfg.Conselho.Rota.Digest = DigestDaRota(cfg.Conselho.Rota.Fornecedor, cfg.Conselho.Rota.Modelo, "em-processo")
+			cfg.Extra["conselheiro"] = extraDoConselheiro(cfg.Conselho.Rota, plano.MaxConsultas)
+			cfg.Extra["conselheiro_falso"] = o.conselheiroFalso
 		}
 		if modo == ModoFalso {
 			doRoteiro := NovoProviderFalso(roteiro)
@@ -649,6 +754,24 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 		}
 		red.Acrescentar(rota.Segredos()...)
 		prefixo := prefixoDoProxy(fornecedor)
+		// O CONSELHEIRO (AOS-528): outro fornecedor e outro modelo, possivelmente, pelas MESMAS
+		// regras do executor — as chaves, os tectos e a lista de modelos do ficheiro do dono.
+		var (
+			rotaDoConselheiro       RotaReal
+			fornecedorDoConselheiro Fornecedor
+		)
+		comConselheiro := o.conselheiroFornecedor != ""
+		if comConselheiro {
+			if fornecedorDoConselheiro, ferr = LerFornecedor(o.conselheiroFornecedor); ferr != nil {
+				fmt.Fprintf(stderr, "aos-ensaio: --conselheiro-fornecedor: %v\n", ferr)
+				return SaidaUso
+			}
+			if rotaDoConselheiro, rerr = chaves.Rota(fornecedorDoConselheiro, o.conselheiroModelo, Destino{deTeste: amb.destinoDeTeste}); rerr != nil {
+				fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — conselheiro: %v\n", rerr)
+				return SaidaRecusada
+			}
+			red.Acrescentar(rotaDoConselheiro.Segredos()...)
+		}
 		if qualifica && perfil.ExpectedModel != prefixo+"/"+rota.Modelo {
 			fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — o expected_model do perfil nao e a rota desta corrida (%s/%s): a qualificacao e da rota, e o modelo servido tem de ser o que o perfil espera\n", prefixo, rota.Modelo)
 			return SaidaRecusada
@@ -669,6 +792,17 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 			if p, perr := precos.PrecoDe(rota.Modelo); perr == nil {
 				cfg.Extra["preco"] = fmt.Sprintf("%d/%d", p.EntradaMicroUSDPorMTok, p.SaidaMicroUSDPorMTok)
 			}
+			if comConselheiro {
+				if p, perr := precos.PrecoDe(rotaDoConselheiro.Modelo); perr == nil {
+					cfg.Extra["preco_conselheiro"] = fmt.Sprintf("%d/%d", p.EntradaMicroUSDPorMTok, p.SaidaMicroUSDPorMTok)
+				}
+			}
+		}
+		if conselho {
+			cfg.Conselho.PrecoDoExecutor = precoOpcional(precos, rota.Modelo)
+			if comConselheiro {
+				cfg.Conselho.PrecoDoConselheiro = precoOpcional(precos, rotaDoConselheiro.Modelo)
+			}
 		}
 		// O CONTADOR E O REGISTO DAS QUALIFICAÇÕES vivem na PASTA DO DONO (`~/.aos-ensaio`), que
 		// não depende de `--chaves`: copiar o ficheiro de chaves para outra pasta não repõe a
@@ -687,17 +821,35 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 			// Um contador que não existe só é o primeiro uso se não houver relatórios de corridas
 			// reais de hoje: havendo, a contagem do dia perdeu-se, e não se recomeça do zero.
 			dia := amb.Relogio().UTC().Format("2006-01-02")
-			pedidos, microUSD, n := UsoDosRelatoriosDeHoje(pastasDeRelatorios, fornecedor, dia)
+			// O do conselheiro também (AOS-528): o contador é um só ficheiro para os dois.
+			fornecedores := []Fornecedor{fornecedor}
+			if comConselheiro && fornecedorDoConselheiro != fornecedor {
+				fornecedores = append(fornecedores, fornecedorDoConselheiro)
+			}
+			usos, total, n := map[Fornecedor]usoDoDia{}, int64(0), 0
+			for _, f := range fornecedores {
+				pedidos, microUSD, deste := UsoDosRelatoriosDeHoje(pastasDeRelatorios, f, dia)
+				usos[f], total, n = usoDoDia{Pedidos: pedidos, MicroUSD: microUSD}, total+pedidos, n+deste
+			}
+			// A reconstrução leva também a contagem de hoje dos OUTROS fornecedores que aparecem nos
+			// relatórios: o ficheiro é um só, e sem isto a linha de um terceiro fornecedor perdia-se.
+			for _, f := range []Fornecedor{FornecedorKimi, FornecedorAnthropic, FornecedorOpenRouter} {
+				if _, ja := usos[f]; !ja {
+					if pedidos, microUSD, _ := UsoDosRelatoriosDeHoje(pastasDeRelatorios, f, dia); pedidos > 0 || microUSD > 0 {
+						usos[f] = usoDoDia{Pedidos: pedidos, MicroUSD: microUSD}
+					}
+				}
+			}
 			if n > 0 {
 				if !o.reconstruir {
 					fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", ErrContadorDesaparecido)
 					return SaidaRecusada
 				}
-				if rerr := ReconstruirContador(caminhoDoContador, fornecedor, dia, pedidos, microUSD); rerr != nil {
+				if rerr := reconstruirContadorDe(caminhoDoContador, dia, usos); rerr != nil {
 					fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", rerr)
 					return SaidaRecusada
 				}
-				fmt.Fprintf(stderr, "aos-ensaio: contador RECONSTRUIDO a partir de %d relatorio(s) de hoje: %d pedidos\n", n, pedidos)
+				fmt.Fprintf(stderr, "aos-ensaio: contador RECONSTRUIDO a partir de %d relatorio(s) de hoje: %d pedidos\n", n, total)
 			}
 		}
 		// FAIL-CLOSED: sem tecto, sem preço para um tecto em dólares, com um contador que não
@@ -714,6 +866,24 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 		cfg.Sondar = true
 		if err := cfg.Contador.Cabe(previstos + 1); err != nil {
 			return naoCoube(err)
+		}
+		// O CONTADOR DO CONSELHEIRO (AOS-528): o mesmo ficheiro e a mesma trava, na linha do
+		// fornecedor dele, com os tectos dele e o preço do modelo dele. O pior caso dele — as
+		// consultas e a sonda — tem de caber no que resta; no mesmo fornecedor, somado ao do executor.
+		var contadorDoConselheiro *Contador
+		if comConselheiro {
+			if contadorDoConselheiro, err = cfg.Contador.Irmao(fornecedorDoConselheiro, rotaDoConselheiro.Tectos, precos, rotaDoConselheiro.Modelo); err != nil {
+				fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — conselheiro (%s): %v\n", fornecedorDoConselheiro, err)
+				return SaidaRecusada
+			}
+			cabe := contadorDoConselheiro.Cabe(previstosDoConselheiro + 1)
+			if fornecedorDoConselheiro == fornecedor {
+				cabe = cfg.Contador.Cabe(previstos + 1 + previstosDoConselheiro + 1)
+			}
+			if cabe != nil {
+				fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — o pior caso do conselheiro (%d consultas e 1 sonda, no fornecedor %s) nao cabe: %v\n", previstosDoConselheiro, fornecedorDoConselheiro, cabe)
+				return SaidaRecusada
+			}
 		}
 		// AS QUALIFICAÇÕES DO DIA (decisão D7): no máximo duas por perfil. O registo fica ao lado
 		// do ficheiro de chaves; confere-se antes de enviar e escreve-se quando a sonda passa.
@@ -746,6 +916,19 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 		// O destino mostra-se ANTES de enviar seja o que for: é onde o dono confirma para onde a
 		// chave vai. O host de um fornecedor público não é segredo; o caminho da base não vai.
 		fmt.Fprintf(stderr, "aos-ensaio: DESTINO DA CHAVE: %s  (contador: %s)\n", rota.Destino, caminhoDoContador)
+		if comConselheiro {
+			doConselheiro, cerr := contadorDoConselheiro.Estado()
+			if cerr != nil {
+				fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", cerr)
+				return SaidaRecusada
+			}
+			fmt.Fprintf(stderr, "aos-ensaio: CONSELHEIRO — fornecedor %s, modelo %s; ate %d consultas (%d por run do braco com ele), mais 1 de sonda; hoje (%s UTC) restam %d de %d deste fornecedor\n",
+				fornecedorDoConselheiro, rotaDoConselheiro.Modelo, previstosDoConselheiro, plano.MaxConsultas, doConselheiro.Dia, doConselheiro.PedidosRestantes, doConselheiro.TectoPedidos)
+			fmt.Fprintf(stderr, "aos-ensaio: DESTINO DA CHAVE DO CONSELHEIRO: %s\n", rotaDoConselheiro.Destino)
+		}
+		if conselho {
+			fmt.Fprintf(stderr, "aos-ensaio: PIOR CASO POR FORNECEDOR (com as sondas): %s\n", piorCasoPorFornecedor(fornecedor, previstos+1, fornecedorDoConselheiro, previstosDoConselheiro))
+		}
 		if o.soPlano {
 			fmt.Fprintln(stderr, "aos-ensaio: --so-plano: nenhum pedido foi enviado")
 			if o.guardarRespostas {
@@ -756,7 +939,12 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 			}
 			return SaidaOK
 		}
-		vivo, lerr := lancadorDe(amb, red).Lancar(ctx, PedidoDeProxy{Prefixo: prefixo, Modelo: rota.Modelo, Alias: aliasDoPerfil(perfil), Vida: vida}.ComSegredos(rota.apiKey, rota.apiBase))
+		pedidoDeProxy := PedidoDeProxy{Prefixo: prefixo, Modelo: rota.Modelo, Alias: aliasDoPerfil(perfil), Vida: vida}.ComSegredos(rota.apiKey, rota.apiBase)
+		if comConselheiro {
+			// A SEGUNDA ROTA do mesmo proxy: o mesmo caminho, a mesma imagem fixada, o mesmo rasto.
+			pedidoDeProxy.Conselheiro = RotaDoConselheiroNoProxy{Prefixo: prefixoDoProxy(fornecedorDoConselheiro), Modelo: rotaDoConselheiro.Modelo, Alias: AliasDoConselheiro}.ComSegredos(rotaDoConselheiro.apiKey, rotaDoConselheiro.apiBase)
+		}
+		vivo, lerr := lancadorDe(amb, red).Lancar(ctx, pedidoDeProxy)
 		if lerr != nil {
 			fmt.Fprintf(stderr, "aos-ensaio: %v\n", lerr)
 			return SaidaSemInfra
@@ -765,6 +953,16 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 		fechar = vivo.Fechar
 		rastoDoProxy = vivo.Rasto
 		baseURL, segredoDaRota = vivo.BaseURL, vivo.ChaveMestra()
+		if comConselheiro {
+			conselheiro, cerr := NovoConselheiro(CfgDoConselheiro{BaseURL: vivo.BaseURL, Credencial: vivo.ChaveMestra(), Contador: contadorDoConselheiro, MaxConsultas: plano.MaxConsultas})
+			if cerr != nil {
+				fmt.Fprintf(stderr, "aos-ensaio: %v\n", cerr)
+				return SaidaErro
+			}
+			cfg.Conselho.Conselheiro = conselheiro
+			cfg.Conselho.Rota = RotaDoRelatorio{Fornecedor: string(fornecedorDoConselheiro), Modelo: rotaDoConselheiro.Modelo, Digest: DigestDaRota(string(fornecedorDoConselheiro), rotaDoConselheiro.Modelo, rotaDoConselheiro.apiBase)}
+			cfg.Extra["conselheiro"] = extraDoConselheiro(cfg.Conselho.Rota, plano.MaxConsultas)
+		}
 		if qualifica {
 			cfg.Qualificacao.Registar = func() (OrdemDaQualificacao, error) {
 				return RegistarQualificacao(caminhoDasQualificacoes, pastasDeRelatorios, chaveDaQualificacao)
@@ -780,6 +978,9 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 		pastaDaSaida = filepath.Join(amb.PastaDoDono, "relatorios")
 	}
 	cfgDoNo := CfgDoNo{Bateria: bateria, BaseURL: baseURL, Credencial: segredoDaRota, Contador: cfg.Contador, Perfil: perfil, HostEsperado: o.hostEsperado}
+	if cfg.Conselho != nil {
+		cfgDoNo.Conselheiro = cfg.Conselho.Conselheiro
+	}
 	// AS RESPOSTAS GUARDADAS, A PEDIDO (AOS-525). Sem a opção não há receptor, e o texto das
 	// respostas não sai do nó de ensaio. Não há recusa «fora da bateria sintética» porque não há
 	// outra: `bateria` vem sempre de [CarregarBateria] ou de [CarregarBateriaPorDegraus], as duas
@@ -1035,8 +1236,24 @@ func planoDasOpcoes(b *Bateria, o opcoes) (Plano, error) {
 			amostras = 1
 		}
 		return PlanoDosDegraus(b, amostras, o.semente), nil
+	case ExperienciaConselheiro:
+		if o.braco != "" && o.braco != string(BracoA) {
+			return Plano{}, fmt.Errorf("banco-ensaio: a experiencia conselheiro nao aceita --braco (corre no braco A; os bracos dela sao com e sem conselheiro)")
+		}
+		amostras := o.amostras
+		if amostras <= 0 {
+			amostras = 1
+		}
+		consultas := 0
+		if o.conselheiroFalso != "" || o.conselheiroFornecedor != "" {
+			consultas = o.maxConsultas
+			if consultas == 0 {
+				consultas = MaxConsultasPorOmissao
+			}
+		}
+		return PlanoDoConselheiro(b, amostras, o.semente, consultas), nil
 	}
-	return Plano{}, fmt.Errorf("banco-ensaio: experiencia desconhecida: %q (aceites: bateria, separadores, qualificacao, degraus)", o.experiencia)
+	return Plano{}, fmt.Errorf("banco-ensaio: experiencia desconhecida: %q (aceites: bateria, separadores, qualificacao, degraus, conselheiro)", o.experiencia)
 }
 
 // servirFalso é o subcomando interno `falso-provider`: o provider falso do banco a ouvir num
@@ -1094,4 +1311,77 @@ func servirFalso(ctx context.Context, o opcoes, stderr io.Writer) int {
 		return SaidaErro
 	}
 	return SaidaOK
+}
+
+// recusaDasOpcoesDoConselheiro devolve a razão por que as opções do conselheiro (AOS-528) não
+// servem a corrida pedida, ou vazio. São só da experiência `conselheiro`; o conselheiro falso só
+// do modo `falso` e o real só do modo `real`. O modo `proxy` não o tem: o provider falso em
+// contentor não faz de conselheiro.
+func recusaDasOpcoesDoConselheiro(modo string, o opcoes, conselho bool) string {
+	alguma := o.conselheiroFornecedor != "" || o.conselheiroModelo != "" || o.conselheiroFalso != "" || o.maxConsultas != 0
+	switch {
+	case !alguma:
+		return ""
+	case !conselho:
+		return "--conselheiro-fornecedor, --conselheiro-modelo, --conselheiro-falso e --max-consultas so valem na experiencia conselheiro"
+	case modo == ModoProxy:
+		return "o conselheiro mede-se nos modos falso e real: o provider falso em contentor do modo proxy nao faz de conselheiro"
+	case o.conselheiroFalso != "" && modo != ModoFalso:
+		return "--conselheiro-falso e so do modo falso"
+	case o.conselheiroFalso != "" && o.conselheiroFalso != ConselhoCerto && o.conselheiroFalso != ConselhoErrado:
+		return fmt.Sprintf("--conselheiro-falso aceita %s ou %s", ConselhoCerto, ConselhoErrado)
+	case (o.conselheiroFornecedor != "" || o.conselheiroModelo != "") && modo != ModoReal:
+		return "--conselheiro-fornecedor e --conselheiro-modelo sao so do modo real"
+	case o.conselheiroModelo != "" && o.conselheiroFornecedor == "":
+		return "--conselheiro-modelo exige --conselheiro-fornecedor"
+	case o.maxConsultas != 0 && o.conselheiroFalso == "" && o.conselheiroFornecedor == "":
+		return "--max-consultas so vale com um conselheiro (--conselheiro-falso ou --conselheiro-fornecedor)"
+	case o.maxConsultas < 0 || o.maxConsultas > MaxConsultasAceites:
+		return fmt.Sprintf("--max-consultas vai de 1 a %d", MaxConsultasAceites)
+	}
+	return ""
+}
+
+// precoOpcional devolve o preço declarado de um modelo, ou nil sem tabela ou sem preço dele: o
+// custo da experiência estima-se só com preço. (O tecto em dólares, esse, exige-o: [AbrirContador].)
+func precoOpcional(t *TabelaDePrecos, modelo string) *Preco {
+	p, err := t.PrecoDe(modelo)
+	if err != nil {
+		return nil
+	}
+	return &p
+}
+
+// precosDoConselho lê, nos modos sem modelo real, a tabela de preços (se foi dada) e põe na
+// configuração do conselho os preços dos dois modelos falsos.
+func precosDoConselho(c *CfgDoConselho, caminho, executor, conselheiro string) error {
+	if caminho == "" {
+		return nil
+	}
+	t, err := LerTabelaDePrecos(caminho)
+	if err != nil {
+		return err
+	}
+	c.PrecoDoExecutor, c.PrecoDoConselheiro = precoOpcional(t, executor), precoOpcional(t, conselheiro)
+	return nil
+}
+
+// extraDoConselheiro é o que o conselheiro põe no digest da configuração: a rota dele, o máximo
+// de consultas e os digests da tool e do prompt de sistema dele. Só nas corridas com conselheiro:
+// as outras mantêm o digest de antes.
+func extraDoConselheiro(rota RotaDoRelatorio, maxConsultas int) string {
+	soma := sha256.Sum256([]byte(SystemDoConselheiro))
+	return fmt.Sprintf("%s/%s/%d/%s/sha256:%s/%d", rota.Fornecedor, rota.Modelo, maxConsultas, digestDaTool(ToolDoConselho()), hex.EncodeToString(soma[:]), TokensDoConselho)
+}
+
+// piorCasoPorFornecedor escreve o pior caso de pedidos de cada fornecedor da corrida, com as
+// sondas: o do executor e, havendo, o do conselheiro — somados quando são o mesmo.
+func piorCasoPorFornecedor(executor Fornecedor, doExecutor int64, conselheiro Fornecedor, consultas int64) string {
+	if conselheiro == "" {
+		return fmt.Sprintf("%s=%d", executor, doExecutor)
+	}
+	if conselheiro == executor {
+		return fmt.Sprintf("%s=%d (executor %d e conselheiro %d)", executor, doExecutor+consultas+1, doExecutor, consultas+1)
+	}
+	return fmt.Sprintf("%s=%d (executor), %s=%d (conselheiro)", executor, doExecutor, conselheiro, consultas+1)
 }

@@ -1,0 +1,10 @@
+DOCUMENTO SINTETICO AOS-512 - escrito para o banco de ensaio; nao contem dados de nenhum titular.
+
+Nota ficticia de encomenda do entreposto ficticio de Barra do Tejo-Velho.
+
+Encomenda activa: EN-4471.
+Encomenda anulada no mesmo dia e substituida pela activa: EN-7144.
+Fornecedor: Mesquita-Alvim.
+Codigo de preco acordado: PZ-8820.
+Doca de entrega: D-19.
+Doca de reserva, so usada se a doca de entrega estiver ocupada: D-91.

@@ -1,0 +1,311 @@
+DOCUMENTO SINTETICO AOS-512 - escrito para o banco de ensaio; nao contem dados de nenhum titular.
+
+Diario ficticio do estaleiro da obra ficticia do bairro de Quinta da Atalaia-Velha.
+Cada linha e um registo do encarregado geral. Os nomes e os codigos sao inventados.
+
+Dia 1, registo 0001: frente Norte-2; betonagem da laje L-01; equipa de 4; a escavadora EX-01 em servico; tempo seco; sem incidentes.
+Dia 1, registo 0002: frente Este-3; assentamento de tubagem no troco TB-08; equipa de 11; o dumper DP-18 em servico; nevoeiro ate as 10h; ensaio de abaixamento do betao dentro do especificado.
+Dia 1, registo 0003: frente Oeste-5; armadura da viga VG-15; equipa de 9; a betoneira BT-35 em servico; chuva fraca de manha; limpeza geral da frente ao fim do dia.
+Dia 1, registo 0004: frente Centro-1; montagem de andaime no alcado AL-22; equipa de 7; o compactador CP-52 em servico; ceu limpo; verificacao de seguranca feita pelo encarregado de turno.
+Dia 1, registo 0005: frente Sul-4; impermeabilizacao do muro MR-29; equipa de 5; a escavadora EX-69 em servico; vento moderado; entrega de cimento com atraso de uma hora.
+Dia 1, registo 0006: frente Norte-8; cofragem do pilar PL-36; equipa de 12; o dumper DP-86 em servico; tempo seco; uma paragem de 20 minutos por falta de agua.
+Dia 2, registo 0007: frente Norte-2; compactacao do aterro AT-43; equipa de 10; a betoneira BT-14 em servico; nevoeiro ate as 10h; sem incidentes.
+Dia 2, registo 0008: frente Este-3; descofragem da sapata SP-50; equipa de 8; o compactador CP-31 em servico; chuva fraca de manha; ensaio de abaixamento do betao dentro do especificado.
+Dia 2, registo 0009: frente Oeste-5; betonagem da laje L-57; equipa de 6; a escavadora EX-48 em servico; ceu limpo; limpeza geral da frente ao fim do dia.
+Movimento de equipamento: o guindaste GD-62 passou da frente Norte-2 para a frente Sul-7, onde fica ate ao fim da obra.
+Dia 2, registo 0010: frente Centro-1; assentamento de tubagem no troco TB-64; equipa de 4; o dumper DP-65 em servico; vento moderado; verificacao de seguranca feita pelo encarregado de turno.
+Dia 2, registo 0011: frente Sul-4; armadura da viga VG-71; equipa de 11; a betoneira BT-82 em servico; tempo seco; entrega de cimento com atraso de uma hora.
+Dia 2, registo 0012: frente Norte-8; montagem de andaime no alcado AL-78; equipa de 9; o compactador CP-10 em servico; nevoeiro ate as 10h; uma paragem de 20 minutos por falta de agua.
+Dia 3, registo 0013: frente Norte-2; impermeabilizacao do muro MR-85; equipa de 7; a escavadora EX-27 em servico; chuva fraca de manha; sem incidentes.
+Dia 3, registo 0014: frente Este-3; cofragem do pilar PL-92; equipa de 5; o dumper DP-44 em servico; ceu limpo; ensaio de abaixamento do betao dentro do especificado.
+Dia 3, registo 0015: frente Oeste-5; compactacao do aterro AT-02; equipa de 12; a betoneira BT-61 em servico; vento moderado; limpeza geral da frente ao fim do dia.
+Dia 3, registo 0016: frente Centro-1; descofragem da sapata SP-09; equipa de 10; o compactador CP-78 em servico; tempo seco; verificacao de seguranca feita pelo encarregado de turno.
+Dia 3, registo 0017: frente Sul-4; betonagem da laje L-16; equipa de 8; a escavadora EX-06 em servico; nevoeiro ate as 10h; entrega de cimento com atraso de uma hora.
+Dia 3, registo 0018: frente Norte-8; assentamento de tubagem no troco TB-23; equipa de 6; o dumper DP-23 em servico; chuva fraca de manha; uma paragem de 20 minutos por falta de agua.
+Dia 4, registo 0019: frente Norte-2; armadura da viga VG-30; equipa de 4; a betoneira BT-40 em servico; ceu limpo; sem incidentes.
+Dia 4, registo 0020: frente Este-3; montagem de andaime no alcado AL-37; equipa de 11; o compactador CP-57 em servico; vento moderado; ensaio de abaixamento do betao dentro do especificado.
+Dia 4, registo 0021: frente Oeste-5; impermeabilizacao do muro MR-44; equipa de 9; a escavadora EX-74 em servico; tempo seco; limpeza geral da frente ao fim do dia.
+Dia 4, registo 0022: frente Centro-1; cofragem do pilar PL-51; equipa de 7; o dumper DP-02 em servico; nevoeiro ate as 10h; verificacao de seguranca feita pelo encarregado de turno.
+Dia 4, registo 0023: frente Sul-4; compactacao do aterro AT-58; equipa de 5; a betoneira BT-19 em servico; chuva fraca de manha; entrega de cimento com atraso de uma hora.
+Dia 4, registo 0024: frente Norte-8; descofragem da sapata SP-65; equipa de 12; o compactador CP-36 em servico; ceu limpo; uma paragem de 20 minutos por falta de agua.
+Dia 5, registo 0025: frente Norte-2; betonagem da laje L-72; equipa de 10; a escavadora EX-53 em servico; vento moderado; sem incidentes.
+Dia 5, registo 0026: frente Este-3; assentamento de tubagem no troco TB-79; equipa de 8; o dumper DP-70 em servico; tempo seco; ensaio de abaixamento do betao dentro do especificado.
+Dia 5, registo 0027: frente Oeste-5; armadura da viga VG-86; equipa de 6; a betoneira BT-87 em servico; nevoeiro ate as 10h; limpeza geral da frente ao fim do dia.
+Dia 5, registo 0028: frente Centro-1; montagem de andaime no alcado AL-93; equipa de 4; o compactador CP-15 em servico; chuva fraca de manha; verificacao de seguranca feita pelo encarregado de turno.
+Dia 5, registo 0029: frente Sul-4; impermeabilizacao do muro MR-03; equipa de 11; a escavadora EX-32 em servico; ceu limpo; entrega de cimento com atraso de uma hora.
+Dia 5, registo 0030: frente Norte-8; cofragem do pilar PL-10; equipa de 9; o dumper DP-49 em servico; vento moderado; uma paragem de 20 minutos por falta de agua.
+Dia 6, registo 0031: frente Norte-2; compactacao do aterro AT-17; equipa de 7; a betoneira BT-66 em servico; tempo seco; sem incidentes.
+Dia 6, registo 0032: frente Este-3; descofragem da sapata SP-24; equipa de 5; o compactador CP-83 em servico; nevoeiro ate as 10h; ensaio de abaixamento do betao dentro do especificado.
+Dia 6, registo 0033: frente Oeste-5; betonagem da laje L-31; equipa de 12; a escavadora EX-11 em servico; chuva fraca de manha; limpeza geral da frente ao fim do dia.
+Dia 6, registo 0034: frente Centro-1; assentamento de tubagem no troco TB-38; equipa de 10; o dumper DP-28 em servico; ceu limpo; verificacao de seguranca feita pelo encarregado de turno.
+Dia 6, registo 0035: frente Sul-4; armadura da viga VG-45; equipa de 8; a betoneira BT-45 em servico; vento moderado; entrega de cimento com atraso de uma hora.
+Dia 6, registo 0036: frente Norte-8; montagem de andaime no alcado AL-52; equipa de 6; o compactador CP-62 em servico; tempo seco; uma paragem de 20 minutos por falta de agua.
+Dia 7, registo 0037: frente Norte-2; impermeabilizacao do muro MR-59; equipa de 4; a escavadora EX-79 em servico; nevoeiro ate as 10h; sem incidentes.
+Dia 7, registo 0038: frente Este-3; cofragem do pilar PL-66; equipa de 11; o dumper DP-07 em servico; chuva fraca de manha; ensaio de abaixamento do betao dentro do especificado.
+Dia 7, registo 0039: frente Oeste-5; compactacao do aterro AT-73; equipa de 9; a betoneira BT-24 em servico; ceu limpo; limpeza geral da frente ao fim do dia.
+Dia 7, registo 0040: frente Centro-1; descofragem da sapata SP-80; equipa de 7; o compactador CP-41 em servico; vento moderado; verificacao de seguranca feita pelo encarregado de turno.
+Dia 7, registo 0041: frente Sul-4; betonagem da laje L-87; equipa de 5; a escavadora EX-58 em servico; tempo seco; entrega de cimento com atraso de uma hora.
+Dia 7, registo 0042: frente Norte-8; assentamento de tubagem no troco TB-94; equipa de 12; o dumper DP-75 em servico; nevoeiro ate as 10h; uma paragem de 20 minutos por falta de agua.
+Dia 8, registo 0043: frente Norte-2; armadura da viga VG-04; equipa de 10; a betoneira BT-03 em servico; chuva fraca de manha; sem incidentes.
+Dia 8, registo 0044: frente Este-3; montagem de andaime no alcado AL-11; equipa de 8; o compactador CP-20 em servico; ceu limpo; ensaio de abaixamento do betao dentro do especificado.
+Dia 8, registo 0045: frente Oeste-5; impermeabilizacao do muro MR-18; equipa de 6; a escavadora EX-37 em servico; vento moderado; limpeza geral da frente ao fim do dia.
+Dia 8, registo 0046: frente Centro-1; cofragem do pilar PL-25; equipa de 4; o dumper DP-54 em servico; tempo seco; verificacao de seguranca feita pelo encarregado de turno.
+Dia 8, registo 0047: frente Sul-4; compactacao do aterro AT-32; equipa de 11; a betoneira BT-71 em servico; nevoeiro ate as 10h; entrega de cimento com atraso de uma hora.
+Dia 8, registo 0048: frente Norte-8; descofragem da sapata SP-39; equipa de 9; o compactador CP-88 em servico; chuva fraca de manha; uma paragem de 20 minutos por falta de agua.
+Dia 9, registo 0049: frente Norte-2; betonagem da laje L-46; equipa de 7; a escavadora EX-16 em servico; ceu limpo; sem incidentes.
+Dia 9, registo 0050: frente Este-3; assentamento de tubagem no troco TB-53; equipa de 5; o dumper DP-33 em servico; vento moderado; ensaio de abaixamento do betao dentro do especificado.
+Dia 9, registo 0051: frente Oeste-5; armadura da viga VG-60; equipa de 12; a betoneira BT-50 em servico; tempo seco; limpeza geral da frente ao fim do dia.
+Dia 9, registo 0052: frente Centro-1; montagem de andaime no alcado AL-67; equipa de 10; o compactador CP-67 em servico; nevoeiro ate as 10h; verificacao de seguranca feita pelo encarregado de turno.
+Dia 9, registo 0053: frente Sul-4; impermeabilizacao do muro MR-74; equipa de 8; a escavadora EX-84 em servico; chuva fraca de manha; entrega de cimento com atraso de uma hora.
+Dia 9, registo 0054: frente Norte-8; cofragem do pilar PL-81; equipa de 6; o dumper DP-12 em servico; ceu limpo; uma paragem de 20 minutos por falta de agua.
+Dia 10, registo 0055: frente Norte-2; compactacao do aterro AT-88; equipa de 4; a betoneira BT-29 em servico; vento moderado; sem incidentes.
+Dia 10, registo 0056: frente Este-3; descofragem da sapata SP-95; equipa de 11; o compactador CP-46 em servico; tempo seco; ensaio de abaixamento do betao dentro do especificado.
+Dia 10, registo 0057: frente Oeste-5; betonagem da laje L-05; equipa de 9; a escavadora EX-63 em servico; nevoeiro ate as 10h; limpeza geral da frente ao fim do dia.
+Dia 10, registo 0058: frente Centro-1; assentamento de tubagem no troco TB-12; equipa de 7; o dumper DP-80 em servico; chuva fraca de manha; verificacao de seguranca feita pelo encarregado de turno.
+Dia 10, registo 0059: frente Sul-4; armadura da viga VG-19; equipa de 5; a betoneira BT-08 em servico; ceu limpo; entrega de cimento com atraso de uma hora.
+Dia 10, registo 0060: frente Norte-8; montagem de andaime no alcado AL-26; equipa de 12; o compactador CP-25 em servico; vento moderado; uma paragem de 20 minutos por falta de agua.
+Dia 11, registo 0061: frente Norte-2; impermeabilizacao do muro MR-33; equipa de 10; a escavadora EX-42 em servico; tempo seco; sem incidentes.
+Dia 11, registo 0062: frente Este-3; cofragem do pilar PL-40; equipa de 8; o dumper DP-59 em servico; nevoeiro ate as 10h; ensaio de abaixamento do betao dentro do especificado.
+Dia 11, registo 0063: frente Oeste-5; compactacao do aterro AT-47; equipa de 6; a betoneira BT-76 em servico; chuva fraca de manha; limpeza geral da frente ao fim do dia.
+Dia 11, registo 0064: frente Centro-1; descofragem da sapata SP-54; equipa de 4; o compactador CP-04 em servico; ceu limpo; verificacao de seguranca feita pelo encarregado de turno.
+Dia 11, registo 0065: frente Sul-4; betonagem da laje L-61; equipa de 11; a escavadora EX-21 em servico; vento moderado; entrega de cimento com atraso de uma hora.
+Dia 11, registo 0066: frente Norte-8; assentamento de tubagem no troco TB-68; equipa de 9; o dumper DP-38 em servico; tempo seco; uma paragem de 20 minutos por falta de agua.
+Dia 12, registo 0067: frente Norte-2; armadura da viga VG-75; equipa de 7; a betoneira BT-55 em servico; nevoeiro ate as 10h; sem incidentes.
+Dia 12, registo 0068: frente Este-3; montagem de andaime no alcado AL-82; equipa de 5; o compactador CP-72 em servico; chuva fraca de manha; ensaio de abaixamento do betao dentro do especificado.
+Dia 12, registo 0069: frente Oeste-5; impermeabilizacao do muro MR-89; equipa de 12; a escavadora EX-89 em servico; ceu limpo; limpeza geral da frente ao fim do dia.
+Dia 12, registo 0070: frente Centro-1; cofragem do pilar PL-96; equipa de 10; o dumper DP-17 em servico; vento moderado; verificacao de seguranca feita pelo encarregado de turno.
+Dia 12, registo 0071: frente Sul-4; compactacao do aterro AT-06; equipa de 8; a betoneira BT-34 em servico; tempo seco; entrega de cimento com atraso de uma hora.
+Dia 12, registo 0072: frente Norte-8; descofragem da sapata SP-13; equipa de 6; o compactador CP-51 em servico; nevoeiro ate as 10h; uma paragem de 20 minutos por falta de agua.
+Dia 13, registo 0073: frente Norte-2; betonagem da laje L-20; equipa de 4; a escavadora EX-68 em servico; chuva fraca de manha; sem incidentes.
+Dia 13, registo 0074: frente Este-3; assentamento de tubagem no troco TB-27; equipa de 11; o dumper DP-85 em servico; ceu limpo; ensaio de abaixamento do betao dentro do especificado.
+Dia 13, registo 0075: frente Oeste-5; armadura da viga VG-34; equipa de 9; a betoneira BT-13 em servico; vento moderado; limpeza geral da frente ao fim do dia.
+Dia 13, registo 0076: frente Centro-1; montagem de andaime no alcado AL-41; equipa de 7; o compactador CP-30 em servico; tempo seco; verificacao de seguranca feita pelo encarregado de turno.
+Dia 13, registo 0077: frente Sul-4; impermeabilizacao do muro MR-48; equipa de 5; a escavadora EX-47 em servico; nevoeiro ate as 10h; entrega de cimento com atraso de uma hora.
+Dia 13, registo 0078: frente Norte-8; cofragem do pilar PL-55; equipa de 12; o dumper DP-64 em servico; chuva fraca de manha; uma paragem de 20 minutos por falta de agua.
+Dia 14, registo 0079: frente Norte-2; compactacao do aterro AT-62; equipa de 10; a betoneira BT-81 em servico; ceu limpo; sem incidentes.
+Dia 14, registo 0080: frente Este-3; descofragem da sapata SP-69; equipa de 8; o compactador CP-09 em servico; vento moderado; ensaio de abaixamento do betao dentro do especificado.
+Dia 14, registo 0081: frente Oeste-5; betonagem da laje L-76; equipa de 6; a escavadora EX-26 em servico; tempo seco; limpeza geral da frente ao fim do dia.
+Dia 14, registo 0082: frente Centro-1; assentamento de tubagem no troco TB-83; equipa de 4; o dumper DP-43 em servico; nevoeiro ate as 10h; verificacao de seguranca feita pelo encarregado de turno.
+Dia 14, registo 0083: frente Sul-4; armadura da viga VG-90; equipa de 11; a betoneira BT-60 em servico; chuva fraca de manha; entrega de cimento com atraso de uma hora.
+Dia 14, registo 0084: frente Norte-8; montagem de andaime no alcado AL-97; equipa de 9; o compactador CP-77 em servico; ceu limpo; uma paragem de 20 minutos por falta de agua.
+Dia 15, registo 0085: frente Norte-2; impermeabilizacao do muro MR-07; equipa de 7; a escavadora EX-05 em servico; vento moderado; sem incidentes.
+Dia 15, registo 0086: frente Este-3; cofragem do pilar PL-14; equipa de 5; o dumper DP-22 em servico; tempo seco; ensaio de abaixamento do betao dentro do especificado.
+Dia 15, registo 0087: frente Oeste-5; compactacao do aterro AT-21; equipa de 12; a betoneira BT-39 em servico; nevoeiro ate as 10h; limpeza geral da frente ao fim do dia.
+Dia 15, registo 0088: frente Centro-1; descofragem da sapata SP-28; equipa de 10; o compactador CP-56 em servico; chuva fraca de manha; verificacao de seguranca feita pelo encarregado de turno.
+Dia 15, registo 0089: frente Sul-4; betonagem da laje L-35; equipa de 8; a escavadora EX-73 em servico; ceu limpo; entrega de cimento com atraso de uma hora.
+Dia 15, registo 0090: frente Norte-8; assentamento de tubagem no troco TB-42; equipa de 6; o dumper DP-01 em servico; vento moderado; uma paragem de 20 minutos por falta de agua.
+Dia 16, registo 0091: frente Norte-2; armadura da viga VG-49; equipa de 4; a betoneira BT-18 em servico; tempo seco; sem incidentes.
+Dia 16, registo 0092: frente Este-3; montagem de andaime no alcado AL-56; equipa de 11; o compactador CP-35 em servico; nevoeiro ate as 10h; ensaio de abaixamento do betao dentro do especificado.
+Dia 16, registo 0093: frente Oeste-5; impermeabilizacao do muro MR-63; equipa de 9; a escavadora EX-52 em servico; chuva fraca de manha; limpeza geral da frente ao fim do dia.
+Dia 16, registo 0094: frente Centro-1; cofragem do pilar PL-70; equipa de 7; o dumper DP-69 em servico; ceu limpo; verificacao de seguranca feita pelo encarregado de turno.
+Dia 16, registo 0095: frente Sul-4; compactacao do aterro AT-77; equipa de 5; a betoneira BT-86 em servico; vento moderado; entrega de cimento com atraso de uma hora.
+Dia 16, registo 0096: frente Norte-8; descofragem da sapata SP-84; equipa de 12; o compactador CP-14 em servico; tempo seco; uma paragem de 20 minutos por falta de agua.
+Dia 17, registo 0097: frente Norte-2; betonagem da laje L-91; equipa de 10; a escavadora EX-31 em servico; nevoeiro ate as 10h; sem incidentes.
+Dia 17, registo 0098: frente Este-3; assentamento de tubagem no troco TB-01; equipa de 8; o dumper DP-48 em servico; chuva fraca de manha; ensaio de abaixamento do betao dentro do especificado.
+Dia 17, registo 0099: frente Oeste-5; armadura da viga VG-08; equipa de 6; a betoneira BT-65 em servico; ceu limpo; limpeza geral da frente ao fim do dia.
+Dia 17, registo 0100: frente Centro-1; montagem de andaime no alcado AL-15; equipa de 4; o compactador CP-82 em servico; vento moderado; verificacao de seguranca feita pelo encarregado de turno.
+Dia 17, registo 0101: frente Sul-4; impermeabilizacao do muro MR-22; equipa de 11; a escavadora EX-10 em servico; tempo seco; entrega de cimento com atraso de uma hora.
+Dia 17, registo 0102: frente Norte-8; cofragem do pilar PL-29; equipa de 9; o dumper DP-27 em servico; nevoeiro ate as 10h; uma paragem de 20 minutos por falta de agua.
+Dia 18, registo 0103: frente Norte-2; compactacao do aterro AT-36; equipa de 7; a betoneira BT-44 em servico; chuva fraca de manha; sem incidentes.
+Dia 18, registo 0104: frente Este-3; descofragem da sapata SP-43; equipa de 5; o compactador CP-61 em servico; ceu limpo; ensaio de abaixamento do betao dentro do especificado.
+Dia 18, registo 0105: frente Oeste-5; betonagem da laje L-50; equipa de 12; a escavadora EX-78 em servico; vento moderado; limpeza geral da frente ao fim do dia.
+Dia 18, registo 0106: frente Centro-1; assentamento de tubagem no troco TB-57; equipa de 10; o dumper DP-06 em servico; tempo seco; verificacao de seguranca feita pelo encarregado de turno.
+Dia 18, registo 0107: frente Sul-4; armadura da viga VG-64; equipa de 8; a betoneira BT-23 em servico; nevoeiro ate as 10h; entrega de cimento com atraso de uma hora.
+Dia 18, registo 0108: frente Norte-8; montagem de andaime no alcado AL-71; equipa de 6; o compactador CP-40 em servico; chuva fraca de manha; uma paragem de 20 minutos por falta de agua.
+Dia 19, registo 0109: frente Norte-2; impermeabilizacao do muro MR-78; equipa de 4; a escavadora EX-57 em servico; ceu limpo; sem incidentes.
+Dia 19, registo 0110: frente Este-3; cofragem do pilar PL-85; equipa de 11; o dumper DP-74 em servico; vento moderado; ensaio de abaixamento do betao dentro do especificado.
+Dia 19, registo 0111: frente Oeste-5; compactacao do aterro AT-92; equipa de 9; a betoneira BT-02 em servico; tempo seco; limpeza geral da frente ao fim do dia.
+Dia 19, registo 0112: frente Centro-1; descofragem da sapata SP-02; equipa de 7; o compactador CP-19 em servico; nevoeiro ate as 10h; verificacao de seguranca feita pelo encarregado de turno.
+Dia 19, registo 0113: frente Sul-4; betonagem da laje L-09; equipa de 5; a escavadora EX-36 em servico; chuva fraca de manha; entrega de cimento com atraso de uma hora.
+Dia 19, registo 0114: frente Norte-8; assentamento de tubagem no troco TB-16; equipa de 12; o dumper DP-53 em servico; ceu limpo; uma paragem de 20 minutos por falta de agua.
+Dia 20, registo 0115: frente Norte-2; armadura da viga VG-23; equipa de 10; a betoneira BT-70 em servico; vento moderado; sem incidentes.
+Dia 20, registo 0116: frente Este-3; montagem de andaime no alcado AL-30; equipa de 8; o compactador CP-87 em servico; tempo seco; ensaio de abaixamento do betao dentro do especificado.
+Dia 20, registo 0117: frente Oeste-5; impermeabilizacao do muro MR-37; equipa de 6; a escavadora EX-15 em servico; nevoeiro ate as 10h; limpeza geral da frente ao fim do dia.
+Dia 20, registo 0118: frente Centro-1; cofragem do pilar PL-44; equipa de 4; o dumper DP-32 em servico; chuva fraca de manha; verificacao de seguranca feita pelo encarregado de turno.
+Dia 20, registo 0119: frente Sul-4; compactacao do aterro AT-51; equipa de 11; a betoneira BT-49 em servico; ceu limpo; entrega de cimento com atraso de uma hora.
+Dia 20, registo 0120: frente Norte-8; descofragem da sapata SP-58; equipa de 9; o compactador CP-66 em servico; vento moderado; uma paragem de 20 minutos por falta de agua.
+Dia 21, registo 0121: frente Norte-2; betonagem da laje L-65; equipa de 7; a escavadora EX-83 em servico; tempo seco; sem incidentes.
+Dia 21, registo 0122: frente Este-3; assentamento de tubagem no troco TB-72; equipa de 5; o dumper DP-11 em servico; nevoeiro ate as 10h; ensaio de abaixamento do betao dentro do especificado.
+Dia 21, registo 0123: frente Oeste-5; armadura da viga VG-79; equipa de 12; a betoneira BT-28 em servico; chuva fraca de manha; limpeza geral da frente ao fim do dia.
+Dia 21, registo 0124: frente Centro-1; montagem de andaime no alcado AL-86; equipa de 10; o compactador CP-45 em servico; ceu limpo; verificacao de seguranca feita pelo encarregado de turno.
+Dia 21, registo 0125: frente Sul-4; impermeabilizacao do muro MR-93; equipa de 8; a escavadora EX-62 em servico; vento moderado; entrega de cimento com atraso de uma hora.
+Dia 21, registo 0126: frente Norte-8; cofragem do pilar PL-03; equipa de 6; o dumper DP-79 em servico; tempo seco; uma paragem de 20 minutos por falta de agua.
+Dia 22, registo 0127: frente Norte-2; compactacao do aterro AT-10; equipa de 4; a betoneira BT-07 em servico; nevoeiro ate as 10h; sem incidentes.
+Dia 22, registo 0128: frente Este-3; descofragem da sapata SP-17; equipa de 11; o compactador CP-24 em servico; chuva fraca de manha; ensaio de abaixamento do betao dentro do especificado.
+Dia 22, registo 0129: frente Oeste-5; betonagem da laje L-24; equipa de 9; a escavadora EX-41 em servico; ceu limpo; limpeza geral da frente ao fim do dia.
+Dia 22, registo 0130: frente Centro-1; assentamento de tubagem no troco TB-31; equipa de 7; o dumper DP-58 em servico; vento moderado; verificacao de seguranca feita pelo encarregado de turno.
+Dia 22, registo 0131: frente Sul-4; armadura da viga VG-38; equipa de 5; a betoneira BT-75 em servico; tempo seco; entrega de cimento com atraso de uma hora.
+Dia 22, registo 0132: frente Norte-8; montagem de andaime no alcado AL-45; equipa de 12; o compactador CP-03 em servico; nevoeiro ate as 10h; uma paragem de 20 minutos por falta de agua.
+Dia 23, registo 0133: frente Norte-2; impermeabilizacao do muro MR-52; equipa de 10; a escavadora EX-20 em servico; chuva fraca de manha; sem incidentes.
+Dia 23, registo 0134: frente Este-3; cofragem do pilar PL-59; equipa de 8; o dumper DP-37 em servico; ceu limpo; ensaio de abaixamento do betao dentro do especificado.
+Dia 23, registo 0135: frente Oeste-5; compactacao do aterro AT-66; equipa de 6; a betoneira BT-54 em servico; vento moderado; limpeza geral da frente ao fim do dia.
+Dia 23, registo 0136: frente Centro-1; descofragem da sapata SP-73; equipa de 4; o compactador CP-71 em servico; tempo seco; verificacao de seguranca feita pelo encarregado de turno.
+Dia 23, registo 0137: frente Sul-4; betonagem da laje L-80; equipa de 11; a escavadora EX-88 em servico; nevoeiro ate as 10h; entrega de cimento com atraso de uma hora.
+Dia 23, registo 0138: frente Norte-8; assentamento de tubagem no troco TB-87; equipa de 9; o dumper DP-16 em servico; chuva fraca de manha; uma paragem de 20 minutos por falta de agua.
+Dia 24, registo 0139: frente Norte-2; armadura da viga VG-94; equipa de 7; a betoneira BT-33 em servico; ceu limpo; sem incidentes.
+Dia 24, registo 0140: frente Este-3; montagem de andaime no alcado AL-04; equipa de 5; o compactador CP-50 em servico; vento moderado; ensaio de abaixamento do betao dentro do especificado.
+Pessoal: Rogerio Antunes-Calado foi destacado para a frente Sul-7 como encarregado de turno; nao opera equipamento.
+Dia 24, registo 0141: frente Oeste-5; impermeabilizacao do muro MR-11; equipa de 12; a escavadora EX-67 em servico; tempo seco; limpeza geral da frente ao fim do dia.
+Dia 24, registo 0142: frente Centro-1; cofragem do pilar PL-18; equipa de 10; o dumper DP-84 em servico; nevoeiro ate as 10h; verificacao de seguranca feita pelo encarregado de turno.
+Dia 24, registo 0143: frente Sul-4; compactacao do aterro AT-25; equipa de 8; a betoneira BT-12 em servico; chuva fraca de manha; entrega de cimento com atraso de uma hora.
+Dia 24, registo 0144: frente Norte-8; descofragem da sapata SP-32; equipa de 6; o compactador CP-29 em servico; ceu limpo; uma paragem de 20 minutos por falta de agua.
+Dia 25, registo 0145: frente Norte-2; betonagem da laje L-39; equipa de 4; a escavadora EX-46 em servico; vento moderado; sem incidentes.
+Dia 25, registo 0146: frente Este-3; assentamento de tubagem no troco TB-46; equipa de 11; o dumper DP-63 em servico; tempo seco; ensaio de abaixamento do betao dentro do especificado.
+Dia 25, registo 0147: frente Oeste-5; armadura da viga VG-53; equipa de 9; a betoneira BT-80 em servico; nevoeiro ate as 10h; limpeza geral da frente ao fim do dia.
+Dia 25, registo 0148: frente Centro-1; montagem de andaime no alcado AL-60; equipa de 7; o compactador CP-08 em servico; chuva fraca de manha; verificacao de seguranca feita pelo encarregado de turno.
+Dia 25, registo 0149: frente Sul-4; impermeabilizacao do muro MR-67; equipa de 5; a escavadora EX-25 em servico; ceu limpo; entrega de cimento com atraso de uma hora.
+Dia 25, registo 0150: frente Norte-8; cofragem do pilar PL-74; equipa de 12; o dumper DP-42 em servico; vento moderado; uma paragem de 20 minutos por falta de agua.
+Dia 26, registo 0151: frente Norte-2; compactacao do aterro AT-81; equipa de 10; a betoneira BT-59 em servico; tempo seco; sem incidentes.
+Dia 26, registo 0152: frente Este-3; descofragem da sapata SP-88; equipa de 8; o compactador CP-76 em servico; nevoeiro ate as 10h; ensaio de abaixamento do betao dentro do especificado.
+Dia 26, registo 0153: frente Oeste-5; betonagem da laje L-95; equipa de 6; a escavadora EX-04 em servico; chuva fraca de manha; limpeza geral da frente ao fim do dia.
+Dia 26, registo 0154: frente Centro-1; assentamento de tubagem no troco TB-05; equipa de 4; o dumper DP-21 em servico; ceu limpo; verificacao de seguranca feita pelo encarregado de turno.
+Dia 26, registo 0155: frente Sul-4; armadura da viga VG-12; equipa de 11; a betoneira BT-38 em servico; vento moderado; entrega de cimento com atraso de uma hora.
+Dia 26, registo 0156: frente Norte-8; montagem de andaime no alcado AL-19; equipa de 9; o compactador CP-55 em servico; tempo seco; uma paragem de 20 minutos por falta de agua.
+Dia 27, registo 0157: frente Norte-2; impermeabilizacao do muro MR-26; equipa de 7; a escavadora EX-72 em servico; nevoeiro ate as 10h; sem incidentes.
+Dia 27, registo 0158: frente Este-3; cofragem do pilar PL-33; equipa de 5; o dumper DP-89 em servico; chuva fraca de manha; ensaio de abaixamento do betao dentro do especificado.
+Dia 27, registo 0159: frente Oeste-5; compactacao do aterro AT-40; equipa de 12; a betoneira BT-17 em servico; ceu limpo; limpeza geral da frente ao fim do dia.
+Dia 27, registo 0160: frente Centro-1; descofragem da sapata SP-47; equipa de 10; o compactador CP-34 em servico; vento moderado; verificacao de seguranca feita pelo encarregado de turno.
+Dia 27, registo 0161: frente Sul-4; betonagem da laje L-54; equipa de 8; a escavadora EX-51 em servico; tempo seco; entrega de cimento com atraso de uma hora.
+Dia 27, registo 0162: frente Norte-8; assentamento de tubagem no troco TB-61; equipa de 6; o dumper DP-68 em servico; nevoeiro ate as 10h; uma paragem de 20 minutos por falta de agua.
+Dia 28, registo 0163: frente Norte-2; armadura da viga VG-68; equipa de 4; a betoneira BT-85 em servico; chuva fraca de manha; sem incidentes.
+Dia 28, registo 0164: frente Este-3; montagem de andaime no alcado AL-75; equipa de 11; o compactador CP-13 em servico; ceu limpo; ensaio de abaixamento do betao dentro do especificado.
+Dia 28, registo 0165: frente Oeste-5; impermeabilizacao do muro MR-82; equipa de 9; a escavadora EX-30 em servico; vento moderado; limpeza geral da frente ao fim do dia.
+Dia 28, registo 0166: frente Centro-1; cofragem do pilar PL-89; equipa de 7; o dumper DP-47 em servico; tempo seco; verificacao de seguranca feita pelo encarregado de turno.
+Dia 28, registo 0167: frente Sul-4; compactacao do aterro AT-96; equipa de 5; a betoneira BT-64 em servico; nevoeiro ate as 10h; entrega de cimento com atraso de uma hora.
+Dia 28, registo 0168: frente Norte-8; descofragem da sapata SP-06; equipa de 12; o compactador CP-81 em servico; chuva fraca de manha; uma paragem de 20 minutos por falta de agua.
+Dia 29, registo 0169: frente Norte-2; betonagem da laje L-13; equipa de 10; a escavadora EX-09 em servico; ceu limpo; sem incidentes.
+Dia 29, registo 0170: frente Este-3; assentamento de tubagem no troco TB-20; equipa de 8; o dumper DP-26 em servico; vento moderado; ensaio de abaixamento do betao dentro do especificado.
+Dia 29, registo 0171: frente Oeste-5; armadura da viga VG-27; equipa de 6; a betoneira BT-43 em servico; tempo seco; limpeza geral da frente ao fim do dia.
+Dia 29, registo 0172: frente Centro-1; montagem de andaime no alcado AL-34; equipa de 4; o compactador CP-60 em servico; nevoeiro ate as 10h; verificacao de seguranca feita pelo encarregado de turno.
+Dia 29, registo 0173: frente Sul-4; impermeabilizacao do muro MR-41; equipa de 11; a escavadora EX-77 em servico; chuva fraca de manha; entrega de cimento com atraso de uma hora.
+Dia 29, registo 0174: frente Norte-8; cofragem do pilar PL-48; equipa de 9; o dumper DP-05 em servico; ceu limpo; uma paragem de 20 minutos por falta de agua.
+Dia 30, registo 0175: frente Norte-2; compactacao do aterro AT-55; equipa de 7; a betoneira BT-22 em servico; vento moderado; sem incidentes.
+Dia 30, registo 0176: frente Este-3; descofragem da sapata SP-62; equipa de 5; o compactador CP-39 em servico; tempo seco; ensaio de abaixamento do betao dentro do especificado.
+Dia 30, registo 0177: frente Oeste-5; betonagem da laje L-69; equipa de 12; a escavadora EX-56 em servico; nevoeiro ate as 10h; limpeza geral da frente ao fim do dia.
+Dia 30, registo 0178: frente Centro-1; assentamento de tubagem no troco TB-76; equipa de 10; o dumper DP-73 em servico; chuva fraca de manha; verificacao de seguranca feita pelo encarregado de turno.
+Dia 30, registo 0179: frente Sul-4; armadura da viga VG-83; equipa de 8; a betoneira BT-01 em servico; ceu limpo; entrega de cimento com atraso de uma hora.
+Dia 30, registo 0180: frente Norte-8; montagem de andaime no alcado AL-90; equipa de 6; o compactador CP-18 em servico; vento moderado; uma paragem de 20 minutos por falta de agua.
+Dia 31, registo 0181: frente Norte-2; impermeabilizacao do muro MR-97; equipa de 4; a escavadora EX-35 em servico; tempo seco; sem incidentes.
+Dia 31, registo 0182: frente Este-3; cofragem do pilar PL-07; equipa de 11; o dumper DP-52 em servico; nevoeiro ate as 10h; ensaio de abaixamento do betao dentro do especificado.
+Dia 31, registo 0183: frente Oeste-5; compactacao do aterro AT-14; equipa de 9; a betoneira BT-69 em servico; chuva fraca de manha; limpeza geral da frente ao fim do dia.
+Dia 31, registo 0184: frente Centro-1; descofragem da sapata SP-21; equipa de 7; o compactador CP-86 em servico; ceu limpo; verificacao de seguranca feita pelo encarregado de turno.
+Dia 31, registo 0185: frente Sul-4; betonagem da laje L-28; equipa de 5; a escavadora EX-14 em servico; vento moderado; entrega de cimento com atraso de uma hora.
+Dia 31, registo 0186: frente Norte-8; assentamento de tubagem no troco TB-35; equipa de 12; o dumper DP-31 em servico; tempo seco; uma paragem de 20 minutos por falta de agua.
+Dia 32, registo 0187: frente Norte-2; armadura da viga VG-42; equipa de 10; a betoneira BT-48 em servico; nevoeiro ate as 10h; sem incidentes.
+Dia 32, registo 0188: frente Este-3; montagem de andaime no alcado AL-49; equipa de 8; o compactador CP-65 em servico; chuva fraca de manha; ensaio de abaixamento do betao dentro do especificado.
+Dia 32, registo 0189: frente Oeste-5; impermeabilizacao do muro MR-56; equipa de 6; a escavadora EX-82 em servico; ceu limpo; limpeza geral da frente ao fim do dia.
+Dia 32, registo 0190: frente Centro-1; cofragem do pilar PL-63; equipa de 4; o dumper DP-10 em servico; vento moderado; verificacao de seguranca feita pelo encarregado de turno.
+Dia 32, registo 0191: frente Sul-4; compactacao do aterro AT-70; equipa de 11; a betoneira BT-27 em servico; tempo seco; entrega de cimento com atraso de uma hora.
+Dia 32, registo 0192: frente Norte-8; descofragem da sapata SP-77; equipa de 9; o compactador CP-44 em servico; nevoeiro ate as 10h; uma paragem de 20 minutos por falta de agua.
+Dia 33, registo 0193: frente Norte-2; betonagem da laje L-84; equipa de 7; a escavadora EX-61 em servico; chuva fraca de manha; sem incidentes.
+Dia 33, registo 0194: frente Este-3; assentamento de tubagem no troco TB-91; equipa de 5; o dumper DP-78 em servico; ceu limpo; ensaio de abaixamento do betao dentro do especificado.
+Dia 33, registo 0195: frente Oeste-5; armadura da viga VG-01; equipa de 12; a betoneira BT-06 em servico; vento moderado; limpeza geral da frente ao fim do dia.
+Dia 33, registo 0196: frente Centro-1; montagem de andaime no alcado AL-08; equipa de 10; o compactador CP-23 em servico; tempo seco; verificacao de seguranca feita pelo encarregado de turno.
+Dia 33, registo 0197: frente Sul-4; impermeabilizacao do muro MR-15; equipa de 8; a escavadora EX-40 em servico; nevoeiro ate as 10h; entrega de cimento com atraso de uma hora.
+Dia 33, registo 0198: frente Norte-8; cofragem do pilar PL-22; equipa de 6; o dumper DP-57 em servico; chuva fraca de manha; uma paragem de 20 minutos por falta de agua.
+Dia 34, registo 0199: frente Norte-2; compactacao do aterro AT-29; equipa de 4; a betoneira BT-74 em servico; ceu limpo; sem incidentes.
+Dia 34, registo 0200: frente Este-3; descofragem da sapata SP-36; equipa de 11; o compactador CP-02 em servico; vento moderado; ensaio de abaixamento do betao dentro do especificado.
+Dia 34, registo 0201: frente Oeste-5; betonagem da laje L-43; equipa de 9; a escavadora EX-19 em servico; tempo seco; limpeza geral da frente ao fim do dia.
+Dia 34, registo 0202: frente Centro-1; assentamento de tubagem no troco TB-50; equipa de 7; o dumper DP-36 em servico; nevoeiro ate as 10h; verificacao de seguranca feita pelo encarregado de turno.
+Dia 34, registo 0203: frente Sul-4; armadura da viga VG-57; equipa de 5; a betoneira BT-53 em servico; chuva fraca de manha; entrega de cimento com atraso de uma hora.
+Dia 34, registo 0204: frente Norte-8; montagem de andaime no alcado AL-64; equipa de 12; o compactador CP-70 em servico; ceu limpo; uma paragem de 20 minutos por falta de agua.
+Dia 35, registo 0205: frente Norte-2; impermeabilizacao do muro MR-71; equipa de 10; a escavadora EX-87 em servico; vento moderado; sem incidentes.
+Na frente Este-3 o guindaste GD-66 fez a elevacao das vigas pre-fabricadas.
+Dia 35, registo 0206: frente Este-3; cofragem do pilar PL-78; equipa de 8; o dumper DP-15 em servico; tempo seco; ensaio de abaixamento do betao dentro do especificado.
+Dia 35, registo 0207: frente Oeste-5; compactacao do aterro AT-85; equipa de 6; a betoneira BT-32 em servico; nevoeiro ate as 10h; limpeza geral da frente ao fim do dia.
+Dia 35, registo 0208: frente Centro-1; descofragem da sapata SP-92; equipa de 4; o compactador CP-49 em servico; chuva fraca de manha; verificacao de seguranca feita pelo encarregado de turno.
+Dia 35, registo 0209: frente Sul-4; betonagem da laje L-02; equipa de 11; a escavadora EX-66 em servico; ceu limpo; entrega de cimento com atraso de uma hora.
+Dia 35, registo 0210: frente Norte-8; assentamento de tubagem no troco TB-09; equipa de 9; o dumper DP-83 em servico; vento moderado; uma paragem de 20 minutos por falta de agua.
+Dia 36, registo 0211: frente Norte-2; armadura da viga VG-16; equipa de 7; a betoneira BT-11 em servico; tempo seco; sem incidentes.
+Dia 36, registo 0212: frente Este-3; montagem de andaime no alcado AL-23; equipa de 5; o compactador CP-28 em servico; nevoeiro ate as 10h; ensaio de abaixamento do betao dentro do especificado.
+Dia 36, registo 0213: frente Oeste-5; impermeabilizacao do muro MR-30; equipa de 12; a escavadora EX-45 em servico; chuva fraca de manha; limpeza geral da frente ao fim do dia.
+Dia 36, registo 0214: frente Centro-1; cofragem do pilar PL-37; equipa de 10; o dumper DP-62 em servico; ceu limpo; verificacao de seguranca feita pelo encarregado de turno.
+Dia 36, registo 0215: frente Sul-4; compactacao do aterro AT-44; equipa de 8; a betoneira BT-79 em servico; vento moderado; entrega de cimento com atraso de uma hora.
+Dia 36, registo 0216: frente Norte-8; descofragem da sapata SP-51; equipa de 6; o compactador CP-07 em servico; tempo seco; uma paragem de 20 minutos por falta de agua.
+Dia 37, registo 0217: frente Norte-2; betonagem da laje L-58; equipa de 4; a escavadora EX-24 em servico; nevoeiro ate as 10h; sem incidentes.
+Dia 37, registo 0218: frente Este-3; assentamento de tubagem no troco TB-65; equipa de 11; o dumper DP-41 em servico; chuva fraca de manha; ensaio de abaixamento do betao dentro do especificado.
+Dia 37, registo 0219: frente Oeste-5; armadura da viga VG-72; equipa de 9; a betoneira BT-58 em servico; ceu limpo; limpeza geral da frente ao fim do dia.
+Dia 37, registo 0220: frente Centro-1; montagem de andaime no alcado AL-79; equipa de 7; o compactador CP-75 em servico; vento moderado; verificacao de seguranca feita pelo encarregado de turno.
+Dia 37, registo 0221: frente Sul-4; impermeabilizacao do muro MR-86; equipa de 5; a escavadora EX-03 em servico; tempo seco; entrega de cimento com atraso de uma hora.
+Dia 37, registo 0222: frente Norte-8; cofragem do pilar PL-93; equipa de 12; o dumper DP-20 em servico; nevoeiro ate as 10h; uma paragem de 20 minutos por falta de agua.
+Dia 38, registo 0223: frente Norte-2; compactacao do aterro AT-03; equipa de 10; a betoneira BT-37 em servico; chuva fraca de manha; sem incidentes.
+Dia 38, registo 0224: frente Este-3; descofragem da sapata SP-10; equipa de 8; o compactador CP-54 em servico; ceu limpo; ensaio de abaixamento do betao dentro do especificado.
+Dia 38, registo 0225: frente Oeste-5; betonagem da laje L-17; equipa de 6; a escavadora EX-71 em servico; vento moderado; limpeza geral da frente ao fim do dia.
+Dia 38, registo 0226: frente Centro-1; assentamento de tubagem no troco TB-24; equipa de 4; o dumper DP-88 em servico; tempo seco; verificacao de seguranca feita pelo encarregado de turno.
+Dia 38, registo 0227: frente Sul-4; armadura da viga VG-31; equipa de 11; a betoneira BT-16 em servico; nevoeiro ate as 10h; entrega de cimento com atraso de uma hora.
+Dia 38, registo 0228: frente Norte-8; montagem de andaime no alcado AL-38; equipa de 9; o compactador CP-33 em servico; chuva fraca de manha; uma paragem de 20 minutos por falta de agua.
+Dia 39, registo 0229: frente Norte-2; impermeabilizacao do muro MR-45; equipa de 7; a escavadora EX-50 em servico; ceu limpo; sem incidentes.
+Dia 39, registo 0230: frente Este-3; cofragem do pilar PL-52; equipa de 5; o dumper DP-67 em servico; vento moderado; ensaio de abaixamento do betao dentro do especificado.
+Dia 39, registo 0231: frente Oeste-5; compactacao do aterro AT-59; equipa de 12; a betoneira BT-84 em servico; tempo seco; limpeza geral da frente ao fim do dia.
+Dia 39, registo 0232: frente Centro-1; descofragem da sapata SP-66; equipa de 10; o compactador CP-12 em servico; nevoeiro ate as 10h; verificacao de seguranca feita pelo encarregado de turno.
+Dia 39, registo 0233: frente Sul-4; betonagem da laje L-73; equipa de 8; a escavadora EX-29 em servico; chuva fraca de manha; entrega de cimento com atraso de uma hora.
+Dia 39, registo 0234: frente Norte-8; assentamento de tubagem no troco TB-80; equipa de 6; o dumper DP-46 em servico; ceu limpo; uma paragem de 20 minutos por falta de agua.
+Dia 40, registo 0235: frente Norte-2; armadura da viga VG-87; equipa de 4; a betoneira BT-63 em servico; vento moderado; sem incidentes.
+Dia 40, registo 0236: frente Este-3; montagem de andaime no alcado AL-94; equipa de 11; o compactador CP-80 em servico; tempo seco; ensaio de abaixamento do betao dentro do especificado.
+Dia 40, registo 0237: frente Oeste-5; impermeabilizacao do muro MR-04; equipa de 9; a escavadora EX-08 em servico; nevoeiro ate as 10h; limpeza geral da frente ao fim do dia.
+Dia 40, registo 0238: frente Centro-1; cofragem do pilar PL-11; equipa de 7; o dumper DP-25 em servico; chuva fraca de manha; verificacao de seguranca feita pelo encarregado de turno.
+Dia 40, registo 0239: frente Sul-4; compactacao do aterro AT-18; equipa de 5; a betoneira BT-42 em servico; ceu limpo; entrega de cimento com atraso de uma hora.
+Dia 40, registo 0240: frente Norte-8; descofragem da sapata SP-25; equipa de 12; o compactador CP-59 em servico; vento moderado; uma paragem de 20 minutos por falta de agua.
+Dia 41, registo 0241: frente Norte-2; betonagem da laje L-32; equipa de 10; a escavadora EX-76 em servico; tempo seco; sem incidentes.
+Dia 41, registo 0242: frente Este-3; assentamento de tubagem no troco TB-39; equipa de 8; o dumper DP-04 em servico; nevoeiro ate as 10h; ensaio de abaixamento do betao dentro do especificado.
+Dia 41, registo 0243: frente Oeste-5; armadura da viga VG-46; equipa de 6; a betoneira BT-21 em servico; chuva fraca de manha; limpeza geral da frente ao fim do dia.
+Dia 41, registo 0244: frente Centro-1; montagem de andaime no alcado AL-53; equipa de 4; o compactador CP-38 em servico; ceu limpo; verificacao de seguranca feita pelo encarregado de turno.
+Dia 41, registo 0245: frente Sul-4; impermeabilizacao do muro MR-60; equipa de 11; a escavadora EX-55 em servico; vento moderado; entrega de cimento com atraso de uma hora.
+Dia 41, registo 0246: frente Norte-8; cofragem do pilar PL-67; equipa de 9; o dumper DP-72 em servico; tempo seco; uma paragem de 20 minutos por falta de agua.
+Dia 42, registo 0247: frente Norte-2; compactacao do aterro AT-74; equipa de 7; a betoneira BT-89 em servico; nevoeiro ate as 10h; sem incidentes.
+Dia 42, registo 0248: frente Este-3; descofragem da sapata SP-81; equipa de 5; o compactador CP-17 em servico; chuva fraca de manha; ensaio de abaixamento do betao dentro do especificado.
+Dia 42, registo 0249: frente Oeste-5; betonagem da laje L-88; equipa de 12; a escavadora EX-34 em servico; ceu limpo; limpeza geral da frente ao fim do dia.
+Dia 42, registo 0250: frente Centro-1; assentamento de tubagem no troco TB-95; equipa de 10; o dumper DP-51 em servico; vento moderado; verificacao de seguranca feita pelo encarregado de turno.
+Dia 42, registo 0251: frente Sul-4; armadura da viga VG-05; equipa de 8; a betoneira BT-68 em servico; tempo seco; entrega de cimento com atraso de uma hora.
+Dia 42, registo 0252: frente Norte-8; montagem de andaime no alcado AL-12; equipa de 6; o compactador CP-85 em servico; nevoeiro ate as 10h; uma paragem de 20 minutos por falta de agua.
+Dia 43, registo 0253: frente Norte-2; impermeabilizacao do muro MR-19; equipa de 4; a escavadora EX-13 em servico; chuva fraca de manha; sem incidentes.
+Dia 43, registo 0254: frente Este-3; cofragem do pilar PL-26; equipa de 11; o dumper DP-30 em servico; ceu limpo; ensaio de abaixamento do betao dentro do especificado.
+Dia 43, registo 0255: frente Oeste-5; compactacao do aterro AT-33; equipa de 9; a betoneira BT-47 em servico; vento moderado; limpeza geral da frente ao fim do dia.
+Dia 43, registo 0256: frente Centro-1; descofragem da sapata SP-40; equipa de 7; o compactador CP-64 em servico; tempo seco; verificacao de seguranca feita pelo encarregado de turno.
+Dia 43, registo 0257: frente Sul-4; betonagem da laje L-47; equipa de 5; a escavadora EX-81 em servico; nevoeiro ate as 10h; entrega de cimento com atraso de uma hora.
+Dia 43, registo 0258: frente Norte-8; assentamento de tubagem no troco TB-54; equipa de 12; o dumper DP-09 em servico; chuva fraca de manha; uma paragem de 20 minutos por falta de agua.
+Dia 44, registo 0259: frente Norte-2; armadura da viga VG-61; equipa de 10; a betoneira BT-26 em servico; ceu limpo; sem incidentes.
+Dia 44, registo 0260: frente Este-3; montagem de andaime no alcado AL-68; equipa de 8; o compactador CP-43 em servico; vento moderado; ensaio de abaixamento do betao dentro do especificado.
+Dia 44, registo 0261: frente Oeste-5; impermeabilizacao do muro MR-75; equipa de 6; a escavadora EX-60 em servico; tempo seco; limpeza geral da frente ao fim do dia.
+Dia 44, registo 0262: frente Centro-1; cofragem do pilar PL-82; equipa de 4; o dumper DP-77 em servico; nevoeiro ate as 10h; verificacao de seguranca feita pelo encarregado de turno.
+Dia 44, registo 0263: frente Sul-4; compactacao do aterro AT-89; equipa de 11; a betoneira BT-05 em servico; chuva fraca de manha; entrega de cimento com atraso de uma hora.
+Dia 44, registo 0264: frente Norte-8; descofragem da sapata SP-96; equipa de 9; o compactador CP-22 em servico; ceu limpo; uma paragem de 20 minutos por falta de agua.
+Dia 45, registo 0265: frente Norte-2; betonagem da laje L-06; equipa de 7; a escavadora EX-39 em servico; vento moderado; sem incidentes.
+Dia 45, registo 0266: frente Este-3; assentamento de tubagem no troco TB-13; equipa de 5; o dumper DP-56 em servico; tempo seco; ensaio de abaixamento do betao dentro do especificado.
+Dia 45, registo 0267: frente Oeste-5; armadura da viga VG-20; equipa de 12; a betoneira BT-73 em servico; nevoeiro ate as 10h; limpeza geral da frente ao fim do dia.
+Dia 45, registo 0268: frente Centro-1; montagem de andaime no alcado AL-27; equipa de 10; o compactador CP-01 em servico; chuva fraca de manha; verificacao de seguranca feita pelo encarregado de turno.
+Dia 45, registo 0269: frente Sul-4; impermeabilizacao do muro MR-34; equipa de 8; a escavadora EX-18 em servico; ceu limpo; entrega de cimento com atraso de uma hora.
+Dia 45, registo 0270: frente Norte-8; cofragem do pilar PL-41; equipa de 6; o dumper DP-35 em servico; vento moderado; uma paragem de 20 minutos por falta de agua.
+Dia 46, registo 0271: frente Norte-2; compactacao do aterro AT-48; equipa de 4; a betoneira BT-52 em servico; tempo seco; sem incidentes.
+Dia 46, registo 0272: frente Este-3; descofragem da sapata SP-55; equipa de 11; o compactador CP-69 em servico; nevoeiro ate as 10h; ensaio de abaixamento do betao dentro do especificado.
+Dia 46, registo 0273: frente Oeste-5; betonagem da laje L-62; equipa de 9; a escavadora EX-86 em servico; chuva fraca de manha; limpeza geral da frente ao fim do dia.
+Dia 46, registo 0274: frente Centro-1; assentamento de tubagem no troco TB-69; equipa de 7; o dumper DP-14 em servico; ceu limpo; verificacao de seguranca feita pelo encarregado de turno.
+Dia 46, registo 0275: frente Sul-4; armadura da viga VG-76; equipa de 5; a betoneira BT-31 em servico; vento moderado; entrega de cimento com atraso de uma hora.
+Dia 46, registo 0276: frente Norte-8; montagem de andaime no alcado AL-83; equipa de 12; o compactador CP-48 em servico; tempo seco; uma paragem de 20 minutos por falta de agua.
+Dia 47, registo 0277: frente Norte-2; impermeabilizacao do muro MR-90; equipa de 10; a escavadora EX-65 em servico; nevoeiro ate as 10h; sem incidentes.
+Dia 47, registo 0278: frente Este-3; cofragem do pilar PL-97; equipa de 8; o dumper DP-82 em servico; chuva fraca de manha; ensaio de abaixamento do betao dentro do especificado.
+Dia 47, registo 0279: frente Oeste-5; compactacao do aterro AT-07; equipa de 6; a betoneira BT-10 em servico; ceu limpo; limpeza geral da frente ao fim do dia.
+Dia 47, registo 0280: frente Centro-1; descofragem da sapata SP-14; equipa de 4; o compactador CP-27 em servico; vento moderado; verificacao de seguranca feita pelo encarregado de turno.
+Dia 47, registo 0281: frente Sul-4; betonagem da laje L-21; equipa de 11; a escavadora EX-44 em servico; tempo seco; entrega de cimento com atraso de uma hora.
+Dia 47, registo 0282: frente Norte-8; assentamento de tubagem no troco TB-28; equipa de 9; o dumper DP-61 em servico; nevoeiro ate as 10h; uma paragem de 20 minutos por falta de agua.
+Dia 48, registo 0283: frente Norte-2; armadura da viga VG-35; equipa de 7; a betoneira BT-78 em servico; chuva fraca de manha; sem incidentes.
+Dia 48, registo 0284: frente Este-3; montagem de andaime no alcado AL-42; equipa de 5; o compactador CP-06 em servico; ceu limpo; ensaio de abaixamento do betao dentro do especificado.
+Dia 48, registo 0285: frente Oeste-5; impermeabilizacao do muro MR-49; equipa de 12; a escavadora EX-23 em servico; vento moderado; limpeza geral da frente ao fim do dia.
+Dia 48, registo 0286: frente Centro-1; cofragem do pilar PL-56; equipa de 10; o dumper DP-40 em servico; tempo seco; verificacao de seguranca feita pelo encarregado de turno.
+Dia 48, registo 0287: frente Sul-4; compactacao do aterro AT-63; equipa de 8; a betoneira BT-57 em servico; nevoeiro ate as 10h; entrega de cimento com atraso de uma hora.
+Dia 48, registo 0288: frente Norte-8; descofragem da sapata SP-70; equipa de 6; o compactador CP-74 em servico; chuva fraca de manha; uma paragem de 20 minutos por falta de agua.
+Dia 49, registo 0289: frente Norte-2; betonagem da laje L-77; equipa de 4; a escavadora EX-02 em servico; ceu limpo; sem incidentes.
+Dia 49, registo 0290: frente Este-3; assentamento de tubagem no troco TB-84; equipa de 11; o dumper DP-19 em servico; vento moderado; ensaio de abaixamento do betao dentro do especificado.
+Dia 49, registo 0291: frente Oeste-5; armadura da viga VG-91; equipa de 9; a betoneira BT-36 em servico; tempo seco; limpeza geral da frente ao fim do dia.
+Dia 49, registo 0292: frente Centro-1; montagem de andaime no alcado AL-01; equipa de 7; o compactador CP-53 em servico; nevoeiro ate as 10h; verificacao de seguranca feita pelo encarregado de turno.
+Dia 49, registo 0293: frente Sul-4; impermeabilizacao do muro MR-08; equipa de 5; a escavadora EX-70 em servico; chuva fraca de manha; entrega de cimento com atraso de uma hora.
+Dia 49, registo 0294: frente Norte-8; cofragem do pilar PL-15; equipa de 12; o dumper DP-87 em servico; ceu limpo; uma paragem de 20 minutos por falta de agua.
+Dia 50, registo 0295: frente Norte-2; compactacao do aterro AT-22; equipa de 10; a betoneira BT-15 em servico; vento moderado; sem incidentes.
+Tabela de operadores de guindaste desta obra: GD-26 operado por Rogerio Antunes-Calado nas semanas sem turno de encarregado; GD-62 operado por Amilcar Fontoura-Reis; GD-66 operado por Elisio Braganca-Mota.
+Dia 50, registo 0296: frente Este-3; descofragem da sapata SP-29; equipa de 8; o compactador CP-32 em servico; tempo seco; ensaio de abaixamento do betao dentro do especificado.
+Dia 50, registo 0297: frente Oeste-5; betonagem da laje L-36; equipa de 6; a escavadora EX-49 em servico; nevoeiro ate as 10h; limpeza geral da frente ao fim do dia.
+Dia 50, registo 0298: frente Centro-1; assentamento de tubagem no troco TB-43; equipa de 4; o dumper DP-66 em servico; chuva fraca de manha; verificacao de seguranca feita pelo encarregado de turno.
+Dia 50, registo 0299: frente Sul-4; armadura da viga VG-50; equipa de 11; a betoneira BT-83 em servico; ceu limpo; entrega de cimento com atraso de uma hora.
+Dia 50, registo 0300: frente Norte-8; montagem de andaime no alcado AL-57; equipa de 9; o compactador CP-11 em servico; vento moderado; uma paragem de 20 minutos por falta de agua.
+
+Fim do diario.
