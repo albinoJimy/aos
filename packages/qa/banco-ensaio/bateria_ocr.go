@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"strings"
+	"sync"
 )
 
 // A BATERIA DE OCR (AOS-529). Uma pasta embebida própria, `bateria-ocr/`, só com o ficheiro dos
@@ -101,26 +102,83 @@ func carregarBateriaOCR(origem fs.FS, pasta string) (*BateriaOCR, error) {
 	if err := b.validar(); err != nil {
 		return nil, err
 	}
+	d := desenhoEmCache(cru, &b)
+	if d.err != nil {
+		return nil, d.err
+	}
+	b.digest = d.digest
+	b.media = copiarMedia(d.media)
+	return &b, nil
+}
+
+// desenhoDaBateria é o que se desenha a partir de um ficheiro de casos: o digest e as imagens.
+type desenhoDaBateria struct {
+	digest string
+	media  []MediaOCR
+	err    error
+}
+
+// O DESENHO FAZ-SE UMA VEZ POR PROCESSO e por ficheiro de casos. Desenhar as treze imagens custa
+// cerca de um segundo (muito mais com o detector de corridas), e o desenho é uma função pura dos
+// bytes do `casos.json`: a chave da cache é o sha256 deles. Cada [BateriaOCR] recebe uma CÓPIA das
+// imagens, para que quem altere as suas não altere as de outra.
+var (
+	desenhosMu sync.Mutex
+	desenhos   = map[[sha256.Size]byte]*desenhoUnico{}
+)
+
+type desenhoUnico struct {
+	uma sync.Once
+	d   desenhoDaBateria
+}
+
+func desenhoEmCache(cru []byte, b *BateriaOCR) desenhoDaBateria {
+	chave := sha256.Sum256(cru)
+	desenhosMu.Lock()
+	u, ok := desenhos[chave]
+	if !ok {
+		u = &desenhoUnico{}
+		desenhos[chave] = u
+	}
+	desenhosMu.Unlock()
+	u.uma.Do(func() { u.d = desenharBateria(cru, b) })
+	return u.d
+}
+
+// desenharBateria desenha as imagens de uma bateria já validada e calcula o digest: o ficheiro dos
+// casos e os píxeis de cada imagem.
+func desenharBateria(cru []byte, b *BateriaOCR) desenhoDaBateria {
+	var d desenhoDaBateria
 	soma := sha256.New()
 	fmt.Fprintf(soma, "casos.json\n%d\n", len(cru))
 	soma.Write(cru)
 	for _, im := range b.Imagens {
-		d, _ := b.documento(im.Documento)
-		px := pixeisDaImagem(d, im)
+		doc, _ := b.documento(im.Documento)
+		px := pixeisDaImagem(doc, im)
 		fmt.Fprintf(soma, "%s\n%s\n%dx%d\n", im.ID, im.Formato, px.Rect.Dx(), px.Rect.Dy())
 		soma.Write(px.Pix)
 		cod, err := codificar(px, im.Formato)
 		if err != nil {
-			return nil, fmt.Errorf("%w: imagem %s: %v", ErrBateria, im.ID, err)
+			return desenhoDaBateria{err: fmt.Errorf("%w: imagem %s: %v", ErrBateria, im.ID, err)}
 		}
-		b.media = append(b.media, MediaOCR{
+		d.media = append(d.media, MediaOCR{
 			ImagemOCR: im, Nome: im.ID + "." + extensao(im.Formato), Bytes: cod,
 			Digest: digestDe(cod), Largura: px.Rect.Dx(), Altura: px.Rect.Dy(),
-			textoDeOrigem: d.Texto(),
+			textoDeOrigem: doc.Texto(),
 		})
 	}
-	b.digest = "sha256:" + hex.EncodeToString(soma.Sum(nil))
-	return &b, nil
+	d.digest = "sha256:" + hex.EncodeToString(soma.Sum(nil))
+	return d
+}
+
+// copiarMedia devolve uma cópia das imagens, com os bytes copiados.
+func copiarMedia(media []MediaOCR) []MediaOCR {
+	out := make([]MediaOCR, len(media))
+	for i, m := range media {
+		m.Bytes = append([]byte(nil), m.Bytes...)
+		out[i] = m
+	}
+	return out
 }
 
 func (b *BateriaOCR) validar() error {
@@ -187,12 +245,7 @@ func (b *BateriaOCR) documento(id string) (DocumentoOCR, bool) {
 
 // Media devolve as imagens prontas a ler, pela ordem do ficheiro dos casos.
 func (b *BateriaOCR) Media() []MediaOCR {
-	out := make([]MediaOCR, len(b.media))
-	for i, m := range b.media {
-		m.Bytes = append([]byte(nil), m.Bytes...)
-		out[i] = m
-	}
-	return out
+	return copiarMedia(b.media)
 }
 
 // Texto devolve o texto do documento: as linhas e, depois, as filas da tabela, com as células

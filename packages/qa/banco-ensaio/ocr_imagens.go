@@ -5,7 +5,6 @@ import (
 	"compress/zlib"
 	"fmt"
 	"image"
-	"image/color"
 	"image/jpeg"
 	"image/png"
 	"strings"
@@ -81,11 +80,7 @@ func desenharCelula(img *image.Gray, c [alturaDaCelula][larguraDaCelula]bool, x0
 			if !c[i][j] {
 				continue
 			}
-			for dy := 0; dy < escala; dy++ {
-				for dx := 0; dx < escala; dx++ {
-					img.SetGray(x0+j*escala+dx, y0+i*escala+dy, color.Gray{Y: 0})
-				}
-			}
+			retangulo(img, x0+j*escala, y0+i*escala, x0+(j+1)*escala, y0+(i+1)*escala)
 		}
 	}
 }
@@ -116,34 +111,58 @@ func desenharGrelha(img *image.Gray, g *grelhaDaTabela, escala int) {
 	}
 }
 
+// retangulo pinta de preto o rectângulo [x0,x1)×[y0,y1), cortado pelos limites da imagem. As
+// imagens do banco começam todas em (0,0), e os píxeis escrevem-se direto em Pix: é o caminho
+// quente do desenho, e o detector de corridas dos testes torna cada chamada por píxel cara.
 func retangulo(img *image.Gray, x0, y0, x1, y1 int) {
+	x0, y0 = max(x0, 0), max(y0, 0)
+	x1, y1 = min(x1, img.Rect.Dx()), min(y1, img.Rect.Dy())
 	for y := y0; y < y1; y++ {
+		linha := img.Pix[y*img.Stride:]
 		for x := x0; x < x1; x++ {
-			if (image.Point{X: x, Y: y}).In(img.Rect) {
-				img.SetGray(x, y, color.Gray{Y: 0})
-			}
+			linha[x] = 0
 		}
 	}
 }
 
 // suavizar aplica uma média 3×3 (as bordas usam os vizinhos que existem): o contorno da letra
 // fica em tons de cinzento, como numa impressão digitalizada, e não em degraus puros.
+//
+// Faz-se em duas passagens (somas na horizontal, depois na vertical), que dão a mesma soma e o mesmo
+// número de vizinhos que a janela 3×3: os vizinhos que existem num rectângulo são o produto dos que
+// existem em cada eixo.
 func suavizar(src *image.Gray) *image.Gray {
-	b := src.Rect
-	dst := image.NewGray(b)
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			soma, n := 0, 0
-			for dy := -1; dy <= 1; dy++ {
-				for dx := -1; dx <= 1; dx++ {
-					p := image.Point{X: x + dx, Y: y + dy}
-					if p.In(b) {
-						soma += int(src.GrayAt(p.X, p.Y).Y)
-						n++
-					}
-				}
+	w, h := src.Rect.Dx(), src.Rect.Dy()
+	dst := image.NewGray(src.Rect)
+	horizontal := make([]int, w*h)
+	nx := make([]int, w)
+	for x := 0; x < w; x++ {
+		nx[x] = 1 + min(x, 1) + min(w-1-x, 1)
+	}
+	for y := 0; y < h; y++ {
+		linha := src.Pix[y*src.Stride : y*src.Stride+w]
+		for x := 0; x < w; x++ {
+			soma := int(linha[x])
+			if x > 0 {
+				soma += int(linha[x-1])
 			}
-			dst.SetGray(x, y, color.Gray{Y: uint8(soma / n)}) // #nosec G115 -- media de n valores de 0 a 255, por isso de 0 a 255
+			if x < w-1 {
+				soma += int(linha[x+1])
+			}
+			horizontal[y*w+x] = soma
+		}
+	}
+	for y := 0; y < h; y++ {
+		ny := 1 + min(y, 1) + min(h-1-y, 1)
+		for x := 0; x < w; x++ {
+			soma := horizontal[y*w+x]
+			if y > 0 {
+				soma += horizontal[(y-1)*w+x]
+			}
+			if y < h-1 {
+				soma += horizontal[(y+1)*w+x]
+			}
+			dst.Pix[y*dst.Stride+x] = uint8(soma / (nx[x] * ny)) // #nosec G115 -- media de valores de 0 a 255, por isso de 0 a 255
 		}
 	}
 	return dst
@@ -161,7 +180,7 @@ func rodar(src *image.Gray) *image.Gray {
 			// Rotação inversa: de onde, na origem, vem este píxel. Coordenadas em 1/65536.
 			sx := dx*cosenoDaRotacao + dy*senoDaRotacao + int64(cx)<<16
 			sy := -dx*senoDaRotacao + dy*cosenoDaRotacao + int64(cy)<<16
-			dst.SetGray(x, y, color.Gray{Y: bilinear(src, sx, sy)})
+			dst.Pix[y*dst.Stride+x] = bilinear(src, sx, sy)
 		}
 	}
 	return dst
@@ -170,11 +189,12 @@ func rodar(src *image.Gray) *image.Gray {
 func bilinear(src *image.Gray, sx, sy int64) uint8 {
 	x0, y0 := sx>>16, sy>>16
 	fx, fy := sx&0xffff, sy&0xffff
+	w, h := int64(src.Rect.Dx()), int64(src.Rect.Dy())
 	em := func(x, y int64) int64 {
-		if x < 0 || y < 0 || x >= int64(src.Rect.Dx()) || y >= int64(src.Rect.Dy()) {
+		if x < 0 || y < 0 || x >= w || y >= h {
 			return 0xff
 		}
-		return int64(src.GrayAt(int(x), int(y)).Y)
+		return int64(src.Pix[y*int64(src.Stride)+x])
 	}
 	cima := em(x0, y0)*(0x10000-fx) + em(x0+1, y0)*fx
 	baixo := em(x0, y0+1)*(0x10000-fx) + em(x0+1, y0+1)*fx

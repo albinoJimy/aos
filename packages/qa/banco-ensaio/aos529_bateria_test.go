@@ -30,12 +30,15 @@ func TestAOS529_BateriaOCR_TemDigestProprioEAsOutrasMantemOSeu(t *testing.T) {
 	if b.Versao != "1.0.0" || b.Digest() != aos529DigestDaBateriaOCR {
 		t.Errorf("bateria de OCR: versao %s, digest %s (quer %s)", b.Versao, b.Digest(), aos529DigestDaBateriaOCR)
 	}
-	outra := aos529Bateria(t)
-	if outra.Digest() != b.Digest() {
-		t.Error("a mesma bateria deu dois digests")
+	// O desenho fica em cache por processo: o determinismo prova-se desenhando outra vez, por fora
+	// da cache, e comparando com o desenho que a cache guardou (que foi outro).
+	cru, _ := ficheirosDaBateriaOCR.ReadFile(pastaDaBateriaOCR + "/casos.json")
+	outro := desenharBateria(cru, b)
+	if outro.err != nil || outro.digest != b.Digest() || len(outro.media) != len(b.Imagens) {
+		t.Fatalf("outro desenho da mesma bateria: %s (%v)", outro.digest, outro.err)
 	}
 	for i, m := range b.Media() {
-		if !bytes.Equal(m.Bytes, outra.Media()[i].Bytes) || m.Digest != outra.Media()[i].Digest {
+		if !bytes.Equal(m.Bytes, outro.media[i].Bytes) || m.Digest != outro.media[i].Digest {
 			t.Errorf("a imagem %s nao e determinista", m.ID)
 		}
 	}
@@ -45,6 +48,19 @@ func TestAOS529_BateriaOCR_TemDigestProprioEAsOutrasMantemOSeu(t *testing.T) {
 	}
 	if um.Digest() != aos525DigestDaBateria1 || aos525Bateria2(t).Digest() != aos525DigestDaBateria2 || aos528Bateria3(t).Digest() != aos528DigestDaBateria3 {
 		t.Error("as baterias 1.0.0, 2.0.0 e 3.0.0 mudaram")
+	}
+}
+
+// A cache do desenho não é partilha: alterar as imagens de uma bateria, ou as que Media devolve,
+// não altera as de outra carregada depois.
+func TestAOS529_BateriaOCR_ACacheDaCopias(t *testing.T) {
+	a := aos529Bateria(t)
+	original := append([]byte(nil), a.Media()[0].Bytes...)
+	a.media[0].Bytes[0] ^= 0xff
+	a.Media()[1].Bytes[0] ^= 0xff
+	b := aos529Bateria(t)
+	if !bytes.Equal(b.Media()[0].Bytes, original) || b.Media()[1].Digest != digestDe(b.Media()[1].Bytes) {
+		t.Error("alterar as imagens de uma bateria alterou as de outra")
 	}
 }
 
