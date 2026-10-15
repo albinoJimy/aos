@@ -92,6 +92,9 @@ type Ambiente struct {
 	// opção nem variável de ambiente que cá chegue.
 	entreACorridaEAPreparacao func(feita *corridaFeita)
 	depoisDeEscreverOPacote   func(pacote string)
+	// dockerDeTeste, quando presente, faz de Docker do motor de OCR em contentor (AOS-529). Só os
+	// testes do próprio pacote a definem.
+	dockerDeTeste corredorDocker
 }
 
 // corridaFeita é o que uma corrida deixou escrito: o relatório, tal como foi gravado, e os dois
@@ -149,6 +152,8 @@ const usoDoBanco = `aos-ensaio — banco de ensaio da fronteira runtime-modelo (
   aos-ensaio bateria [--experiencia degraus|conselheiro]
                                                    mostra o digest e os casos da bateria (com
                                                    --experiencia degraus, os da 2.0.0; conselheiro, os da 3.0.0)
+  aos-ensaio ocr     [--motor falso|tesseract|visao ...]  mede um motor de OCR com imagens sinteticas (AOS-529;
+                                                   'aos-ensaio ocr -h' para as opcoes)
   aos-ensaio limpar  [--chaves F | --contador F]   remove contentores e redes aos512-* que tenham ficado de uma
                                                    corrida anterior (um proxy orfao guarda a chave no ambiente)
                                                    e a trava do contador de um processo que ja morreu
@@ -231,6 +236,9 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 			return qualificar(ctx, args[1:], stdout, stderr, amb, red)
 		case "conferir":
 			return conferir(args[1:], stdout, stderr)
+		case "ocr":
+			// A experiência de OCR (AOS-529) tem as suas opções e o seu uso (ocr_cli.go).
+			return executarOCR(ctx, args[1:], stdout, stderr, amb, red)
 		}
 	}
 	return executarCom(ctx, args, stdout, stderr, amb, red, &corridaFeita{})
@@ -820,40 +828,13 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 			pastaDaSaida = filepath.Join(pastaDoEstado, "relatorios")
 		}
 		pastasDeRelatorios := []string{filepath.Join(pastaDoEstado, "relatorios"), filepath.Join(filepath.Dir(caminho), "relatorios"), pastaDaSaida}
-		if _, serr := os.Stat(caminhoDoContador); errors.Is(serr, os.ErrNotExist) {
-			// Um contador que não existe só é o primeiro uso se não houver relatórios de corridas
-			// reais de hoje: havendo, a contagem do dia perdeu-se, e não se recomeça do zero.
-			dia := amb.Relogio().UTC().Format("2006-01-02")
-			// O do conselheiro também (AOS-528): o contador é um só ficheiro para os dois.
-			fornecedores := []Fornecedor{fornecedor}
-			if comConselheiro && fornecedorDoConselheiro != fornecedor {
-				fornecedores = append(fornecedores, fornecedorDoConselheiro)
-			}
-			usos, total, n := map[Fornecedor]usoDoDia{}, int64(0), 0
-			for _, f := range fornecedores {
-				pedidos, microUSD, deste := UsoDosRelatoriosDeHoje(pastasDeRelatorios, f, dia)
-				usos[f], total, n = usoDoDia{Pedidos: pedidos, MicroUSD: microUSD}, total+pedidos, n+deste
-			}
-			// A reconstrução leva também a contagem de hoje dos OUTROS fornecedores que aparecem nos
-			// relatórios: o ficheiro é um só, e sem isto a linha de um terceiro fornecedor perdia-se.
-			for _, f := range []Fornecedor{FornecedorKimi, FornecedorAnthropic, FornecedorOpenRouter} {
-				if _, ja := usos[f]; !ja {
-					if pedidos, microUSD, _ := UsoDosRelatoriosDeHoje(pastasDeRelatorios, f, dia); pedidos > 0 || microUSD > 0 {
-						usos[f] = usoDoDia{Pedidos: pedidos, MicroUSD: microUSD}
-					}
-				}
-			}
-			if n > 0 {
-				if !o.reconstruir {
-					fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", ErrContadorDesaparecido)
-					return SaidaRecusada
-				}
-				if rerr := reconstruirContadorDe(caminhoDoContador, dia, usos); rerr != nil {
-					fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", rerr)
-					return SaidaRecusada
-				}
-				fmt.Fprintf(stderr, "aos-ensaio: contador RECONSTRUIDO a partir de %d relatorio(s) de hoje: %d pedidos\n", n, total)
-			}
+		// O do conselheiro também (AOS-528): o contador é um só ficheiro para os dois.
+		fornecedores := []Fornecedor{fornecedor}
+		if comConselheiro && fornecedorDoConselheiro != fornecedor {
+			fornecedores = append(fornecedores, fornecedorDoConselheiro)
+		}
+		if !verificarContadorDoDia(caminhoDoContador, pastasDeRelatorios, fornecedores, amb.Relogio().UTC().Format("2006-01-02"), o.reconstruir, stderr) {
+			return SaidaRecusada
 		}
 		// FAIL-CLOSED: sem tecto, sem preço para um tecto em dólares, com um contador que não
 		// se lê ou em uso por outro processo, o contador não abre e a corrida não arranca.
@@ -1387,4 +1368,41 @@ func piorCasoPorFornecedor(executor Fornecedor, doExecutor int64, conselheiro Fo
 		return fmt.Sprintf("%s=%d (executor %d e conselheiro %d)", executor, doExecutor+consultas+1, doExecutor, consultas+1)
 	}
 	return fmt.Sprintf("%s=%d (executor), %s=%d (conselheiro)", executor, doExecutor, conselheiro, consultas+1)
+}
+
+// verificarContadorDoDia trata o contador do dia que não existe: só é o primeiro uso se não houver
+// relatórios de corridas reais de hoje, de nenhum dos fornecedores dados; havendo, a contagem do dia
+// perdeu-se e não se recomeça do zero — recusa, ou reconstrói-a com `reconstruir`. Devolve falso
+// quando recusou (e já disse porquê).
+func verificarContadorDoDia(caminhoDoContador string, pastasDeRelatorios []string, fornecedores []Fornecedor, dia string, reconstruir bool, stderr io.Writer) bool {
+	if _, serr := os.Stat(caminhoDoContador); !errors.Is(serr, os.ErrNotExist) {
+		return true
+	}
+	usos, total, n := map[Fornecedor]usoDoDia{}, int64(0), 0
+	for _, f := range fornecedores {
+		pedidos, microUSD, deste := UsoDosRelatoriosDeHoje(pastasDeRelatorios, f, dia)
+		usos[f], total, n = usoDoDia{Pedidos: pedidos, MicroUSD: microUSD}, total+pedidos, n+deste
+	}
+	// A reconstrução leva também a contagem de hoje dos OUTROS fornecedores que aparecem nos
+	// relatórios: o ficheiro é um só, e sem isto a linha de um terceiro fornecedor perdia-se.
+	for _, f := range []Fornecedor{FornecedorKimi, FornecedorAnthropic, FornecedorOpenRouter} {
+		if _, ja := usos[f]; !ja {
+			if pedidos, microUSD, _ := UsoDosRelatoriosDeHoje(pastasDeRelatorios, f, dia); pedidos > 0 || microUSD > 0 {
+				usos[f] = usoDoDia{Pedidos: pedidos, MicroUSD: microUSD}
+			}
+		}
+	}
+	if n == 0 {
+		return true
+	}
+	if !reconstruir {
+		fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", ErrContadorDesaparecido)
+		return false
+	}
+	if rerr := reconstruirContadorDe(caminhoDoContador, dia, usos); rerr != nil {
+		fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", rerr)
+		return false
+	}
+	fmt.Fprintf(stderr, "aos-ensaio: contador RECONSTRUIDO a partir de %d relatorio(s) de hoje: %d pedidos\n", n, total)
+	return true
 }

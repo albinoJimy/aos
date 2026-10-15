@@ -618,6 +618,62 @@ está na página. O `conferir` vê os ficheiros, não o servidor. As duas variá
 pasta estão no compose de produção, desligadas; ligá-las no servidor é do dono
 (`deploy/server/README.md`, «Ligar a fase A3 em produção»). Um registo não expira e não há anti-recuo.
 
+## Medir um motor de OCR (AOS-529)
+
+A experiência `ocr` corre um motor de OCR sobre a bateria de imagens sintéticas e escreve o
+relatório. Não toca em produção. Detalhe em `packages/qa/banco-ensaio/README.md`, «A medição do
+OCR».
+
+1. **A imagem do Tesseract tem de estar no posto.** O banco não a descarrega (`--pull never`).
+   Constrói-se com o Dockerfile do banco (precisa de rede para o `apt-get`; é decisão do dono):
+
+   ```powershell
+   docker build -t aos-ensaio-ocr:tesseract packages/qa/banco-ensaio/ocr
+   docker image inspect aos-ensaio-ocr:tesseract --format "{{.Id}} {{.Size}}"
+   ```
+
+   O ID (`sha256:<64 hex>`) é o que se dá a `--imagem`: uma imagem construída no posto não tem
+   digest de registo. Uma imagem de registo dá-se como `nome@sha256:<64 hex>`, sem etiqueta.
+
+2. **Ver as imagens da bateria**, se for a primeira vez:
+
+   ```powershell
+   go run ./cmd/aos-ensaio ocr bateria --imagens $env:TEMP\ocr-imagens
+   ```
+
+3. **Ensaiar com o motor falso** (prova que o relatório distingue; não mede nada):
+
+   ```powershell
+   go run ./cmd/aos-ensaio ocr --motor falso --falso erra-factos --saida $env:TEMP\ensaio
+   ```
+
+4. **Medir o Tesseract**, com os limites do gVisor (sem rede, 45 s, 1 GiB, 512 processos, raiz só
+   de leitura, uid 65532) mas com o runc do Docker:
+
+   ```powershell
+   go run ./cmd/aos-ensaio ocr --motor tesseract --imagem sha256:<ID>
+   ```
+
+   Sai com 0 se a corrida completou, sejam quais forem as taxas; com 6 se não há Docker ou a
+   imagem não está no posto; com 2 se a imagem não está fixada. Uma imagem que passa os 45 s ou
+   esgota a memória fica `falhou:tempo` ou `falhou:memoria`, e a corrida continua.
+
+5. **Medir um modelo de visão** (pago; só o dono, com o seu ficheiro de chaves, nunca em CI).
+   Primeiro o plano, que não envia nada e mostra o pior caso (13 pedidos) e o destino da chave:
+
+   ```powershell
+   go run ./cmd/aos-ensaio ocr --motor visao --chaves $env:USERPROFILE\.aos-ensaio\chaves.env --visao-fornecedor openrouter --visao-modelo M --precos P --so-plano
+   ```
+
+   Depois a mesma linha sem `--so-plano`. O modelo tem de estar na lista do fornecedor no
+   ficheiro de chaves; os pedidos contam no contador e nos tectos desse fornecedor. O PDF fica
+   fora deste braço. Uma recusa da chave, da conta ou do ritmo pára a corrida (sai com 4).
+
+6. **Ler o resumo**: os factos pela regra do banco e com os acentos exactos, por degradação, por
+   formato e com e sem acentos, e no modelo de visão o custo estimado. A proposta de 90% é do
+   desenho, não um veredicto: a escolha do motor é do dono. Com `--guardar-respostas`, o texto
+   lido de cada imagem fica na pasta `respostas-<relatório>/`, e só lá.
+
 ## Se correr mal
 
 | Sintoma | Causa | O que fazer |
