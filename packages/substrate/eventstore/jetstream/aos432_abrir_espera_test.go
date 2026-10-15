@@ -40,6 +40,11 @@ type servidorEleicao struct {
 	// `STREAM.INFO` enquanto o grupo R3 de um stream acabado de criar ainda não tem quem
 	// responda (nats-server 2.10.22, `jsStreamInfoRequest`: `if bail { return }`).
 	silencioInfo int
+	// info404: quantos INFO (depois dos calados) respondem «stream not found» (AOS-528). É o
+	// que o membro preferido de um grupo novo responde quando ainda não criou o stream
+	// localmente (nats-server 2.10.29, `jsStreamInfoRequest`: «This could be inflight»). -1 =
+	// sempre.
+	info404 int
 	// pub503: quantas publicações num subject de stream recebem 503 — o líder já é anunciado
 	// pelo INFO, mas ainda não subscreveu os subjects (`setLeader` corre DEPOIS de o Raft já
 	// se dizer líder). -1 = sempre. Depois disso a publicação é aceite (`seq` crescente).
@@ -146,8 +151,11 @@ func (s *servidorEleicao) responder(subj string) string {
 		if s.infos <= s.silencioInfo {
 			return ""
 		}
+		if s.info404 < 0 || s.infos-s.silencioInfo <= s.info404 {
+			return `{"type":"io.nats.jetstream.api.v1.stream_info_response","error":{"code":404,"err_code":10059,"description":"stream not found"}}`
+		}
 		lider := "NFAKE"
-		if s.semLider < 0 || s.infos-s.silencioInfo <= s.semLider {
+		if s.semLider < 0 || s.infos-s.silencioInfo-max(s.info404, 0) <= s.semLider {
 			lider = ""
 		}
 		cfg, _ := json.Marshal(map[string]any{"subjects": s.subjects, "num_replicas": 3})
