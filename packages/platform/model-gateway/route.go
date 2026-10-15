@@ -92,6 +92,10 @@ const (
 const (
 	// CapabilityTools — a rota aceita o campo `tools` do pedido.
 	CapabilityTools = "tools"
+	// CapabilityImage — a rota aceita partes de imagem nas mensagens `user` do pedido (AOS-530,
+	// ADR-042 §2.4). Um pedido com uma imagem para uma rota que não a declare é recusado pelo
+	// gateway antes de sair ([ErrRouteWithoutImage]). Nenhum perfil da tabela em código a declara.
+	CapabilityImage = "imagem"
 )
 
 // RouteProfile é o PERFIL MÍNIMO de uma rota: o que o nó espera de um nome que pede ao proxy.

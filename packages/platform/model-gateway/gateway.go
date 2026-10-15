@@ -359,6 +359,16 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 
 	var resp port.ChatResponse
 	runErr := g.pipe.Execute(ctx, ex, func(ctx context.Context, ex *pipeline.Exchange) error {
+		// AOS-530: uma parte de imagem só sai para uma rota que declare `imagem`. A recusa entra
+		// AQUI — o primeiro passo depois dos estágios — porque precisa da rota RESOLVIDA (o
+		// roteamento já correu, recuo incluído) e de mais nada: antes da credencial, para que
+		// nenhum segredo seja buscado nem nenhuma chave do pool usada; antes do selo de atribuição,
+		// que sela um EFEITO que vai acontecer (audit-before-effect) e não uma chamada que nunca
+		// sai; e, como todas as recusas desta função, antes do adaptador e do custo — o metering
+		// não corre quando a invocação devolve erro.
+		if err := g.recusarImagemSemCapacidade(ex, req); err != nil {
+			return err
+		}
 		cred, err := g.credential(ctx, ex)
 		if err != nil {
 			return err
@@ -387,8 +397,9 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 		r, err := g.adapter.Chat(ctx, req, cred)
 		if err != nil {
 			g.contarRecusaDeParametros(req.Model, enviados, err)
-			if comEstado > 0 {
-				// O pedido levou estado: o corpo do erro do provider pode ecoá-lo, e não sobe.
+			if comEstado > 0 || req.HasImages() {
+				// O pedido levou estado ou uma imagem (AOS-530): o corpo do erro do provider pode
+				// ecoá-los, e não sobe.
 				return semCorpoDoErro(err)
 			}
 			return err
@@ -447,6 +458,10 @@ func (g *Gateway) ChatStream(ctx context.Context, req port.ChatRequest) (port.Ch
 
 	var inner port.ChatStream
 	runErr := g.pipe.ExecutePreInvoke(ctx, ex, func(ctx context.Context, ex *pipeline.Exchange) error {
+		// AOS-530: a mesma recusa, no mesmo sítio, de [Gateway.Chat].
+		if err := g.recusarImagemSemCapacidade(ex, req); err != nil {
+			return err
+		}
 		cred, err := g.credential(ctx, ex)
 		if err != nil {
 			return err
@@ -469,6 +484,10 @@ func (g *Gateway) ChatStream(ctx context.Context, req port.ChatRequest) (port.Ch
 		_, _, _, _ = armarDevolucao(&req, RouteProfile{}, false)
 		s, err := g.adapter.ChatStream(ctx, req, cred)
 		if err != nil {
+			if req.HasImages() {
+				// AOS-530: o corpo do erro do provider pode ecoar a imagem, e não sobe.
+				return semCorpoDoErro(err)
+			}
 			return err
 		}
 		inner = s
@@ -891,6 +910,9 @@ func errType(err error) string {
 	}
 	if errors.Is(err, ErrRouteVariance) {
 		return "route_variance"
+	}
+	if errors.Is(err, ErrRouteWithoutImage) {
+		return "route_without_image"
 	}
 	return "provider_error"
 }

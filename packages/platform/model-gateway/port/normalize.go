@@ -91,6 +91,11 @@ func (r ChatRequest) Normalize() (ChatRequest, error) {
 		if !validRole(m.Role) {
 			return ChatRequest{}, ErrBadRole
 		}
+		// AOS-530: uma parte de imagem só numa mensagem `user`, e só PNG ou JPEG pelos primeiros
+		// bytes, não vazia e até [MaxImageBytes]. Recusada aqui, antes de qualquer estágio.
+		if err := validarImagens(m); err != nil {
+			return ChatRequest{}, err
+		}
 		out.Messages[i] = m
 	}
 	if len(r.Tools) > 0 {
@@ -145,7 +150,11 @@ func (r ChatRequest) MarshalWire(stream bool) ([]byte, error) {
 	}
 	// AOS-515 — O ESTADO OPACO SÓ SAI QUANDO O GATEWAY O MARCOU ([MessageState.Return]). Sem
 	// nenhuma mensagem marcada, o caminho é o de sempre e os bytes são os de sempre.
-	if temEstadoParaSair(w.Messages) {
+	//
+	// AOS-530 — AS PARTES DE IMAGEM saem pelo mesmo corpo montado à mão, mensagem a mensagem
+	// ([mensagemNoWire]): só as mensagens com imagens mudam de forma. Sem nenhuma imagem, o caminho
+	// é o de sempre e os bytes são os de sempre.
+	if temEstadoParaSair(w.Messages) || temImagens(w.Messages) {
 		return marshalComEstado(w)
 	}
 	return json.Marshal(w)
