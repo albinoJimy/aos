@@ -26,6 +26,13 @@ const (
 	// «no suitable peers for placement, tags not matched ['region:...']»,
 	// code=400 err_code=10005.
 	CodeNoSuitablePeers = 10005
+
+	// CodeStreamNotFound — o servidor que respondeu não conhece o stream.
+	//
+	// Valor CONFIRMADO contra um cluster real (gate `nats`, run 38397155492, AOS-531) —
+	// resposta literal: «stream not found», code=404 err_code=10059. Ver lider.go para a
+	// única circunstância em que o `jetstream.Abrir` NÃO o lê como «o stream não existe».
+	CodeStreamNotFound = 10059
 )
 
 // ErrWrongLastSeq — o servidor recusou a escrita por o expected_seq não bater. Nada ficou
