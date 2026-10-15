@@ -356,6 +356,7 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 	span.SetAttribute(agentruntime.AttrRequestModel, req.Model)
 
 	ex := g.newExchange(pipeline.OpChat, req.Principal, req.Board, req.RunID, req.StepID, req.TreeID, req.Model, g.regionOf(req.Region))
+	ex.OriginTool = req.OriginTool
 
 	var resp port.ChatResponse
 	runErr := g.pipe.Execute(ctx, ex, func(ctx context.Context, ex *pipeline.Exchange) error {
@@ -455,12 +456,15 @@ func (g *Gateway) ChatStream(ctx context.Context, req port.ChatRequest) (port.Ch
 	span.SetAttribute(agentruntime.AttrRequestModel, req.Model)
 
 	ex := g.newExchange(pipeline.OpChat, req.Principal, req.Board, req.RunID, req.StepID, req.TreeID, req.Model, g.regionOf(req.Region))
+	ex.OriginTool = req.OriginTool
 
 	var inner port.ChatStream
 	runErr := g.pipe.ExecutePreInvoke(ctx, ex, func(ctx context.Context, ex *pipeline.Exchange) error {
-		// AOS-530: a mesma recusa, no mesmo sítio, de [Gateway.Chat].
-		if err := g.recusarImagemSemCapacidade(ex, req); err != nil {
-			return err
+		// AOS-530: o streaming fica fora do ADR-042 (§2.9) — um pedido com imagens é recusado aqui,
+		// qualquer que seja a rota, no mesmo sítio e pelas mesmas razões da recusa por capacidade
+		// em [Gateway.Chat] (antes da credencial, do selo, do adaptador e do custo).
+		if req.HasImages() {
+			return &RouteWithoutImageError{Cause: ImageCauseStreaming}
 		}
 		cred, err := g.credential(ctx, ex)
 		if err != nil {
@@ -706,6 +710,7 @@ func (g *Gateway) attribute(ctx context.Context, span agentruntime.Span, ex *pip
 		PolicyVersion:   ex.PolicyVersion,
 		RunID:           ex.RunID,
 		StepID:          ex.StepID,
+		OriginTool:      ex.OriginTool,
 		Timestamp:       g.clock(),
 	}
 	if err := g.attribution.Record(ctx, span, rec); err != nil {

@@ -36,7 +36,8 @@ import (
 // MINOR acrescenta de forma retro-compatível, PATCH corrige sem alterar contrato.
 //
 // 1.12.0 (AOS-530, ADR-042): uma mensagem `user` de um pedido pode levar partes de imagem
-// ([Message.Images]); as respostas continuam só texto.
+// ([Message.Images]); as respostas continuam só texto; e o pedido leva a tool que o fez
+// ([ChatRequest.OriginTool]), metadado de plataforma que entra no selo de atribuição.
 const Version = "1.12.0"
 
 // Role é o papel de uma mensagem na conversa (forma OpenAI).
@@ -496,6 +497,12 @@ type ChatRequest struct {
 	// desligado, com o contrato satisfeito, depois da primeira tool call do run, ou num chamador que
 	// não o fornece — e então nenhuma regra pede a tool.
 	ContractToForce []string `json:"-"`
+	// OriginTool é o identificador da TOOL que fez o pedido (AOS-530, ADR-042 §2.2; campo aditivo,
+	// MINOR 1.12.0). Metadado de plataforma (nunca no wire): vazio num turno do executor — a
+	// omissão —, e o nome da tool quando o efeito de uma tool mediada pelo RM é esta chamada. Entra
+	// no selo de atribuição do gateway, que assim distingue um turno de uma chamada feita por uma
+	// tool; vazio, o selo é o de sempre. Validado em [ChatRequest.Normalize] ([ErrBadOriginTool]).
+	OriginTool string `json:"-"`
 }
 
 // Choice é uma escolha da resposta de chat (forma OpenAI).

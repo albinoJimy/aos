@@ -17,9 +17,10 @@ import (
 // ela é recusado, e nunca cai em silêncio para essa rota. Uma rota sem perfil não declara nada, e
 // também recusa.
 
-// ErrRouteWithoutImage — o pedido leva uma parte de imagem e a rota a que vai não declara a
-// capacidade `imagem`. O pedido não sai: nenhum adaptador é chamado e nenhum custo é contado.
-var ErrRouteWithoutImage = errors.New("model-gateway: o pedido leva uma parte de imagem e a rota nao declara a capacidade imagem — recusado antes de sair")
+// ErrRouteWithoutImage — o pedido leva uma parte de imagem por uma via que não a aceita: a rota a
+// que vai não declara a capacidade `imagem`, ou o pedido é em streaming (fora do ADR-042, §2.9). O
+// pedido não sai: nenhum adaptador é chamado e nenhum custo é contado.
+var ErrRouteWithoutImage = errors.New("model-gateway: o pedido leva uma parte de imagem que esta via nao aceita (rota sem a capacidade imagem, ou streaming) — recusado antes de sair")
 
 // Causas de [RouteWithoutImageError]. Vocabulário FECHADO.
 const (
@@ -27,12 +28,14 @@ const (
 	ImageCauseProfileWithout = "perfil_sem_imagem"
 	// ImageCauseNoProfile — a rota não tem perfil.
 	ImageCauseNoProfile = "rota_sem_perfil"
+	// ImageCauseStreaming — o pedido com imagens é em streaming, que o ADR-042 deixa de fora.
+	ImageCauseStreaming = "imagem_em_streaming"
 )
 
 // RouteWithoutImageError é o erro de um pedido com imagem recusado pela capacidade da rota. Casa
 // com [ErrRouteWithoutImage] por [errors.Is]. Só leva vocabulário fechado.
 type RouteWithoutImageError struct {
-	// Cause é [ImageCauseProfileWithout] ou [ImageCauseNoProfile].
+	// Cause é [ImageCauseProfileWithout], [ImageCauseNoProfile] ou [ImageCauseStreaming].
 	Cause string
 }
 

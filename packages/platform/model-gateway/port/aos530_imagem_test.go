@@ -251,3 +251,19 @@ func TestAOS530_BytesSoNoWire(t *testing.T) {
 		t.Fatalf("o wire tinha de levar os bytes: %v", err)
 	}
 }
+
+// A tool de origem é metadado de plataforma: não vai no wire.
+func TestAOS530_ToolDeOrigem_ForaDoWire(t *testing.T) {
+	t.Parallel()
+	base := aos530Pedido(port.Message{Role: port.RoleUser, Content: "x"})
+	comOrigem := base
+	comOrigem.OriginTool = "ocr_read"
+	a, errA := base.MarshalWire(false)
+	b, errB := comOrigem.MarshalWire(false)
+	if errA != nil || errB != nil || string(a) != string(b) {
+		t.Fatalf("a tool de origem mudou o wire:\n%s\n%s", a, b)
+	}
+	if cru, _ := json.Marshal(comOrigem); strings.Contains(string(cru), "ocr_read") {
+		t.Fatalf("a tool de origem saiu no JSON do pedido: %s", cru)
+	}
+}

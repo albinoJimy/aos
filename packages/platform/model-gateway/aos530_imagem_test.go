@@ -435,10 +435,99 @@ func TestAOS530_AdaptadorDoRuntime_NuncaProduzImagens(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ReadFile(%s): %v", f, err)
 		}
-		for _, nome := range []string{"Images", "ImagePart"} {
+		// OriginTool também: a tool de origem só a preenche a tool (peça 3), nunca um turno.
+		for _, nome := range []string{"Images", "ImagePart", "OriginTool"} {
 			if strings.Contains(string(fonte), nome) {
 				t.Fatalf("%s nomeia %s: o adaptador dos turnos nao pode produzir imagens (ADR-042 §2.4, barreira 1)", f, nome)
 			}
+		}
+	}
+}
+
+// O STREAMING FICA DE FORA (ADR-042 §2.9): mesmo numa rota que declara `imagem`, um pedido com
+// imagens em streaming é recusado antes da credencial, do selo, do adaptador e do custo.
+func TestAOS530_Gateway_StreamingComImagem_Recusa(t *testing.T) {
+	t.Parallel()
+	m := aos530Compor(t, "", aos530PerfilComImagem(aos530Modelo))
+	_, err := m.gw.ChatStream(context.Background(), aos530PedidoComImagem(aos530Modelo))
+	aos530QueroRecusa(t, err, modelgateway.ImageCauseStreaming)
+	m.aos530SemEfeito(t)
+	// O mesmo pedido por Chat passa: a recusa é do streaming.
+	if _, err := m.gw.Chat(context.Background(), aos530PedidoComImagem(aos530Modelo)); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+}
+
+// aos530Selos devolve os registos de atribuição selados numa montagem.
+func aos530Selos(t *testing.T, m *aos530Montagem) []audit.AuditRecord {
+	t.Helper()
+	var out []audit.AuditRecord
+	for _, p := range m.selos.Partitions() {
+		head, _ := m.selos.Head(context.Background(), p)
+		recs, err := m.selos.Read(context.Background(), p, 1, head)
+		if err != nil {
+			t.Fatalf("Read(%s): %v", p, err)
+		}
+		out = append(out, recs...)
+	}
+	return out
+}
+
+// A TOOL DE ORIGEM (ADR-042 §2.2): entra no selo de atribuição e no span, e um selo distingue
+// assim uma chamada feita por uma tool de um turno; vazio, nada disso aparece.
+func TestAOS530_Gateway_ToolDeOrigem_NoSelo(t *testing.T) {
+	t.Parallel()
+	pedir := func(origem string) (audit.AuditRecord, map[string]any) {
+		m := aos530Compor(t, "", aos530PerfilComImagem(aos530Modelo))
+		req := aos530PedidoComImagem(aos530Modelo)
+		req.OriginTool = origem
+		if _, err := m.gw.Chat(context.Background(), req); err != nil {
+			t.Fatalf("Chat(origem=%q): %v", origem, err)
+		}
+		selos := aos530Selos(t, m)
+		spans := m.tracer.SpansByOperation("chat")
+		if len(selos) != 1 || len(spans) != 1 {
+			t.Fatalf("origem=%q: %d selos, %d spans", origem, len(selos), len(spans))
+		}
+		return selos[0], spans[0].Attributes
+	}
+	comTool, spanTool := pedir("ocr_read")
+	turno, spanTurno := pedir("")
+	if len(comTool.Obligations) != 1 || comTool.Obligations[0].Type != attribution.ObligationOrigin || comTool.Obligations[0].Params["tool"] != "ocr_read" {
+		t.Fatalf("o selo de uma chamada da tool tinha de levar a origem: %+v", comTool.Obligations)
+	}
+	if spanTool[attribution.AttrOriginTool] != "ocr_read" {
+		t.Fatalf("o span tinha de levar a tool de origem: %v", spanTool)
+	}
+	if len(turno.Obligations) != 0 {
+		t.Fatalf("o selo de um turno nao leva obligation de origem: %+v", turno.Obligations)
+	}
+	if _, tem := spanTurno[attribution.AttrOriginTool]; tem {
+		t.Fatal("o span de um turno nao leva tool de origem")
+	}
+	if string(comTool.EntryHash) == string(turno.EntryHash) {
+		t.Fatal("o selo de uma chamada da tool e o de um turno tinham de ser distinguiveis")
+	}
+}
+
+// A tool de origem é um identificador curto; outra coisa é recusada pela porta, antes de tudo.
+func TestAOS530_Gateway_ToolDeOrigemInvalida_Recusa(t *testing.T) {
+	t.Parallel()
+	for _, origem := range []string{"OCR_read", "1ocr", "ocr read", "ocr/read", "_ocr", strings.Repeat("a", 65), "ocr\nread"} {
+		m := aos530Compor(t, "", aos530PerfilComImagem(aos530Modelo))
+		req := aos530PedidoComImagem(aos530Modelo)
+		req.OriginTool = origem
+		_, err := m.gw.Chat(context.Background(), req)
+		if !errors.Is(err, port.ErrBadOriginTool) || strings.Contains(err.Error(), origem) {
+			t.Fatalf("origem %q: erro = %v; quero ErrBadOriginTool sem o valor", origem, err)
+		}
+		m.aos530SemEfeito(t)
+	}
+	for _, origem := range []string{"ocr_read", "doc.read-2", strings.Repeat("a", 64)} {
+		req := aos530PedidoComImagem(aos530Modelo)
+		req.OriginTool = origem
+		if _, err := req.Normalize(); err != nil {
+			t.Fatalf("origem %q recusada: %v", origem, err)
 		}
 	}
 }

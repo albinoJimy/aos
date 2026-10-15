@@ -59,6 +59,13 @@ const (
 	AttrKeyID = "aos.infra.key_id"
 )
 
+// ObligationOrigin é o tipo da obligation que sela a ORIGEM de uma chamada feita por uma tool
+// (AOS-530, ADR-042 §2.2): `Params["tool"]` é [Record.OriginTool]. Ausente num turno do executor.
+const ObligationOrigin = "model_call_origin"
+
+// AttrOriginTool — a tool que fez a chamada, no span; só quando há uma.
+const AttrOriginTool = "aos.origin.tool"
+
 // capabilityModelInvoke é a capability selada no registo WORM: a model call é o
 // exercício do direito de invocar um modelo.
 const capabilityModelInvoke = "model:invoke"
@@ -93,6 +100,9 @@ type Record struct {
 	// RunID/StepID correlacionam com a trajectória do agente (opcional).
 	RunID  string
 	StepID string
+	// OriginTool é a tool que fez a chamada (AOS-530, ADR-042 §2.2); vazio num turno do executor.
+	// Quando não vazio, sela-se numa obligation [ObligationOrigin]; vazio, o selo é o de sempre.
+	OriginTool string
 	// Timestamp é observacional (a ordem no WORM é o AuditSeq).
 	Timestamp time.Time
 }
@@ -178,6 +188,9 @@ func (r *Recorder) Annotate(span agentruntime.Span, rec Record) {
 	span.SetAttribute(agentruntime.AttrRequestModel, rec.Model)
 	span.SetAttribute(AttrRegion, rec.Region)
 	span.SetAttribute(AttrKeyID, rec.KeyID)
+	if rec.OriginTool != "" {
+		span.SetAttribute(AttrOriginTool, rec.OriginTool)
+	}
 }
 
 // Seal sela o registo de atribuição no audit WORM hash-chain (ADR-010/AOS-011) e
@@ -204,6 +217,12 @@ func (r *Recorder) Seal(ctx context.Context, rec Record) (audit.AuditRecord, err
 		StepID:        rec.StepID,
 		ToolID:        "model." + rec.Model,
 		Resource:      audit.Resource{Type: "model", Value: rec.Model, Region: rec.Region},
+	}
+	// AOS-530: uma chamada feita por uma tool sela a tool numa obligation (as obligations já são
+	// conteúdo selado em todas as épocas do formato, pelo que não há versão nova do WORM). Num
+	// turno do executor não há obligation nenhuma e o registo é, byte a byte, o de antes.
+	if rec.OriginTool != "" {
+		ar.Obligations = []audit.Obligation{{Type: ObligationOrigin, Params: map[string]string{"tool": rec.OriginTool}}}
 	}
 	return r.store.Append(ctx, ar)
 }
