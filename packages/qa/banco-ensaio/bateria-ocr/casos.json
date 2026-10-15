@@ -1,0 +1,75 @@
+{
+  "versao": "1.0.0",
+  "marca": "DOCUMENTO SINTETICO AOS-529",
+  "documentos": [
+    {
+      "id": "fatura-a",
+      "descricao": "fatura sem acentos, maiusculas e numeros",
+      "linhas": [
+        "DOCUMENTO SINTETICO AOS-529",
+        "FATURA FT 2026/0912",
+        "Fornecedor: Tecidos do Norte Lda",
+        "NIF 509876123",
+        "Data 2026-09-12",
+        "Total a pagar: 1.284,50 EUR"
+      ],
+      "factos": ["FT 2026/0912", "Tecidos do Norte", "509876123", "2026-09-12", "1.284,50"]
+    },
+    {
+      "id": "fatura-b",
+      "descricao": "fatura com acentos no nome, na morada e na cidade",
+      "linhas": [
+        "DOCUMENTO SINTETICO AOS-529",
+        "FATURA FT 2026/1407",
+        "Fornecedor: Panificação Ribeirão Lda",
+        "Morada: Rua da Estação 14, Évora",
+        "NIF 514230987",
+        "Total a pagar: 642,15 EUR"
+      ],
+      "factos": ["FT 2026/1407", "Panificação Ribeirão", "Rua da Estação 14", "Évora", "514230987", "642,15"]
+    },
+    {
+      "id": "recibo",
+      "descricao": "recibo em minusculas, com acentos e cedilhas",
+      "linhas": [
+        "DOCUMENTO SINTETICO AOS-529",
+        "Recibo n. 3381",
+        "Recebemos de João Gonçalves Simões",
+        "a quantia de 275,00 EUR,",
+        "referente à manutenção da caldeira CX-208.",
+        "Coimbra, 2026-10-02"
+      ],
+      "factos": ["3381", "João Gonçalves Simões", "275,00", "manutenção", "CX-208", "Coimbra"]
+    },
+    {
+      "id": "guia-tabela",
+      "descricao": "guia de remessa com uma tabela de quatro colunas e grelha",
+      "linhas": [
+        "DOCUMENTO SINTETICO AOS-529",
+        "GUIA DE REMESSA GR-5520"
+      ],
+      "tabela": [
+        ["Codigo", "Descricao", "Qtd", "Preco"],
+        ["PX-4471", "Valvula de esfera", "137", "12,40"],
+        ["PX-4480", "Junta de borracha", "1250", "0,85"],
+        ["PX-4495", "Tubo de cobre 22", "48", "9,10"]
+      ],
+      "factos": ["GR-5520", "PX-4471", "Valvula de esfera", "12,40", "PX-4480", "1250", "0,85", "PX-4495", "9,10"]
+    }
+  ],
+  "imagens": [
+    {"id": "fatura-a-limpo", "documento": "fatura-a", "degradacao": "limpo", "formato": "png"},
+    {"id": "fatura-a-ruido", "documento": "fatura-a", "degradacao": "ruido-rotacao", "formato": "png"},
+    {"id": "fatura-a-baixa", "documento": "fatura-a", "degradacao": "baixa-resolucao", "formato": "png"},
+    {"id": "fatura-a-jpeg", "documento": "fatura-a", "degradacao": "limpo", "formato": "jpeg"},
+    {"id": "fatura-b-limpo", "documento": "fatura-b", "degradacao": "limpo", "formato": "png"},
+    {"id": "fatura-b-ruido", "documento": "fatura-b", "degradacao": "ruido-rotacao", "formato": "png"},
+    {"id": "fatura-b-baixa", "documento": "fatura-b", "degradacao": "baixa-resolucao", "formato": "png"},
+    {"id": "fatura-b-jpeg", "documento": "fatura-b", "degradacao": "limpo", "formato": "jpeg"},
+    {"id": "fatura-b-pdf", "documento": "fatura-b", "degradacao": "ruido-rotacao", "formato": "pdf"},
+    {"id": "recibo-limpo", "documento": "recibo", "degradacao": "limpo", "formato": "png"},
+    {"id": "recibo-ruido", "documento": "recibo", "degradacao": "ruido-rotacao", "formato": "png"},
+    {"id": "guia-tabela-limpo", "documento": "guia-tabela", "degradacao": "limpo", "formato": "png"},
+    {"id": "guia-tabela-ruido", "documento": "guia-tabela", "degradacao": "ruido-rotacao", "formato": "png"}
+  ]
+}

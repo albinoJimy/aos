@@ -42,13 +42,20 @@ var semAcento = map[rune]rune{
 }
 
 // dobrarParaComparar devolve o texto na forma em que os factos se comparam.
-func dobrarParaComparar(s string) string {
+func dobrarParaComparar(s string) string { return dobrar(s, true) }
+
+// dobrarComAcentos é a dobra SEM tirar os acentos (AOS-529): maiúsculas, espaços e hífenes
+// dobram-se como na regra, mas «Évora» e «Evora» ficam diferentes. Serve só para medir, à parte
+// da regra, um motor de OCR que perde os acentos.
+func dobrarComAcentos(s string) string { return dobrar(s, false) }
+
+func dobrar(s string, tirarAcentos bool) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	espaco := false
 	for _, r := range s {
 		// Um acento escrito à parte da letra (forma decomposta) cai, e a letra fica.
-		if unicode.Is(unicode.Mn, r) {
+		if tirarAcentos && unicode.Is(unicode.Mn, r) {
 			continue
 		}
 		if unicode.IsSpace(r) {
@@ -60,7 +67,7 @@ func dobrarParaComparar(s string) string {
 		}
 		espaco = false
 		r = unicode.ToLower(r)
-		if base, ok := semAcento[r]; ok {
+		if base, ok := semAcento[r]; ok && (tirarAcentos || base == '-') {
 			r = base
 		}
 		b.WriteRune(r)
@@ -84,4 +91,10 @@ func verificarFactos(saida string, factos []string) string {
 		}
 	}
 	return FactosPresentes
+}
+
+// factoComAcentosNaSaida diz se o facto ocorre na saída com os acentos exactos (AOS-529).
+func factoComAcentosNaSaida(saida, facto string) bool {
+	dobrado := dobrarComAcentos(facto)
+	return dobrado != "" && strings.Contains(dobrarComAcentos(saida), dobrado)
 }

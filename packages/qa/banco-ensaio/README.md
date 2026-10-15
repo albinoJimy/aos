@@ -715,6 +715,130 @@ factos exigidos — ou com os proibidos — que encontrar no que o executor lhe 
 - **Os falsos não dizem nada de um modelo real**; o modo `proxy` não tem conselheiro (o falso em
   contentor não faz de conselheiro). A medição real fica por fazer, com autorização do dono.
 
+## A medição do OCR e a experiência `ocr` (AOS-529)
+
+Na fase A5 o dono escolheu **ferramentas primeiro**: uma imagem chega a um run como texto lido
+por uma tool de OCR mediada pelo Reference Monitor, que corre localmente dentro do gVisor, sem
+rede (desenho `docs/reports/desenho-a5-a6-multimodal-2026-10-14.md`, D1 e D2). O motor
+escolhe-se **medindo aqui** antes de construir a tool (AOS-530). A experiência `ocr` é um
+subcomando com as suas opções e o seu uso (`aos-ensaio ocr -h`); as corridas de antes não mudam.
+
+```
+go run ./cmd/aos-ensaio ocr bateria                              # o digest e as treze imagens
+go run ./cmd/aos-ensaio ocr bateria --imagens /tmp/ocr-imagens   # escreve-as, para as ver
+go run ./cmd/aos-ensaio ocr --motor falso --falso erra-factos --saida /tmp/ensaio
+go run ./cmd/aos-ensaio ocr --motor tesseract --imagem sha256:<ID da imagem do posto> --saida /tmp/ensaio
+go run ./cmd/aos-ensaio ocr --motor visao --chaves F --visao-fornecedor openrouter --visao-modelo M --precos P --so-plano
+```
+
+### A bateria de OCR
+
+Vive em `bateria-ocr/casos.json`, com digest próprio, e **só tem texto**: quatro documentos
+sintéticos (duas faturas, uma com acentos e outra sem; um recibo em minúsculas com acentos e
+cedilhas; uma guia de remessa com uma tabela de quatro colunas e grelha), os factos de cada um
+(códigos, nomes, números, que ocorrem literalmente no texto) e as treze imagens a gerar:
+
+| Imagem | Documento | Degradação | Formato |
+|---|---|---|---|
+| `fatura-a-limpo`, `-ruido`, `-baixa`, `-jpeg` | fatura sem acentos | limpo, ruído e rotação, meia resolução, limpo | PNG, PNG, PNG, JPEG |
+| `fatura-b-limpo`, `-ruido`, `-baixa`, `-jpeg`, `-pdf` | fatura com acentos | as mesmas, e ruído e rotação | PNG, PNG, PNG, JPEG, PDF |
+| `recibo-limpo`, `-ruido` | recibo com acentos | limpo, ruído e rotação | PNG |
+| `guia-tabela-limpo`, `-ruido` | tabela sem acentos | limpo, ruído e rotação | PNG |
+
+As imagens **desenham-se em memória** ao carregar a bateria, com a biblioteca-padrão e uma fonte
+bitmap 5×7 desenhada no banco (`ocr_fonte.go`, com as letras acentuadas do português; o zero sem
+barra e mais estreito do que o «O», como na maior parte dos impressos): o repositório não guarda
+binários, e nenhuma dependência nova entrou. Tudo é aritmética inteira — a rotação de 1,5° em
+vírgula fixa e o ruído com um gerador de semente fixa —, para que os píxeis sejam os mesmos em
+qualquer máquina. O **digest da bateria** cobre o `casos.json` e os píxeis de cada imagem antes
+da codificação; o **digest de cada ficheiro** (PNG, JPEG ou PDF — o que o motor lê) vai por
+imagem no relatório. A degradação «ruído e rotação» soma um tom de fundo variável e 0,4% de
+píxeis soltos; «meia resolução» desenha a fonte a 2 píxeis por célula em vez de 4; o JPEG tem
+qualidade 55; o PDF é uma página com a imagem de `fatura-b-ruido`, sem camada de texto, como sai
+de um digitalizador. A validação é fail-closed: marca na primeira linha, factos no texto, letras
+que a fonte tem, vocabulário fechado de degradações e formatos.
+
+### O motor é plugável
+
+Um motor é a interface `MotorOCR`: recebe uma imagem e devolve texto, e diz as condições em que
+corre. **O tempo mede-o a experiência**, por fora, à volta da chamada; **a memória mede-a quem
+corre o motor** (no contentor, o `memory.peak` do cgroup), não o motor. Acrescentar um candidato
+é escrever um adaptador e dar-lhe um nome em `--motor`; a bateria, a regra dos factos e o
+relatório não mudam. Há três:
+
+- **`tesseract`** — o Tesseract num contentor Docker **fixado pelo conteúdo**: `--imagem
+  nome@sha256:<64 hex>` (sem etiqueta), ou o **ID** `sha256:<64 hex>` de uma imagem construída no
+  posto, que não tem digest de registo. A imagem constrói-se com `ocr/Dockerfile` (base Debian 12
+  fixada pelo digest, `tesseract-ocr`, `tesseract-ocr-por`, `tesseract-ocr-eng` e
+  `poppler-utils`); construir precisa de rede e é decisão do dono, correr não:
+
+  ```
+  docker build -t aos-ensaio-ocr:tesseract packages/qa/banco-ensaio/ocr
+  docker image inspect aos-ensaio-ocr:tesseract --format "{{.Id}}"    # o ID a dar em --imagem
+  ```
+
+  Corre com os limites do executor gVisor de produção: `--network none`, 1 GiB e 512 processos,
+  45 s por chamada (passado o limite o contentor é removido), raiz só de leitura, sem
+  capabilities, `no-new-privileges`, uid 65532, a imagem montada só de leitura, e `--pull never`
+  (o banco nunca descarrega a imagem; sem ela sai com 6). Línguas `por+eng` por omissão. O
+  Tesseract não lê PDF: o guião do contentor rasteriza-o com o `pdftoppm` a 300 ppp, pelo stdout,
+  e recolhe o código de **cada** estágio do pipe (o `dash` da Debian não tem `pipefail`). Uma
+  falha conta como **memória** só com o pico do cgroup acima de 90% do limite, venha de que
+  estágio vier; uma saída 137 sem esse pico é falha do motor. O contentor corre com o **runc** do
+  Docker, não com o gVisor, e uma chamada de cada vez. O nome começa por `aos512-`, e o
+  `aos-ensaio limpar` varre-o.
+- **`visao`** — um **modelo de visão** pago, a opção (d) da D2, medida ao lado para a comparação
+  (`ocr_visao.go`). Cada imagem vai como parte `image_url` numa data URL em base64, com uma
+  instrução fixa de transcrever o texto tal como está, sem comentar. O pedido sai pelo **mesmo
+  proxy efémero** do banco (a imagem fixada do LiteLLM), numa rota com alias próprio
+  (`rota-visao`), com a chave e a base do fornecedor do modelo — como o conselheiro do AOS-528 —,
+  e segue as regras do modo real: o ficheiro de chaves do dono, a lista de modelos dele
+  (`--visao-fornecedor`, `--visao-modelo`), os tectos e o contador do fornecedor, o preço do
+  modelo (`--precos`), uma sonda antes, `--so-plano`, e nunca em CI. **Pior caso: 13 pedidos**
+  (12 imagens e a sonda). O **PDF fica fora deste braço** (estado `fora`, não conta): é a mesma
+  página de `fatura-b-ruido`, e rasterizá-lo daria ao modelo os mesmos píxeis — um pedido pago a
+  mais, sem informação nova. Uma recusa da chave, da conta ou do ritmo (401, 402, 403, 429) pára
+  a corrida; outro erro falha só a imagem. O relatório chama-se `ensaio-real-ocr-visao-…`, traz os
+  tokens e o custo estimado por imagem, e tem os campos das corridas reais, para o contador do
+  dia se reconstruir também a partir dele.
+- **`falso`** — devolve o texto de origem da imagem: `--falso certo` (tal e qual), `sem-acentos`,
+  `erra-factos` (troca os zeros do código por «O» e corta o nome a meio) ou `falha-pdf`. Prova
+  que o relatório distingue os quatro; não mede nada.
+
+Os outros candidatos que o dono está a avaliar — Docling com Tesseract, EasyOCR, RapidOCR ou
+surya; MinerU; Marker; LightOnOCR-2-1B; Chandra OCR 2 — entram como adaptadores, em contentor
+fixado como o Tesseract, ou, os que são modelos, como o de visão.
+
+### O relatório
+
+`ensaio-ocr-<motor>-<data>.json` e `.txt`. Por imagem: documento, degradação, formato, com ou sem
+acentos, bytes e dimensões, o digest do ficheiro, o estado (`lida`; `falhou` com a causa `tempo`,
+`memoria` ou `motor`; ou `fora`), os factos presentes **pela regra do banco** (sem acentos nem
+maiúsculas, `factos.go`) e **com os acentos exactos**, os ausentes e os que só faltam pelo
+acento, o tempo, a memória máxima, o tamanho do texto e, no modelo de visão, os tokens e o custo
+estimado. No resumo, uma tabela curta por degradação, por formato, com e sem acentos, e no total
+(as imagens `fora` contam-se à parte); a proposta do desenho (90% dos factos) aparece ao lado,
+**sem veredicto**; e os limites da medição.
+
+**O texto lido não sai do banco**: nem no relatório, nem no resumo, nem nas saídas — só
+contagens e os factos sintéticos ausentes. Com `--guardar-respostas` fica, ao lado do relatório,
+na pasta `respostas-<nome do relatório>/`, um ficheiro por imagem.
+
+### O que a experiência `ocr` não prova
+
+- **É sintética**: quatro documentos, treze imagens, uma fonte bitmap sem serifas. Um documento
+  impresso tem fontes vectoriais, e uma foto tem perspectiva, sombra e dobras que a bateria não
+  simula. A fonte pode favorecer um motor face a outro — um modelo de visão e um OCR clássico
+  podem reagir de maneira diferente a uma fonte de píxeis —, e isso vale para a **comparação**,
+  não só para a taxa de cada um.
+- **O Tesseract corre com o runc, não com o gVisor**, e uma chamada de cada vez; no gVisor, 1 GB é
+  do serviço inteiro, partilhado pelas chamadas em curso. O custo do gVisor não está medido.
+- **O modelo de visão não é o caminho da tool**: tem rede e custo por chamada, e o custo é uma
+  estimativa pelos tokens e pela tabela de preços, não a factura.
+- **A corrida real não foi feita aqui.** Os testes provam o adaptador do Tesseract com um Docker
+  de teste e o de visão com um modelo de visão falso, não os motores. O guião do contentor não
+  foi corrido contra a imagem real.
+
 ## A devolução do estado opaco (AOS-516)
 
 Com um perfil candidato cujo `devolver` não seja `nunca`, o nó de ensaio compõe o gateway com a

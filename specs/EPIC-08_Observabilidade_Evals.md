@@ -2504,6 +2504,146 @@ fornecedores que o banco conheça.
 
 ---
 
+## AOS-529 — O banco de ensaio mede um motor de OCR com imagens sintéticas
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa nem emenda ADR nenhum: muda o banco de ensaio, que vive fora da imagem do nó. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-08 — Observabilidade e Evals |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A5 (multimodal), sub-fase A5.1 «OCR como tool»; rótulo do desenho «A5-ocr-medição» |
+| Tipo | feat |
+| Prioridade | P2: decide o motor do AOS-530 antes de haver código no nó; nada em produção depende dele |
+| Estimativa | M |
+| Dependências | AOS-525 (a regra dos factos), AOS-512 (o banco de ensaio), feitos. Decisões D1, D2, D5 e D7 do desenho, tomadas pelo dono a 2026-10-15 como o desenho as recomenda |
+| Bloqueia | AOS-530 (a tool `ocr_read`) |
+| Responsável sugerido | Engenheiro de Qualidade |
+| Documentos de referência | `docs/reports/desenho-a5-a6-multimodal-2026-10-14.md` (§5.1, §7 D1, D2, D5, D7, §8), `docs/runbooks/PROC-BANCO-DE-ENSAIO.md`, `packages/qa/banco-ensaio/README.md` |
+
+### Contexto
+
+O dono abriu a fase A5 a 2026-10-15 e tomou as decisões D1 a D9 do desenho
+`docs/reports/desenho-a5-a6-multimodal-2026-10-14.md` como ele as recomenda:
+
+- **D1 (a), ferramentas primeiro.** Uma imagem chega a um run como texto lido por uma tool
+  mediada pelo Reference Monitor; o titular não vê a imagem.
+- **D2 (a), o OCR corre localmente, dentro do gVisor, sem rede.** O motor escolhe-se **medindo**
+  no banco de ensaio, antes de construir a tool (§5.1, «medir antes de construir», a lição da A4).
+  O Tesseract é o candidato óbvio; a qualidade em português, o tempo e a memória dentro de 45 s e
+  1 GB estão por confirmar.
+- **D5 (a), replay pelo texto da tool e pelo digest do media**, sem re-correr a tool.
+- **D7 (c), sub-fases com critério próprio.** A A5.1 propõe «factos presentes em pelo menos 90%»
+  na bateria de imagens sintéticas — uma proposta, não uma medida.
+
+O executor gVisor de produção corre cada chamada com 45 s (`GV_EXEC_TIMEOUT`,
+`deploy/server/gvisor/component/main.go:60`), sem rede (`--network=none`, `:154-159`), raiz só
+de leitura, sem capabilities e com o uid 65532 (`:200-236`). A memória (1 GB) e os processos
+(512) são do serviço `gvisor` inteiro (`deploy/server/docker-compose.prod.yml:938-939`), não de
+cada chamada: o `config.json` do sandbox não declara limites. O rootfs do guest tem só o binário
+estático do guest (`component/main.go:128-140`), que conhece um verbo, `read`
+(`deploy/server/gvisor/guest/main.go:69-88`).
+
+### Objectivo
+
+Dar ao dono, no banco de ensaio, a medida que decide o motor de OCR: por imagem sintética e por
+degradação, os factos presentes, o tempo, a memória máxima e o tamanho do texto, com o motor a
+correr nas mesmas condições em que a tool vai correr.
+
+### Âmbito
+
+- **Bateria de imagens sintéticas**, pasta embebida própria (`bateria-ocr/`), digest próprio:
+  documentos com e sem acentos (os documentos reais em português têm acentos), uma tabela com
+  grelha, e imagens geradas de forma determinista com a biblioteca-padrão (uma fonte bitmap
+  desenhada no banco) em PNG limpo, PNG com ruído e rotação ligeira, PNG de meia resolução, JPEG
+  e um PDF digitalizado de uma página. Cada documento tem os seus factos (códigos, nomes,
+  números), que ocorrem literalmente no texto. Nenhum binário no repositório.
+- **A experiência `ocr`** (`aos-ensaio ocr`), com o **motor plugável**: uma interface pequena
+  (imagem → texto); o tempo mede-se por fora, à volta da chamada, e a memória mede-a quem corre
+  o motor. O motor escolhe-se por opção da linha de comandos; acrescentar um candidato é escrever
+  um adaptador. Os factos contam-se pela regra do banco (sem acentos nem maiúsculas) e, à parte,
+  com os acentos exactos. Relatório JSON e resumo `.txt` com uma tabela por imagem, outra por
+  degradação, formato e acentos, e os limites declarados. Sem veredicto.
+- **Três adaptadores:**
+  - o **Tesseract** num contentor Docker **fixado pelo conteúdo** — `nome@sha256:<64 hex>` ou o
+    ID `sha256:<64 hex>` de uma imagem construída no posto com `ocr/Dockerfile` (base fixada pelo
+    digest) —, com os limites do gVisor (sem rede, 45 s, 1 GiB, 512 processos, raiz só de
+    leitura, sem capabilities, uid 65532) e `--pull never`;
+  - um **modelo de visão** pelo proxy efémero do banco (decisão do dono de 2026-10-15), como o
+    conselheiro do AOS-528: a imagem como parte `image_url` numa data URL, uma instrução fixa de
+    transcrever, o fornecedor e o modelo da lista do ficheiro de chaves do dono, os tectos, o
+    contador e o preço do fornecedor dele, o pior caso declarado, o tempo e o custo estimado por
+    imagem, e o texto do modelo nunca nas saídas nem no relatório (só com `--guardar-respostas`).
+    O PDF fica fora deste braço: é a mesma página de outra imagem da bateria;
+  - um **motor falso** com quatro perfis — lê tudo, perde os acentos, erra factos, falha os PDF.
+- **Outros candidatos entram como adaptadores**, sem mudar a experiência: os motores que o dono
+  está a avaliar (por exemplo Docling com Tesseract, EasyOCR, RapidOCR ou surya; MinerU; Marker;
+  LightOnOCR-2-1B; Chandra OCR 2). Quais, decide o dono.
+- **Fora de âmbito:** a tool `ocr_read` (AOS-530); qualquer mudança no nó, no gVisor ou no
+  gateway; descarregar imagens Docker (o banco não as descarrega); os adaptadores dos outros
+  candidatos; documentos reais.
+
+### Critérios de Aceitação
+
+- [x] A bateria de OCR carrega com digest próprio e estável, cobre documentos com e sem acentos,
+      as três degradações, os três formatos e uma tabela; a validação é fail-closed (marca, facto
+      fora do texto, letra que a fonte não tem, vocabulário, referências, repetidos, tabela
+      irregular); as baterias 1.0.0, 2.0.0 e 3.0.0 mantêm os digests.
+      *Nota de 2026-10-15:* quatro documentos e treze imagens em `bateria-ocr/casos.json`, digest
+      `sha256:390f70c8…c703` (depois da revisão adversarial: o zero sem barra e mais estreito do
+      que o «O»). `TestAOS529_BateriaOCR_TemDigestProprioEAsOutrasMantemOSeu`,
+      `…_CobreAcentosDegradacoesEFormatos`, `…_OCarregamentoEFailClosed` e
+      `TestAOS529_OZeroNaoTemBarraEDistingueSeDoO`.
+- [x] A experiência `ocr` com os motores falsos distingue os quatro no relatório e no resumo: o
+      que lê tudo (100% pela regra e com acentos), o que perde os acentos (100% pela regra, menos
+      com acentos, e só nas imagens com acentos), o que erra factos (o número exacto de ausentes
+      por imagem e no resumo) e o que falha uma imagem (estado `falhou`, causa, e os factos dela
+      ausentes).
+      *Nota de 2026-10-15:* `TestAOS529_ORelatorioDistingueOsTresMotoresFalsos`,
+      `TestAOS529_UmMotorQueErraFactosTemOsAusentesContados` (58 de 80 factos; a mutação «conta
+      sempre presente» morre nele) e `TestAOS529_LinhaDeComandos`.
+- [x] O adaptador do Tesseract recusa uma imagem não fixada e uma imagem que não está no posto,
+      sem a descarregar (`--pull never`); aceita o ID de uma imagem do posto; corre com
+      `--network none`, 1 GiB, 512 processos, raiz só de leitura, sem capabilities e uid 65532,
+      com a pasta montada legível por esse uid; classifica o limite de tempo (e remove o
+      contentor) e a memória esgotada pelo pico do cgroup, venha a falha de que estágio vier.
+      *Nota de 2026-10-15:* com um Docker de teste, não com o Tesseract:
+      `TestAOS529_TesseractCorreNasCondicoesDoGVisor`, `…_TesseractRecusaImagemNaoFixadaOuAusente`,
+      `…_TesseractClassificaTempoEMemoria`, `…_TesseractAceitaOIDDeUmaImagemDoPosto`,
+      `…_APastaMontadaELegivelPeloUidDoContentor` e `…_AFalhaClassificaSePeloEstagioEPeloPico`.
+- [x] O braço do modelo de visão segue as regras do modo real — nunca em CI, o ficheiro de chaves
+      explícito, um modelo fora da lista do dono recusado, o pior caso (13 pedidos) a caber no
+      tecto antes de enviar, `--so-plano`, a sonda — e dá o custo estimado por imagem; uma recusa
+      do fornecedor ou o tecto param a corrida; o texto do modelo não chega às saídas nem ao
+      relatório; o relatório entra na reconstrução do contador do dia.
+      *Nota de 2026-10-15:* com um modelo de visão falso, não com um modelo:
+      `TestAOS529_Visao_LeAsImagensDeixaOPDFForaEContaOCusto`, `…_UmModeloQuePerdeAcentosVeSe`,
+      `…_OTectoEARecusaParamACorrida` e `…_LinhaDeComandos`.
+- [x] Os testes pinados de antes (AOS-516, digests das baterias) e as experiências de antes não
+      mudam.
+      *Nota de 2026-10-15:* a suite inteira do módulo verde, sem tocar nos testes de antes. O uso
+      geral (`usoDoBanco`) ganhou uma linha a apontar para `aos-ensaio ocr`; a verificação do
+      contador do dia que não existe passou para uma função (`verificarContadorDoDia`), partilhada
+      com o braço de visão, sem mudar o comportamento.
+- [ ] Medição real registada: o Tesseract (a imagem `aos-ensaio-ocr:tesseract`, construída pelo
+      dono a 2026-10-15) e, com autorização do dono, um ou mais modelos de visão, sobre a bateria,
+      com os factos, o tempo, a memória e o custo por imagem. **Por fazer, depois do PR.**
+
+### Notas
+
+- O tempo inclui o arranque do contentor, como no gVisor inclui o do `runsc`. A memória é a do
+  cgroup do contentor (`memory.peak`). O contentor corre com o runc do Docker, não com o gVisor, e
+  uma chamada de cada vez.
+- O Tesseract não lê PDF: o adaptador rasteriza-o com o `pdftoppm` a 300 ppp, pelo stdout, sem
+  escrever em disco, e recolhe o código de cada estágio do pipe. Se a tool do AOS-530 aceitar
+  PDF, o rootfs precisa dos dois.
+- A fonte é bitmap 5×7, sem serifas, desenhada no banco: a taxa medida com ela não é a de um
+  documento impresso, e pode pesar de maneira diferente num OCR clássico e num modelo de visão —
+  vale para a comparação entre motores, não só para a taxa de cada um. É um limite declarado no
+  relatório.
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -2534,3 +2674,5 @@ fornecedores que o banco conheça.
 | 1.23 | 2026-10-13 | AOS-525: cobertura do módulo medida (86,8% → 88,1%) e o critério dos gates marcado. Fica por marcar só o critério 2, na metade «recusada fora da bateria sintética», que não se aplica (o banco só tem baterias embebidas) e espera pela palavra do dono | Equipa AOS |
 | 1.24 | 2026-10-15 | +AOS-528 (depois da A4, resíduo (c)): o conselheiro no banco de ensaio — a bateria 3.0.0 «difícil» (sete casos de dedução, contradições com regra, documento longo e restrições), a tool `aconselhar` com o conselheiro de qualquer fornecedor numa segunda rota do proxy efémero, com contas e tectos do fornecedor dele, e a experiência `conselheiro` em dois braços (com e sem a tool) que dá casos cumpridos, taxa de consulta e custo por caso cumprido, sem veredicto. Implementado e provado com falsos; a medição real fica por fazer, com autorização do dono | Equipa AOS |
 | 1.25 | 2026-10-15 | AOS-528 medido em parte: o conselheiro não melhora nada com os modelos de hoje — os bons resolvem os casos difíceis sozinhos e o fraco quase não consulta. Multi-fornecedor provado (executor na OpenRouter, conselheiro na conta Kimi) | Equipa AOS |
+| 1.26 | 2026-10-15 | +AOS-529 (fase A5, «A5-ocr-medição»): o banco de ensaio mede um motor de OCR — bateria de imagens sintéticas com e sem acentos (PNG limpo, com ruído e rotação, de meia resolução, JPEG, PDF digitalizado e uma tabela), a experiência `ocr` com o motor plugável (o Tesseract num contentor fixado pelo digest nas condições do gVisor, e um falso), factos pela regra do banco e com acentos exactos, tempo e memória por imagem; sem veredicto. Implementado e provado com o motor falso; a medição real espera por uma imagem do Tesseract | Equipa AOS |
+| 1.27 | 2026-10-15 | AOS-529: correcções da revisão adversarial (um falso que erra factos, o zero sem barra, a pasta montada legível pelo uid do contentor, a falha do PDF classificada por estágio e pelo pico, `--pull never`, os limites dizem runc e chamada isolada) e duas decisões do dono: a imagem do Tesseract construída no posto (`ocr/Dockerfile`, aceite pelo ID) e o braço do modelo de visão pelo proxy do banco, com as chaves, os tectos e o custo do fornecedor dele. A medição real fica para depois do PR | Equipa AOS |

@@ -915,8 +915,93 @@ Este epic serve primariamente a dimensão **Segurança** e contribui para **Gove
 | Responsável de Segurança |  |  |  |
 | Responsável de Produto |  |  |  |
 
+---
+
+## AOS-530 — A tool `ocr_read`: verbo `ocr` no executor gVisor, motor no rootfs, digest do media no resultado
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa nem emenda ADR nenhum: acrescenta um verbo ao executor gVisor e uma entrada opcional ao registo de tools, dentro dos ADR em vigor. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-07 — Segurança e Isolamento |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A5 (multimodal), sub-fase A5.1 «OCR como tool»; rótulo do desenho «A5-ocr» |
+| Tipo | feat |
+| Prioridade | P2 |
+| Estimativa | M |
+| Dependências | AOS-529 (a medição que escolhe o motor). Decisões D1, D2, D4, D5 e D7 do desenho, tomadas pelo dono a 2026-10-15 |
+| Bloqueia | A série de produção da A5.1 (D7) |
+| Responsável sugerido | Engenheiro de Segurança / Engenheiro de Plataforma |
+| Documentos de referência | `docs/reports/desenho-a5-a6-multimodal-2026-10-14.md` (§2.1, §2.2, §5.2, §7 D2, D4, D5, D7), `deploy/server/gvisor/`, `deploy/server/model-tools/tools.json` |
+
+### Contexto
+
+Pelas decisões do dono de 2026-10-15 sobre o desenho
+`docs/reports/desenho-a5-a6-multimodal-2026-10-14.md`: ferramentas primeiro (D1); o OCR corre
+localmente, dentro do gVisor, sem rede (D2 (a)), com a capability da `doc_read`, `cap:fs.read`
+— a regra de uma leitura por run é uma defesa medida e não se abre excepção; PNG e JPEG
+primeiro, PDF quando houver um (D2). O media entra pela pasta semeada (D4 (a)). O replay usa o
+texto da tool e o digest do media, sem re-correr a tool (D5 (a)).
+
+Hoje, se a `doc_read` ler uma imagem, o modelo recebe-a em base64 (`stdout` binário,
+`packages/substrate/sandbox/mediated.go:122-135`). O guest conhece um verbo, `read`
+(`deploy/server/gvisor/guest/main.go:69-88`), e o rootfs do sandbox tem só o binário estático do
+guest (`deploy/server/gvisor/component/main.go:128-140`). O motor é o que o AOS-529 medir.
+
+### Objectivo
+
+Uma imagem na pasta semeada chega a um run como texto lido por OCR, por uma tool mediada, com o
+digest da imagem e a versão do motor no resultado, sem rede e sem mudar o kernel, o gateway, o
+prompt, o replay nem o `aos-orq`.
+
+### Âmbito
+
+- **Verbo `ocr` no guest**, com a mesma regra de caminho do `read` (nada fora da raiz semeada);
+  o `Command` vem do registo, nunca do modelo.
+- **O motor no rootfs do sandbox**, versão fixa e verificada (digest), com os dados das línguas
+  que o AOS-529 medir; a imagem do `gvisor` deixa de ter só o guest.
+- **O resultado é texto UTF-8** (`stdout_text`), num formato fixo: o `sha256` do ficheiro lido,
+  a versão do motor e o texto.
+- **Os limites:** os de hoje (45 s por chamada, 1 GB e 512 processos para o serviço), salvo se o
+  AOS-529 mostrar que não chegam — e então sobe-se o limite da chamada `ocr`, com o número medido.
+- **Entrada `ocr_read` no `tools.json` só pelo dono**: `capability: cap:fs.read`,
+  `egress: none`, `mutation: none`, `reversible`, `resource_value: doc://{doc_id}`, região do
+  board. O PR traz a entrada como exemplo no runbook, não no ficheiro.
+- **Fora de âmbito:** o kernel, o Model Gateway, o prompt, o replay e o `aos-orq` (nada muda
+  neles); o custo das tools (D6, zero declarado); PDF, salvo se o AOS-529 o medir e o dono o
+  pedir; vídeo e áudio.
+
+### Critérios de Aceitação
+
+- [ ] O guest responde ao verbo `ocr` com o texto, o `sha256` do ficheiro e a versão do motor, e
+      recusa um caminho fora da raiz semeada e um verbo desconhecido, como hoje.
+- [ ] O motor está no rootfs com versão fixa e digest verificado no build da imagem; o sandbox
+      continua sem rede, com raiz só de leitura, sem capabilities e com o uid 65532.
+- [ ] Uma imagem da bateria do AOS-529 lida pelo executor gVisor real devolve os mesmos factos
+      que o banco mediu para o mesmo motor, dentro de 45 s.
+- [ ] Um run com a `ocr_read` no `tools.json` lê uma imagem pela mediação do RM, o WORM sela o
+      recurso `doc://<id>`, o resultado chega ao modelo como texto (não base64), e o replay
+      reproduz o `prompt_hash` sem re-correr a tool; uma segunda leitura no mesmo run, com
+      `cap:fs.read` armada, é negada como a da `doc_read`.
+- [ ] Nada muda no kernel, no gateway nem no `aos-orq` (diff vazio nesses módulos); sem a
+      entrada no `tools.json`, o nó comporta-se como antes.
+
+### Notas
+
+- O executor gVisor corre privilegiado (`deploy/server/docker-compose.prod.yml`, serviço
+  `gvisor`); o motor corre DENTRO do sandbox, não no componente.
+- Um motor com bibliotecas dinâmicas (o Tesseract precisa da Leptonica e de outras) não cabe num
+  rootfs só com um binário estático: o rootfs passa a ser uma árvore copiada da imagem, e o
+  componente monta-a só de leitura. A forma é do implementador, dentro dos critérios.
+- Se o motor escolhido no AOS-529 não for local (por exemplo um modelo de visão pelo gateway),
+  este ticket não serve: isso é a D2 (d), com rede e custo, e precisa de outro ticket e de um ADR
+  (uma tool cujo efeito é uma chamada ao modelo, §5.5 do desenho).
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
+| 1.1 | 2026-10-15 | +AOS-530 (fase A5, «A5-ocr»): a tool `ocr_read` — verbo `ocr` no executor gVisor, motor no rootfs com versão fixa, texto e digest do media no resultado; nada no kernel nem no gateway; a entrada no `tools.json` só pelo dono. Depende do AOS-529 | Equipa AOS |
