@@ -2483,6 +2483,15 @@ fornecedores que o banco conheça.
       fornecedores diferentes, os dois braços e a corrida do tecto, com a resposta, por extenso, a
       «há casos em que o barato falha sozinho e cumpre com o conselheiro, e a que custo por caso
       cumprido?». **Por fazer, com autorização do dono.**
+      *Nota de 2026-10-15:* medida em parte, com autorização do dono («sim autorizo») — fica por
+      marcar porque a corrida do tecto não se fez. Triagem: os executores sozinhos (llama 8b,
+      Haiku, DeepSeek); o Haiku e o DeepSeek acertam o conteúdo dos sete casos — as seis «falhas»
+      do Haiku são o proibido citado na explicação —, e só o llama falha por conteúdo. Dois pares
+      com o llama: um na OpenRouter (conselheiro Haiku) e um com fornecedores diferentes
+      (conselheiro `k3` na conta Kimi). Resposta: **não** — o llama consultou em 3 de 19 e 2 de 21
+      runs, e as diferenças entre braços estão dentro da variação do llama sozinho (8 de 20 a 12
+      de 19). Os outros pares e o tecto não se correram: sem falhas de raciocínio nos modelos
+      bons, não mudariam a resposta. Detalhe na §5 do acompanhamento.
 
 ### Notas
 
@@ -2524,3 +2533,4 @@ fornecedores que o banco conheça.
 | 1.22 | 2026-10-13 | AOS-525 medido: a bateria 2.0.0 passada a seis modelos reais (5 passagens cada). Separa o modelo mais barato (falha volume e documento longo por inteiro) dos outros cinco, e não separa os cinco entre si; as falhas do Haiku em D5 e do DeepSeek em D7 são o limite do proibido citado numa negação, não conteúdo errado. Registo na §5 do acompanhamento | Equipa AOS |
 | 1.23 | 2026-10-13 | AOS-525: cobertura do módulo medida (86,8% → 88,1%) e o critério dos gates marcado. Fica por marcar só o critério 2, na metade «recusada fora da bateria sintética», que não se aplica (o banco só tem baterias embebidas) e espera pela palavra do dono | Equipa AOS |
 | 1.24 | 2026-10-15 | +AOS-528 (depois da A4, resíduo (c)): o conselheiro no banco de ensaio — a bateria 3.0.0 «difícil» (sete casos de dedução, contradições com regra, documento longo e restrições), a tool `aconselhar` com o conselheiro de qualquer fornecedor numa segunda rota do proxy efémero, com contas e tectos do fornecedor dele, e a experiência `conselheiro` em dois braços (com e sem a tool) que dá casos cumpridos, taxa de consulta e custo por caso cumprido, sem veredicto. Implementado e provado com falsos; a medição real fica por fazer, com autorização do dono | Equipa AOS |
+| 1.25 | 2026-10-15 | AOS-528 medido em parte: o conselheiro não melhora nada com os modelos de hoje — os bons resolvem os casos difíceis sozinhos e o fraco quase não consulta. Multi-fornecedor provado (executor na OpenRouter, conselheiro na conta Kimi) | Equipa AOS |
