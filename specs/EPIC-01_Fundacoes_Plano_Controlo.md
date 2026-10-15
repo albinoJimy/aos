@@ -1352,6 +1352,102 @@ cluster pode ser o consumidor órfão do AOS-449, não este defeito.
 
 ---
 
+## AOS-531 — `Abrir` sobre um stream fresco: o INFO responde «stream not found» a seguir ao CREATE aceite, e o perdedor sai `1`
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-01 (Event Store e Reference Monitor) |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | fix |
+| Prioridade | P2: avermelha o gate `nats` de forma intermitente em PRs que não lhe tocam |
+| Estimativa | S |
+| Dependências | AOS-432, AOS-455 (a mesma janela, nas outras duas formas) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/substrate/eventstore/jetstream/lider.go`, `packages/substrate/eventstore/natsjs/jetstream.go`, `scripts/ci/nats.sh` (bloco 1b) |
+| Numeração | Nasceu como AOS-528 no PR #496; esse número foi entretanto atribuído ao conselheiro (EPIC-08), e o ticket foi renumerado para AOS-531 a 2026-10-15, sem mudança de código. Em 2026-10-15 o mesmo 404 voltou a avermelhar o gate `nats` na base (run 38804843970, `TestAOS432_LeaseSobreStreamFrescoNegaPeloLease` 9 de 10) |
+
+### Contexto
+
+O gate `nats` repete dez vezes seguidas os sensores da janela do stream fresco (AOS-455, bloco
+1b). O `TestAOS100_NServeEmParaleloSobreOSubstratoReplicado` falhou nesse bloco em dois PRs que
+não tocam no Event Store, e passou nos dois ao relançar. Os dois vermelhos têm causas
+**diferentes**, e nenhuma é o defeito de CAS do AOS-524 (o `Append` preso em `ErrSeqConflict`).
+
+| Run | PR | Falhas | Desfecho dos processos inesperados |
+|---|---|---|---|
+| 38397155492 | #489 | 3 de 10 | os 3 perdedores, nas 3: `esperar pelo líder do stream …: stream not found (code=404 err_code=10059)` |
+| 38590368093 | #495 | 1 de 10 | 1 perdedor: `leitura de "…lease:run-paralelo" parou em 0 de 1 eventos ao fim de 10s` |
+
+**O 404 (#489) tem fonte no servidor.** O `Abrir` só chama o `esperarLider` depois de o
+servidor ter aceite o `STREAM.CREATE`. No nats-server 2.10.29 (`jsStreamInfoRequest`), o membro
+preferido de um grupo novo responde ao INFO mesmo sem líder. Se ainda não criou o stream
+localmente, dorme 10 ms e responde `stream not found`, com o comentário «Error is not to be
+expected at this point, but could happen if same stream trying to be created. This could be
+inflight». Com N CREATE idênticos e concorrentes, que é a corrida do `aos-orq serve` em N
+processos, é a janela normal. O `esperarLider` tratava o 404 como «qualquer outro erro» e
+subia-o cru, e o perdedor saía `1` (`exitErro`) em vez de `3` (`exitPosseNegada`).
+
+**Medido contra um cluster local de 4 nós** (`scripts/ci/nats-cluster.sh`, `nats:2.10-alpine`),
+com uma sonda em processo que corre a mesma corrida (4 `Abrir` do mesmo stream fresco, CAS 0 no
+subject do lease, leitura pelos perdedores):
+
+| Código | `Abrir` | Falhas por 404 | Leituras dos perdedores |
+|---|---|---|---|
+| antes | 600 (150 corridas) | 15 | 435, todas completas; p99 23 ms, máx. 34 ms |
+| depois | 1200 (300 corridas) | 0 | 900, todas completas; p99 20 ms, máx. 31 ms |
+
+O próprio `TestAOS100_NServeEmParaleloSobreOSubstratoReplicado` reproduziu o 404 uma vez em 21
+repetições contra o mesmo cluster local.
+
+**A leitura parada (#495) não foi reproduzida.** Nas 1335 leituras de perdedores acima,
+nenhuma parou. A leitura cria um consumidor efémero R1 em memória, e o servidor coloca-o num
+par do stream sorteado (`createGroupForConsumer`, `rand.Shuffle`), que pode ser um seguidor.
+Que esse seguidor tenha ficado 10 s sem a mensagem que o líder já contava é **hipótese por
+medir**. Nenhum nó estava em baixo nesse bloco do gate: só os testes de `eventstore/jetstream`
+matam nós, e o bloco 1b corre depois do `restore`. Fica fora deste ticket (ver «Fora de âmbito»).
+
+### Objectivo
+
+Um 404 a seguir ao nosso CREATE aceite é a janela, não «o stream não existe»: o `Abrir`
+atravessa-a dentro do orçamento, e o perdedor da corrida sai pela posse.
+
+### Critérios de Aceitação
+
+- [x] **Reprodução antes da correcção.** `TestAOS531_StreamNotFoundDepoisDoCreateRepergunta`,
+      `TestAOS531_StreamNotFoundAtePrazoEsgotadoEIndisponibilidade` e
+      `TestAOS531_AbrirAtravessaOStreamNotFound` correm vermelhos com o `lider.go` anterior
+      (verificado), e a sonda contra o cluster local mostra 15 de 600.
+- [x] **Correcção.** O `esperarLider` re-pergunta um `stream not found` (só o `err_code` 10059
+      estruturado, não o texto), com o intervalo de quem viu «ainda sem líder» e do MESMO
+      orçamento.
+- [x] **Fail-closed preservado.** Um stream que nunca chega a ser servido sai, no fim do prazo,
+      `ErrNoQuorum` + `ErrStreamSemLider`, com os 404 contados na mensagem. Outro erro
+      estruturado do servidor continua a subir à primeira
+      (`TestAOS531_OutroErroEstruturadoSobeSemRetentar`), e o mesmo vale para os erros que os
+      testes do AOS-432 e do AOS-455 já cobrem.
+- [ ] **CI.** O gate `nats` do PR fica verde, com o bloco 1b a 10/10 nos três sensores.
+
+### Testes exigidos
+
+| Teste | Onde corre | O que prova |
+|---|---|---|
+| `TestAOS531_*` (`jetstream/aos531_stream_not_found_test.go`) | `test`, sem cluster | O 404 é re-perguntado, esgota como indisponibilidade, e o `Abrir` atravessa-o (servidor de brincar com o botão `info404`) |
+| `TestAOS100_NServeEmParaleloSobreOSubstratoReplicado` ×10 | gate `nats`, bloco 1b | O perdedor sai pela posse sobre o cluster real |
+
+### Fora de âmbito
+
+- **A leitura parada do #495.** Sem reprodução, uma correcção seria às cegas: aumentar o prazo
+  ou re-tentar a leitura escondia-a. O passo seguinte é instrumentar o erro de prazo do
+  `lerLote` com o par onde o consumidor ficou e o estado da réplica (`CONSUMER.INFO`, a lição
+  do AOS-449). Abre-se ticket próprio se voltar a aparecer, ou para essa instrumentação.
+
+### Estado
+
+**Em PR, 2026-10-15.** Correcção e testes unitários feitos; falta o verde do gate `nats` no CI.
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |

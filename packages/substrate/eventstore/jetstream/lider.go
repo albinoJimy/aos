@@ -85,22 +85,40 @@ const consultaLiderInicial = 250 * time.Millisecond
 // e um servidor que não anunciasse líder nenhum seria tratado como não pronto
 // (fail-closed), que é o lado seguro.
 //
-// Qualquer OUTRO erro de `consultar` (stream inexistente, sem JetStream, ligação perdida) é
-// devolvido tal qual — fail-closed, sem re-tentar às cegas. O prazo esgotado — sem líder, ou
-// sem resposta — devolve [ErrStreamSemLider] embrulhado em [eventstore.ErrNoQuorum].
+// # «stream not found» logo depois do NOSSO CREATE também não é um erro de consulta (AOS-531)
+//
+// Esta espera só corre depois de o servidor ter ACEITE o `STREAM.CREATE` desta ligação: o
+// stream existe. Um 404 aqui é a outra face da mesma janela, e o servidor declara-o no código
+// (nats-server 2.10.29, `jsStreamInfoRequest`): o membro preferido de um grupo NOVO responde
+// ao INFO mesmo sem líder; se ainda não criou o stream localmente, dorme 10 ms («This could be
+// inflight») e responde `stream not found` (code=404 err_code=10059). Com N CREATE idênticos e
+// concorrentes é o caso normal, não o raro. Medido: o gate `nats` do PR #489 (run 38397155492)
+// perdeu 3 de 10 repetições do `TestAOS100_NServeEmParaleloSobreOSubstratoReplicado`, sempre
+// com os TRÊS perdedores a sair `1` com este 404 — e o mesmo deu-se 1 vez em 21 contra o
+// cluster local de 4 nós. Re-pergunta-se, com o intervalo de quem viu «ainda sem líder» e do
+// MESMO orçamento. Um stream que continuasse a não existir até ao fim do prazo sai como os
+// outros casos esgotados — indisponível, nunca «pronto» —, e a mensagem conta os 404.
+//
+// Qualquer OUTRO erro de `consultar` (sem JetStream, ligação perdida, sem permissões) é
+// devolvido tal qual — fail-closed, sem re-tentar às cegas. O prazo esgotado — sem líder, sem
+// resposta, ou sem o stream ainda servido — devolve [ErrStreamSemLider] embrulhado em
+// [eventstore.ErrNoQuorum].
 //
 // Relógio e espera são injectados para que a lógica seja provada sem cluster e sem
 // dormir de verdade (lider_test.go).
 func esperarLider(stream string, consultar func(resta time.Duration) (lider string, err error),
 	prazo time.Duration, agora func() time.Time, dormir func(time.Duration)) error {
 	limite := agora().Add(prazo)
-	calados := 0
+	calados, inexistentes := 0, 0
 	esgotado := func() error {
+		var detalhe string
 		if calados > 0 {
-			return fmt.Errorf("%w: %w (%q, prazo %s, %d consulta(s) sem resposta)",
-				eventstore.ErrNoQuorum, ErrStreamSemLider, stream, prazo, calados)
+			detalhe += fmt.Sprintf(", %d consulta(s) sem resposta", calados)
 		}
-		return fmt.Errorf("%w: %w (%q, prazo %s)", eventstore.ErrNoQuorum, ErrStreamSemLider, stream, prazo)
+		if inexistentes > 0 {
+			detalhe += fmt.Sprintf(", %d consulta(s) com «stream not found» depois do CREATE aceite", inexistentes)
+		}
+		return fmt.Errorf("%w: %w (%q, prazo %s%s)", eventstore.ErrNoQuorum, ErrStreamSemLider, stream, prazo, detalhe)
 	}
 	intervalo := intervaloLiderInicial
 	porConsulta := consultaLiderInicial
@@ -116,6 +134,9 @@ func esperarLider(stream string, consultar func(resta time.Duration) (lider stri
 			// dobro do prazo, depois do mesmo intervalo de quem viu «ainda sem líder».
 			calados++
 			porConsulta *= 2
+		case streamAindaNaoServido(err):
+			// O CREATE foi aceite: o membro que respondeu ainda não o criou localmente.
+			inexistentes++
 		case err != nil:
 			return fmt.Errorf("jetstream: esperar pelo líder do stream %q: %w", stream, err)
 		case lider != "":
@@ -130,4 +151,12 @@ func esperarLider(stream string, consultar func(resta time.Duration) (lider stri
 			intervalo = intervaloLiderMaximo
 		}
 	}
+}
+
+// streamAindaNaoServido diz se o erro de uma consulta é o «stream not found» da janela do
+// CREATE (ver [esperarLider]). Só o código estruturado do servidor conta: uma mensagem que
+// por acaso dissesse «not found» não é o servidor a afirmá-lo.
+func streamAindaNaoServido(err error) bool {
+	var js *natsjs.JSError
+	return errors.As(err, &js) && js.ErrCode == natsjs.CodeStreamNotFound
 }
