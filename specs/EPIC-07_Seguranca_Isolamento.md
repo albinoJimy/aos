@@ -942,7 +942,7 @@ através de uma tool**. O Tesseract fica como alternativa local, para quando os 
 puderem sair do servidor.
 
 É a primeira tool cujo efeito é uma chamada a um modelo — o mecanismo que o desenho previa para o
-vídeo («A6-video»), e que pedia um ADR: o **ADR-042** (proposto). O que ele decide, e que este
+vídeo («A6-video»), e que pedia um ADR: o **ADR-042** (ratificado pelo dono a 2026-10-15). O que ele decide, e que este
 ticket implementa:
 
 - a tool é uma `CostingToolFunc` registada no Reference Monitor pela raiz de composição; o efeito
@@ -1120,3 +1120,4 @@ mantêm-se.
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
 | 1.1 | 2026-10-15 | +AOS-530 (fase A5, «A5-ocr»): a tool `ocr_read` — verbo `ocr` no executor gVisor, motor no rootfs com versão fixa, texto e digest do media no resultado; nada no kernel nem no gateway; a entrada no `tools.json` só pelo dono. Depende do AOS-529 | Equipa AOS |
 | 1.2 | 2026-10-15 | AOS-530 reescrito: a D2 do desenho mudou pela medição do AOS-529 (o Haiku a 100% dos factos, o Tesseract local a 82,5%) — a tool `ocr_read` passa a transcrever a imagem por um modelo de visão através do Model Gateway do nó, segundo o ADR-042 (proposto): alias `ocr-visao` na allowlist re-assinada, registo de entrada de uso `tool`, parte de imagem só nesta chamada, custo no run e no tecto em dólares, replay sem nova chamada. O OCR local no gVisor fica descrito como alternativa, não implementada | Equipa AOS |
+| 1.3 | 2026-10-15 | AOS-530: o ADR-042 foi ratificado pelo dono; a dependência fica satisfeita | Equipa AOS |
