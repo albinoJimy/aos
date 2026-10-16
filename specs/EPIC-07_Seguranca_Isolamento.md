@@ -1009,23 +1009,23 @@ quem não liga a tool.
 
 ### Critérios de Aceitação
 
-- [ ] **A porta `1.12.0`.** Um pedido com uma parte de imagem chega ao provider falso como
+- [x] **A porta `1.12.0`.** Um pedido com uma parte de imagem chega ao provider falso como
       `image_url` numa data URL com os bytes exactos; para uma rota cujo perfil não declara
       `imagem` é recusado **antes de sair** (o provider falso conta zero pedidos); uma resposta com
       uma parte que não é texto continua recusada; os digests dos perfis de hoje e os pedidos às
       rotas de hoje não mudam um byte (testes pinados de antes verdes).
-- [ ] **O titular não vê imagens.** Nenhum turno do executor leva uma parte de imagem, com ou sem a
+- [x] **O titular não vê imagens.** Nenhum turno do executor leva uma parte de imagem, com ou sem a
       `ocr_read` ligada: provado sobre o pedido que o provider falso recebe num run que chama a
       tool.
-- [ ] **O registo de uso `tool`.** Com `AOS_MODEL_CANDIDATE=on`, um candidato real e um registo de
+- [x] **O registo de uso `tool`.** Com `AOS_MODEL_CANDIDATE=on`, um candidato real e um registo de
       uso `tool`, o nó arranca e serve o candidato; o registo `tool` não tem adaptador de run e um
       run fixado nele é recusado; um registo `tool` com fatia maior que zero, ou com um relatório
       que não é `ocr` qualificado em modo `real`, recusa o arranque; um registo sem `uso` é lido
       como hoje (mesmo digest, mesma decisão).
-- [ ] **O veredicto `ocr` no banco.** Com motores falsos, o que lê tudo sai `qualificado` e o que
+- [x] **O veredicto `ocr` no banco.** Com motores falsos, o que lê tudo sai `qualificado` e o que
       erra factos abaixo do limiar sai `recusado`; o registo de uso `tool` só se prepara com
       `qualificado`.
-- [ ] **Recusa sem o alias autorizado.** Com a `ocr_read` no `tools.json`: um alias fora da
+- [x] **Recusa sem o alias autorizado.** Com a `ocr_read` no `tools.json`: um alias fora da
       allowlist em vigor, ou sem registo assinado de uso `tool`, ou sem preço com a contabilidade
       composta, impede o arranque; e um pedido a um alias que o estágio da allowlist nega não chega
       ao provider.
@@ -1034,32 +1034,32 @@ quem não liga a tool.
       texto, com o digest certo da imagem e o modelo servido; o resultado é `untrusted` e o
       contexto do run passa a `untrusted`; uma segunda leitura no mesmo run, com `cap:fs.read`
       armada, é negada como a da `doc_read`.
-- [ ] **Identidade.** O selo de atribuição do gateway para a chamada da tool leva o principal
+- [x] **Identidade.** O selo de atribuição do gateway para a chamada da tool leva o principal
       resolvido do token do run, o `run_id` e o `step_id` da tool call e a tool de origem; sem
       credencial no contexto a tool falha sem ler o ficheiro; provado pelo caminho directo, pelo
       durável e depois de uma retoma.
-- [ ] **Limites antes do custo.** Um `doc_id` fora da raiz (com `..`, absoluto ou por ligação
+- [x] **Limites antes do custo.** Um `doc_id` fora da raiz (com `..`, absoluto ou por ligação
       simbólica), um ficheiro em falta, maior que o tecto, ou que não é PNG nem JPEG pelos
       primeiros bytes, falha com causa própria e o provider falso conta zero pedidos.
-- [ ] **Falhas do modelo.** Uma resposta cortada (`length`) falha com `ocr_cortado`, uma vazia com
+- [x] **Falhas do modelo.** Uma resposta cortada (`length`) falha com `ocr_cortado`, uma vazia com
       `ocr_vazio`, um prazo esgotado com causa própria, e um modelo servido diferente do perfil
       falha em `enforce`; nenhuma falha leva o texto do modelo; não há nova tentativa dentro da tool.
-- [ ] **Nenhum binário em eventos.** Depois de um run que lê uma imagem com uma sequência de bytes
+- [x] **Nenhum binário em eventos.** Depois de um run que lê uma imagem com uma sequência de bytes
       marcadora: nem os bytes nem o seu base64 aparecem em nenhum evento do Event Store, span,
       métrica, linha de log ou selo — procurados em todo o log do run e do nó.
-- [ ] **Teste de fuga do texto.** Com um modelo de visão falso que devolve um texto marcador único:
+- [x] **Teste de fuga do texto.** Com um modelo de visão falso que devolve um texto marcador único:
       o marcador não aparece em claro em nenhum evento do Event Store (fora do conteúdo cifrado por
       titular do step-ledger e da captura), span, métrica, linha de log, nem no selo do gateway; e
       deixa de ser legível depois do apagamento do titular.
-- [ ] **Custo no run.** O evento de custo da tool call tem o mesmo valor que o gateway calculou pela
+- [x] **Custo no run.** O evento de custo da tool call tem o mesmo valor que o gateway calculou pela
       tabela de preços; o consumo durável do run soma-o aos turnos; uma retoma lê-o; com o tecto em
       dólares quase gasto, a reserva não cabe e a tool é negada sem pedido ao provider; uma resposta
       cortada grava o custo na mesma.
-- [ ] **Replay sem nova chamada.** O replay do run reproduz todos os `prompt_hash` com o provider
+- [x] **Replay sem nova chamada.** O replay do run reproduz todos os `prompt_hash` com o provider
       falso a contar zero pedidos novos e sem nenhum evento de custo novo.
-- [ ] **Inércia.** Sem a `ocr_read` no `tools.json`, o nó é o de antes: o arranque, o pedido ao
+- [x] **Inércia.** Sem a `ocr_read` no `tools.json`, o nó é o de antes: o arranque, o pedido ao
       titular byte a byte e o `/metrics`.
-- [ ] **O Tesseract descrito como alternativa local NÃO implementada**, no runbook e neste ticket,
+- [x] **O Tesseract descrito como alternativa local NÃO implementada**, no runbook e neste ticket,
       com o que falta para a ter.
 - [ ] **Sobre JetStream.** O smoke de um run com a `ocr_read` corre sobre o Event Store JetStream,
       não só sobre ficheiro.
@@ -1074,10 +1074,20 @@ quem não liga a tool.
   lado de `Content`) é do implementador, dentro do ADR-042 §2.4: retro-compatível, sem mudar o wire
   de um pedido só de texto.
 - **O nome do evento de custo** e a forma de o somar ao consumo durável (`integration/budget.go`,
-  `ConsumoDuravel`) fixam-se no PR; ficam no catálogo de eventos (`tecnica/13`).
+  `ConsumoDuravel`) fixam-se no PR; ficam no catálogo de eventos (`tecnica/13`). **Fixado na peça
+  3b:** `budget.toolcall.model_cost` (`cmd/aos/ocr_custo.go`), no stream do run, com a chave do
+  envelope `run_id:custo-modelo-<step_id>` — `run_id:<step_id>` já é a do `tool.call.mediated` da
+  mesma call, e o Event Store deduplica por chave dentro do stream qualquer que seja o tipo —; soma
+  ao consumo durável no `ConsumedByRun` do burn-down (`cmd/aos/burndown_ledger.go`), que é a fonte
+  do `ConsumoDuravel`. A reserva é `integration.RunBudget.ReservarEfeitoDeTool`, sobre o mesmo nó
+  por-run dos turnos.
 - **Por confirmar no PR:** que o `usage` devolvido pelo proxy para um pedido com imagem conta os
   tokens da imagem; o limite de tamanho e dimensões do fornecedor; se uma tool call que falhou
-  consome a leitura única de `cap:fs.read`.
+  consome a leitura única de `cap:fs.read`. **Na peça 3b:** a terceira confirmou-se offline — uma
+  tool call que falhou **consome** a leitura (o resultado de erro torna o contexto `untrusted`, e a
+  segunda leitura é negada pelo hook de taint; `TestAOS530_No_FalhaConsomeALeituraUnica`). As duas
+  primeiras só se medem com o fornecedor real: ficam para a série de produção, no runbook («Ligar o
+  OCR»).
 - **A instrução** é a do AOS-529 (`ocr_visao.go`, `InstrucaoDaVisao`); mudá-la muda a medição, e
   pede uma nova corrida do banco e um registo novo.
 

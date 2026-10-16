@@ -219,6 +219,21 @@ func (s *turnLedgerBurndown) ConsumedByRun(ctx context.Context, runID string) (p
 			cur.toolCalls++
 			continue
 		}
+		// O CUSTO DE UMA TOOL CUJO EFEITO É UMA CHAMADA A UM MODELO (AOS-530, ADR-042 §2.6): os
+		// tokens e o custo MEDIDOS pelo gateway para essa chamada. Soma ao mesmo acumulado, pela
+		// mesma razão das tool calls, e não conta como turno. Não há dupla contagem: o
+		// `turn.recorded` não vê a chamada da tool, e o `budget.toolcall.committed` da mesma call
+		// leva só a estimativa do hook (sem dólares).
+		if ev.Type == EventTypeToolModelCost {
+			var mc custoDeToolPayload
+			if err := json.Unmarshal(ev.Payload, &mc); err != nil {
+				return progresssurface.RunConsumption{}, fmt.Errorf("aos: payload de %s ilegivel no run %q (seq %d): %w", EventTypeToolModelCost, runID, ev.Seq, err)
+			}
+			cur.consumed.Tokens += mc.InputTokens + mc.OutputTokens
+			cur.consumed.CostMicroUSD += mc.CostMicroUSD
+			cur.toolCalls++
+			continue
+		}
 		if ev.Type != agentruntime.EventTypeTurnRecorded {
 			continue
 		}

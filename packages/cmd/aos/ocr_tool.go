@@ -1,6 +1,6 @@
 package main
 
-// ocr_tool.go — A TOOL `ocr_read` (AOS-530, peça 3a; ADR-042): uma imagem da pasta semeada,
+// ocr_tool.go — A TOOL `ocr_read` (AOS-530, peças 3a e 3b; ADR-042): uma imagem da pasta semeada,
 // transcrita por um modelo de visão, PELO MODEL GATEWAY DO NÓ.
 //
 // É a primeira tool cujo efeito é uma chamada a um modelo. O desenho é o do ADR-042, e cada peça
@@ -38,12 +38,11 @@ package main
 //   - AS FALHAS (§2.8). Causas de vocabulário fechado ([ocrCausas]) no erro da tool e na métrica
 //     `aos_ocr_read_total`; nenhuma leva texto do modelo nem o corpo do provider. Sem nova
 //     tentativa e sem failover.
-//
-// O QUE ESTA PEÇA NÃO FAZ — O CUSTO DURÁVEL E A RESERVA NO TECTO (ADR-042 §2.6; peça 3b). O custo
-// medido pelo gateway volta pelo canal do `RegisterCosting` e vai, como hoje para qualquer tool,
-// só ao span `aos.activity`: não há evento durável do custo nem reserva no tecto em dólares do
-// run. Os dois pontos onde a 3b entra estão marcados em [ligacaoOCR.executar] («PONTO DA 3b») e o
-// arranque declara a postura ([ligacaoOCR.linhaDoArranque]).
+//   - O CUSTO (§2.6; peça 3b, em ocr_custo.go). Antes do pedido, a reserva do máximo por chamada no
+//     tecto do run ([ligacaoOCR.reservar]); depois da resposta — aceite ou recusada, pela tool ou
+//     pelo gateway —, o saldo pelo medido e o evento durável [EventTypeToolModelCost], que soma ao
+//     consumo durável do run ([ligacaoOCR.fecharPago]). O custo volta também pelo canal do
+//     `RegisterCosting`, ao span `aos.activity`, como o de qualquer tool.
 //
 // OS BYTES DA IMAGEM nunca entram num evento, span, métrica ou log: o resultado leva o digest, o
 // tamanho e o formato; o pedido ao gateway leva os bytes numa [port.ImagePart], que só o wire do
@@ -64,12 +63,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	budget "github.com/aos-ref/control-plane/budget"
+	"github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 	audit "github.com/aos-ref/platform/audit"
 	modelgateway "github.com/aos-ref/platform/model-gateway"
 	"github.com/aos-ref/platform/model-gateway/policy/allowlist"
 	"github.com/aos-ref/platform/model-gateway/port"
+	"github.com/aos-ref/platform/model-gateway/pricing"
 )
 
 // Constantes da tool. São do código, não do registo: mudá-las muda o que a tool faz.
@@ -165,6 +167,7 @@ func ocrCausas() []string {
 		ocrCausaEntrada, ocrCausaSemNHI,
 		ocrCausaForaDaRaiz, ocrCausaNomeNaoCanonico, ocrCausaEmFalta, ocrCausaIlegivel, ocrCausaNaoRegular,
 		ocrCausaVariasLigacoes, ocrCausaTrocado, ocrCausaGrande, ocrCausaFormato,
+		ocrCausaTecto, ocrCausaOrcamento,
 		ocrCausaTempo, ocrCausaCancelado, ocrCausaGateway, ocrCausaModeloServido,
 		ocrCausaCortado, ocrCausaVazio, ocrCausaRespostaForma,
 	}
@@ -278,6 +281,14 @@ type ligacaoOCR struct {
 	digestDaInstrucao string
 	// contagem é a métrica `aos_ocr_read_total`, por resultado.
 	contagem map[string]*atomic.Int64
+	// reservaMax é o máximo que uma chamada pode custar ([reservaMaxDoOCR]), composto no arranque.
+	reservaMax budget.Amount
+	// orcamento é o orçamento por-run do nó (nil ⇒ sem orçamento composto, sem reserva) e
+	// registarCusto a escrita durável do custo (nil ⇒ sem Event Store). Ligados no Bootstrap
+	// ([ligacaoOCR.ligarCusto]); logf é o log do nó para as degradações declaradas.
+	orcamento     *integration.RunBudget
+	registarCusto func(context.Context, string, custoDeToolPayload) error
+	logf          func(string, ...any)
 }
 
 // comporLigacaoOCR confere as condições de ARRANQUE da tool e compõe a ligação, sem o gateway
@@ -311,15 +322,22 @@ func comporLigacaoOCR(spec *modelToolSpec, assinados *perfisAssinados, externa *
 	if perfilDigest == "" {
 		return nil, fmt.Errorf("%w: alias %q", ErrOCRSemRegistoTool, alias)
 	}
-	// 3. Com a contabilidade composta, o preço do par (alias, região).
+	// 3. Com a contabilidade composta, o preço do par (alias, região) — e é dele que sai o custo
+	// máximo por chamada que a tool reserva no tecto do run (peça 3b).
+	var tabela *pricing.Table
 	if comCusto {
-		_, postura, err := resolveModelPricing(alias, region)
+		t, postura, err := resolveModelPricing(alias, region)
 		if err != nil {
 			return nil, err
 		}
 		if !postura.Armed {
 			return nil, fmt.Errorf("%w: alias %q, regiao %q", ErrOCRSemPreco, alias, region)
 		}
+		tabela = t
+	}
+	reservaMax, err := reservaMaxDoOCR(tabela, alias, region)
+	if err != nil {
+		return nil, err
 	}
 	// 4. A pasta semeada, aberta e confinada.
 	pasta := strings.TrimSpace(os.Getenv("AOS_OCR_SEED_DIR")) // o literal: o gate da superficie de ambiente le-o daqui
@@ -330,7 +348,9 @@ func comporLigacaoOCR(spec *modelToolSpec, assinados *perfisAssinados, externa *
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrOCRSemPasta, err)
 	}
-	return novaLigacaoOCR(alias, region, board, perfilDigest, pasta, raiz), nil
+	l := novaLigacaoOCR(alias, region, board, perfilDigest, pasta, raiz)
+	l.reservaMax = reservaMax
+	return l, nil
 }
 
 // novaLigacaoOCR monta a ligação com as constantes da tool, sem o gateway.
@@ -340,6 +360,8 @@ func novaLigacaoOCR(alias, region, board, perfilDigest, pasta string, raiz *os.R
 		raiz: raizOS{raiz}, raizAberta: raiz, pasta: pasta, prazo: ocrPrazo,
 		digestDaInstrucao: ocrDigestDaInstrucao(ocrInstrucaoSistema, ocrInstrucaoPedido),
 		contagem:          map[string]*atomic.Int64{},
+		reservaMax:        budget.Amount{Tokens: ocrTokensDeEntradaMax + ocrMaxTokens},
+		logf:              func(string, ...any) {},
 	}
 	for _, r := range ocrCausas() {
 		l.contagem[r] = new(atomic.Int64)
@@ -602,9 +624,12 @@ func (l *ligacaoOCR) executar(ctx context.Context, input []byte) ([]byte, int64,
 	if causa != "" {
 		return l.falhar(causa, 0)
 	}
-	// PONTO DA 3b (ADR-042 §2.6) — A RESERVA. Aqui, com a imagem lida e antes do pedido, a 3b
-	// reserva no tecto em dólares do run o máximo por chamada (tabela de preços × tectos de tokens
-	// da tool) e nega sem chamar o modelo se não couber. Nesta peça não há reserva.
+	// A RESERVA (ADR-042 §2.6): com a imagem lida e antes do pedido, o máximo por chamada no tecto
+	// do run. Não cabe ⇒ negada sem chamar o modelo.
+	reserva, causa := l.reservar(ctx, in.RunID)
+	if causa != "" {
+		return l.falhar(causa, 0)
+	}
 	cctx, cancel := context.WithTimeout(ctx, l.prazo)
 	defer cancel()
 	resp, err := l.gw.Chat(cctx, port.ChatRequest{
@@ -622,47 +647,63 @@ func (l *ligacaoOCR) executar(ctx context.Context, input []byte) ([]byte, int64,
 		OriginTool: ocrToolName,
 	})
 	if err != nil {
-		// PONTO DA 3b — uma recusa DEPOIS de o provider responder (o modelo servido diferente em
-		// `enforce`) custou dinheiro, e o gateway devolve-a sem a resposta: o custo não chega aqui.
-		// A 3b tem de o trazer com o erro para o gravar (ADR-042 §2.6, «custou e grava-se»).
 		switch {
 		case errors.Is(err, modelgateway.ErrRouteVariance):
-			return l.falhar(ocrCausaModeloServido, 0)
+			causa = ocrCausaModeloServido
 		case ctx.Err() != nil:
-			return l.falhar(ocrCausaCancelado, 0)
+			causa = ocrCausaCancelado
 		case cctx.Err() != nil || errors.Is(err, context.DeadlineExceeded):
-			return l.falhar(ocrCausaTempo, 0)
+			causa = ocrCausaTempo
 		default:
-			return l.falhar(ocrCausaGateway, 0)
+			causa = ocrCausaGateway
 		}
+		// Uma recusa DEPOIS de o provider responder (o modelo servido diferente em `enforce`) custou
+		// dinheiro: o gateway devolve o custo com o erro ([modelgateway.PaidRejectionError]), e
+		// grava-se. Sem resposta não há custo conhecido e a reserva volta ao run.
+		if usage, servido, pago := modelgateway.PaidRejectionOf(err); pago {
+			l.fecharPago(ctx, reserva, in, usage, servido, causa)
+			return l.falhar(causa, usage.CostMicroUSD)
+		}
+		l.libertar(ctx, reserva, in)
+		return l.falhar(causa, 0)
 	}
 	// O custo medido pelo gateway (tabela de preços; zero sem contabilidade composta). Volta pelo
-	// canal do RegisterCosting — também quando a tool recusa a resposta: o provider respondeu.
-	// PONTO DA 3b — o evento durável do custo, por (run_id, step_id), grava-se aqui, nos dois
-	// ramos (resposta aceite e recusada).
-	custo := resp.Usage.CostMicroUSD
-	if len(resp.Choices) == 0 {
-		return l.falhar(ocrCausaVazio, custo)
-	}
-	escolha := resp.Choices[0]
-	if len(escolha.Message.ToolCalls) > 0 {
-		// O modelo de visão não tem tools oferecidas; uma tool call é uma resposta que não é a de
-		// uma transcrição.
-		return l.falhar(ocrCausaRespostaForma, custo)
-	}
-	if escolha.FinishReason == port.FinishLength {
-		// Cortado não é completo (ADR-037; a lição do Gemini na medição).
-		return l.falhar(ocrCausaCortado, custo)
-	}
-	texto := escolha.Message.Content
-	if strings.TrimSpace(texto) == "" {
-		return l.falhar(ocrCausaVazio, custo)
-	}
+	// canal do RegisterCosting e grava-se no evento durável — também quando a tool recusa a
+	// resposta: o provider respondeu.
 	servido := resp.Route.Model
 	if servido == "" {
 		// Sem a governação da rota o gateway não guarda o cabeçalho do proxy: fica o modelo que o
 		// corpo da resposta declara.
 		servido = port.SanitizeServedModel(resp.Model)
+	}
+	out, resultado := l.interpretar(resp, parte, formato, servido)
+	l.fecharPago(ctx, reserva, in, resp.Usage, servido, resultado)
+	if resultado != ocrResultadoTranscrito {
+		return l.falhar(resultado, resp.Usage.CostMicroUSD)
+	}
+	l.contar(ocrResultadoTranscrito)
+	return out, resp.Usage.CostMicroUSD, nil
+}
+
+// interpretar decide o que uma resposta do modelo é: o resultado `aos-ocr/v1` e `transcrito`, ou a
+// causa da recusa.
+func (l *ligacaoOCR) interpretar(resp port.ChatResponse, parte port.ImagePart, formato, servido string) ([]byte, string) {
+	if len(resp.Choices) == 0 {
+		return nil, ocrCausaVazio
+	}
+	escolha := resp.Choices[0]
+	if len(escolha.Message.ToolCalls) > 0 {
+		// O modelo de visão não tem tools oferecidas; uma tool call é uma resposta que não é a de
+		// uma transcrição.
+		return nil, ocrCausaRespostaForma
+	}
+	if escolha.FinishReason == port.FinishLength {
+		// Cortado não é completo (ADR-037; a lição do Gemini na medição).
+		return nil, ocrCausaCortado
+	}
+	texto := escolha.Message.Content
+	if strings.TrimSpace(texto) == "" {
+		return nil, ocrCausaVazio
 	}
 	out, err := json.Marshal(resultadoOCR{
 		Schema: ocrResultSchema, Motor: ocrMotorModelo, Texto: texto,
@@ -671,10 +712,9 @@ func (l *ligacaoOCR) executar(ctx context.Context, input []byte) ([]byte, int64,
 		InstrucaoDigest: l.digestDaInstrucao,
 	})
 	if err != nil {
-		return l.falhar(ocrCausaRespostaForma, custo)
+		return nil, ocrCausaRespostaForma
 	}
-	l.contar(ocrResultadoTranscrito)
-	return out, custo, nil
+	return out, ocrResultadoTranscrito
 }
 
 // registarOCR regista a `ocr_read` no RM do nó com RegisterCosting. Corre no Bootstrap, DEPOIS
@@ -698,8 +738,25 @@ func registarOCR(sec interface {
 
 // linhaDoArranque declara a tool ligada: o que ela faz, o que chama e o que esta versão NÃO faz.
 func (l *ligacaoOCR) linhaDoArranque() string {
-	return fmt.Sprintf("tool %s LIGADA (EPIC-07/AOS-530, ADR-042): le uma imagem PNG ou JPEG (ate %d bytes) do nivel de topo de %s=%q, montada so de leitura, e transcreve-a por UMA chamada ao Model Gateway deste no — o mesmo dos turnos —, com o token NHI do run e o run e o passo da tool call. Alias %q (board %q, regiao %q), perfil do registo assinado de uso tool %s; instrucao fixa %s; max_tokens %d; prazo %s; sem tools oferecidas ao modelo de visao; sem nova tentativa. Mediada pelo RM com %s e o recurso %s. CUSTO: o medido pelo gateway vai so ao span aos.activity nesta versao — NAO ha evento duravel do custo nem reserva no tecto em dolares do run (AOS-530, peca 3b, por fazer)",
-		ocrToolName, port.MaxImageBytes, ocrSeedDirEnv, l.pasta, l.alias, l.board, l.region, l.perfilDigest, l.digestDaInstrucao, ocrMaxTokens, l.prazo, ocrCapability, ocrResourceValue)
+	return fmt.Sprintf("tool %s LIGADA (EPIC-07/AOS-530, ADR-042): le uma imagem PNG ou JPEG (ate %d bytes) do nivel de topo de %s=%q, montada so de leitura, e transcreve-a por UMA chamada ao Model Gateway deste no — o mesmo dos turnos —, com o token NHI do run e o run e o passo da tool call. Alias %q (board %q, regiao %q), perfil do registo assinado de uso tool %s; instrucao fixa %s; max_tokens %d; prazo %s; sem tools oferecidas ao modelo de visao; sem nova tentativa. Mediada pelo RM com %s e o recurso %s. CUSTO: %s",
+		ocrToolName, port.MaxImageBytes, ocrSeedDirEnv, l.pasta, l.alias, l.board, l.region, l.perfilDigest, l.digestDaInstrucao, ocrMaxTokens, l.prazo, ocrCapability, ocrResourceValue, l.posturaDoCusto())
+}
+
+// posturaDoCusto declara, no arranque, o que acontece ao custo de cada chamada (ADR-042 §2.6).
+func (l *ligacaoOCR) posturaDoCusto() string {
+	evento := "o custo medido pelo gateway grava-se no evento duravel " + EventTypeToolModelCost + " do run, por (run_id, step_id), tambem quando a resposta e recusada, e soma ao consumo duravel do run ao lado dos turnos"
+	if l.registarCusto == nil {
+		evento = "SEM Event Store composto o custo medido NAO se grava no run (vai so ao span aos.activity)"
+	}
+	if l.orcamento == nil {
+		return evento + "; SEM orcamento por-run composto (AOS_BUDGET_MAX_TOKENS por definir) NAO ha reserva no tecto, como para os turnos"
+	}
+	dolares := "a dimensao em dolares e medida e nao nega (AOS_BUDGET_MAX_COST_MICRO_USD por definir)"
+	if tecto, ok := l.orcamento.MaxCostMicroUSDPerRun(); ok {
+		dolares = fmt.Sprintf("tecto em dolares %d micro-USD por run", tecto)
+	}
+	return fmt.Sprintf("%s; antes de cada chamada reserva no tecto do run o maximo por chamada — %d tokens (%d de entrada + %d de saida) e %d micro-USD pela tabela de precos —, e sem folga a tool e negada com %s sem pedido ao provider (%s)",
+		evento, l.reservaMax.Tokens, ocrTokensDeEntradaMax, ocrMaxTokens, l.reservaMax.CostMicroUSD, ocrCausaTecto, dolares)
 }
 
 // ocrDoCliente devolve a ligação da `ocr_read` do cliente de modelo dado, ou nil.
