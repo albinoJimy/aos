@@ -2463,6 +2463,11 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	if err != nil {
 		return nil, nil, err
 	}
+	// AOS-530 (ADR-042 §2.3): um registo de uso `tool` nunca é do alias do titular — com ou sem o
+	// interruptor do candidato.
+	if err := assinados.conferirUsoTool(model); err != nil {
+		return nil, nil, err
+	}
 	// AOS-520: com o interruptor do candidato ligado — no máximo UM candidato, e, com a
 	// contabilidade de custo composta, o par do candidato tem de ter preço: a cobertura acima só foi
 	// verificada para o par do titular, e a contabilidade recusa uma chamada a um par sem preço.

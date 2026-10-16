@@ -8,7 +8,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+
+	modelgateway "github.com/aos-ref/platform/model-gateway"
 )
 
 // O SUBCOMANDO `ocr` (AOS-529). Tem as suas opções e o seu texto de uso, como o `qualificar`:
@@ -37,21 +40,62 @@ opcoes:
   --saida PASTA          onde escrever o relatorio (omissao: a pasta relatorios do dono)
   --silencioso           nao mostra o resumo, so os caminhos
   --guardar-respostas    grava, ao lado do relatorio, o texto lido de cada imagem (so la)
+  --limiar-de-factos F   o limiar do veredicto (AOS-530), de 0.90 (a omissao, D7 do dono) a 1; so aperta
+  --perfil FICHEIRO      (so motores visao e falso) o perfil da rota do alias da tool, com a capacidade
+                         imagem e sem tools: o digest dele, o modelo e a imagem do proxy vao para a rota
+                         medida do veredicto, que liga o relatorio a um registo de entrada de uso tool
 
-Um motor novo entra como adaptador (ocr_motores.go). Sem veredicto: saida 0 se a corrida
-completou; 2 argumentos; 3 recusada antes de enviar (chaves, tecto, contador); 4 interrompida;
-5 motor visao em CI; 6 sem Docker, sem a imagem do motor ou sem o proxy.
+O relatorio traz o VEREDICTO (AOS-530): qualificado ou recusado contra o limiar de factos, e se vale
+para producao (so um qualificado do motor visao, que e o modo real). A saida NAO depende dele: 0 se a
+corrida completou; 2 argumentos; 3 recusada antes de enviar (chaves, tecto, contador); 4 interrompida;
+5 motor visao em CI; 6 sem Docker, sem a imagem do motor ou sem o proxy. Para preparar o registo de
+uso tool a partir do veredicto: aos-ensaio qualificar-ocr. Um motor novo entra como adaptador
+(ocr_motores.go).
 `
 
 type opcoesDoOCR struct {
 	motor, falso, imagem, linguas, saida      string
 	chaves, visaoFornecedor, visaoModelo      string
-	precos                                    string
+	precos, perfil                            string
+	limiar                                    float64
 	silencioso, guardar, soPlano, reconstruir bool
+}
+
+// ocrFeito é o que uma corrida `ocr` deixou escrito: o relatório, tal como foi gravado, e o
+// caminho do JSON. Fica vazio quando a linha de comandos sai sem ter escrito relatório. É por aqui
+// que o `qualificar-ocr` lê a corrida que acabou de fazer (AOS-530), e não um relatório de fora.
+type ocrFeito struct {
+	relatorio *RelatorioOCR
+	emJSON    string
+}
+
+// ErrPerfilDoOCR — o perfil dado com `--perfil` não é o de uma rota que lê imagens.
+var ErrPerfilDoOCR = errors.New("o perfil da rota medida pela experiencia ocr tem de declarar a capacidade " + modelgateway.CapabilityImage + " e nao pode declarar " + modelgateway.CapabilityTools + " (ADR-042 2.3 e 2.4: o modelo que le a imagem nao pode pedir efeitos)")
+
+// lerPerfilDoOCR lê e confere o perfil de `--perfil`: a leitura fechada do gateway, o nome da rota
+// do banco, a capacidade `imagem` e nenhuma `tools`.
+func lerPerfilDoOCR(caminho string) (*modelgateway.RouteProfile, error) {
+	doc, err := os.ReadFile(caminho) // #nosec G304 -- caminho dado pelo operador na linha de comandos
+	if err != nil {
+		return nil, errors.New("nao foi possivel ler o ficheiro de --perfil")
+	}
+	p, err := LerPerfilCandidato(doc)
+	if err != nil {
+		return nil, err
+	}
+	if !slices.Contains(p.Capabilities, modelgateway.CapabilityImage) || slices.Contains(p.Capabilities, modelgateway.CapabilityTools) {
+		return nil, ErrPerfilDoOCR
+	}
+	return p, nil
 }
 
 // executarOCR corre o subcomando `ocr`.
 func executarOCR(ctx context.Context, args []string, stdout, stderr io.Writer, amb Ambiente, red *Redactor) int {
+	return executarOCRCom(ctx, args, stdout, stderr, amb, red, &ocrFeito{})
+}
+
+// executarOCRCom é o subcomando `ocr`, com o relatório escrito deixado em `feito`.
+func executarOCRCom(ctx context.Context, args []string, stdout, stderr io.Writer, amb Ambiente, red *Redactor, feito *ocrFeito) int {
 	if len(args) > 0 && args[0] == "bateria" {
 		return mostrarBateriaOCR(args[1:], stdout, stderr)
 	}
@@ -72,7 +116,15 @@ func executarOCR(ctx context.Context, args []string, stdout, stderr io.Writer, a
 	fs.BoolVar(&o.guardar, "guardar-respostas", false, "")
 	fs.BoolVar(&o.soPlano, "so-plano", false, "")
 	fs.BoolVar(&o.reconstruir, "reconstruir-contador", false, "")
+	fs.StringVar(&o.perfil, "perfil", "", "")
+	fs.Float64Var(&o.limiar, "limiar-de-factos", LimiarDeFactosDoOCR, "")
 	if err := fs.Parse(args); err != nil {
+		return SaidaUso
+	}
+	// O LIMIAR SÓ APERTA: abaixo da D7 do dono o veredicto não seria o dele. (`!(x >= y)` apanha
+	// também um NaN.)
+	if !(o.limiar >= LimiarDeFactosDoOCR) || o.limiar > 1 {
+		fmt.Fprintf(stderr, "aos-ensaio ocr: --limiar-de-factos tem de estar entre %.2f (o limiar do dono, D7) e 1: so aperta\n", LimiarDeFactosDoOCR)
 		return SaidaUso
 	}
 	if fs.NArg() > 0 {
@@ -95,6 +147,20 @@ func executarOCR(ctx context.Context, args []string, stdout, stderr io.Writer, a
 	if o.motor != NomeMotorTesseract && o.imagem != "" {
 		fmt.Fprintln(stderr, "aos-ensaio ocr: --imagem so vale com --motor tesseract")
 		return SaidaUso
+	}
+	var perfil *modelgateway.RouteProfile
+	if o.perfil != "" {
+		// Um registo de uso tool é de um alias que o nó chama pelo gateway: um modelo, real ou falso.
+		// O Tesseract local não é uma rota do gateway.
+		if o.motor != NomeMotorVisao && o.motor != NomeMotorFalso {
+			fmt.Fprintln(stderr, "aos-ensaio ocr: --perfil so vale com --motor visao ou falso")
+			return SaidaUso
+		}
+		var perr error
+		if perfil, perr = lerPerfilDoOCR(o.perfil); perr != nil {
+			fmt.Fprintf(stderr, "aos-ensaio ocr: --perfil: %v\n", perr)
+			return SaidaUso
+		}
 	}
 	bateria, err := CarregarBateriaOCR()
 	if err != nil {
@@ -130,7 +196,7 @@ func executarOCR(ctx context.Context, args []string, stdout, stderr io.Writer, a
 		m = t
 	case NomeMotorVisao:
 		var codigo int
-		visao, codigo = prepararVisao(ctx, o, bateria, amb, red, stderr)
+		visao, codigo = prepararVisao(ctx, o, bateria, perfil, amb, red, stderr)
 		if visao == nil {
 			return codigo
 		}
@@ -163,11 +229,23 @@ func executarOCR(ctx context.Context, args []string, stdout, stderr io.Writer, a
 	if visao != nil {
 		visao.preencher(r, amb)
 	}
+	// O VEREDICTO (AOS-530), depois do modo: é ele que diz se vale para produção.
+	var rota *RotaMedidaDoOCR
+	if perfil != nil {
+		rota = &RotaMedidaDoOCR{Fornecedor: NomeMotorFalso, Modelo: m.Nome(), ModeloEsperado: perfil.ExpectedModel, DigestDoPerfil: perfil.Digest()}
+		if visao != nil {
+			rota.Fornecedor, rota.Modelo = string(visao.fornecedor), visao.modelo
+			rota.ImagemDoProxy, rota.DigestDaImagemDoProxy = ImagemDoProxy, digestDaImagem(ImagemDoProxy)
+		}
+		r.LimitesDaMedicao = append(r.LimitesDaMedicao, "o banco nao compara, nesta experiencia, o modelo que o proxy diz ter servido com o modelo esperado do perfil: quem o compara e o gateway do no, em cada chamada da tool")
+	}
+	r.VeredictoDoOCR = VeredictoOCR(r, o.limiar, rota)
 	emJSON, emTexto, err := EscreverRelatorioOCR(pasta, r)
 	if err != nil {
 		fmt.Fprintf(stderr, "aos-ensaio ocr: %v\n", err)
 		return SaidaErro
 	}
+	*feito = ocrFeito{relatorio: r, emJSON: emJSON}
 	if !o.silencioso {
 		fmt.Fprint(stdout, ResumoOCREmTexto(r))
 	}
@@ -232,6 +310,9 @@ func mostrarBateriaOCR(args []string, stdout, stderr io.Writer) int {
 
 // execucaoDaVisao é o que a corrida de visão preparou: o motor, o contador e o proxy.
 type execucaoDaVisao struct {
+	// registar conta a corrida entre as qualificações do dia, quando ela qualifica um perfil; nil
+	// sem `--perfil`.
+	registar   func() (OrdemDaQualificacao, error)
 	motor      *MotorOCRVisao
 	contador   *Contador
 	fornecedor Fornecedor
@@ -263,7 +344,12 @@ func PiorCasoDaVisao(b *BateriaOCR) int64 {
 
 // prepararVisao lê as chaves, abre o contador, confere o pior caso e levanta o proxy. Devolve nil e
 // o código de saída quando recusa; com `--so-plano` não levanta o proxy.
-func prepararVisao(ctx context.Context, o opcoesDoOCR, b *BateriaOCR, amb Ambiente, red *Redactor, stderr io.Writer) (*execucaoDaVisao, int) {
+//
+// `perfil` é o de `--perfil` (nil sem ele). Com ele a corrida QUALIFICA um perfil (AOS-530): a rota
+// desta corrida tem de ser a que o perfil espera, recusado ANTES de abrir o contador ou o proxy; e
+// conta nas qualificações do dia (D7), conferidas antes do proxy e escritas quando a sonda passa.
+func prepararVisao(ctx context.Context, o opcoesDoOCR, b *BateriaOCR, perfil *modelgateway.RouteProfile, amb Ambiente, red *Redactor, stderr io.Writer) (*execucaoDaVisao, int) {
+	esperado := perfilEsperado(perfil)
 	caminho := o.chaves
 	if caminho == "" {
 		caminho = amb.Getenv(EnvDasChaves)
@@ -289,6 +375,13 @@ func prepararVisao(ctx context.Context, o opcoesDoOCR, b *BateriaOCR, amb Ambien
 		return nil, SaidaRecusada
 	}
 	red.Acrescentar(rota.Segredos()...)
+	// O PERFIL MEDIDO É O DESTA ROTA (AOS-530), como no `qualificar` (cli.go): o proxy declara ter
+	// servido `<prefixo>/<modelo>`, e o gateway do nó compara-o com o `expected_model` do perfil em
+	// cada chamada da tool. Um relatório que mediu outro modelo não pode qualificar este perfil.
+	if esperado != "" && esperado != prefixoDoProxy(fornecedor)+"/"+rota.Modelo {
+		fmt.Fprintf(stderr, "aos-ensaio ocr: RECUSADO — o expected_model do perfil nao e a rota desta corrida (%s/%s): o veredicto e da rota medida, e o modelo servido tem de ser o que o perfil espera. Nenhum pedido foi enviado\n", prefixoDoProxy(fornecedor), rota.Modelo)
+		return nil, SaidaRecusada
+	}
 	var precos *TabelaDePrecos
 	if o.precos != "" {
 		if precos, err = LerTabelaDePrecos(o.precos); err != nil {
@@ -316,6 +409,31 @@ func prepararVisao(ctx context.Context, o opcoesDoOCR, b *BateriaOCR, amb Ambien
 		return nil, SaidaRecusada
 	}
 	v := &execucaoDaVisao{contador: contador, fornecedor: fornecedor, modelo: rota.Modelo, piorCaso: PiorCasoDaVisao(b), pasta: pastaDaSaida}
+	// AS QUALIFICAÇÕES DO DIA (AOS-518, decisão D7), também para a corrida `ocr` que qualifica um
+	// perfil: repetir até passar é escolher o resultado. É o MESMO mecanismo e o MESMO registo das
+	// qualificações dos candidatos (`qualificacoes.json`, ao lado do contador e sob a trava dele):
+	// duas por perfil e quatro por rota — fornecedor e modelo — por dia UTC, contadas juntas com as
+	// da experiência `qualificacao`. Juntas porque o tecto é sobre a ROTA: medir o mesmo modelo
+	// noutra experiência não é uma tentativa nova. Confere-se aqui, antes do proxy e de qualquer
+	// pedido; escreve-se quando a sonda passa ([execucaoDaVisao.sondar]).
+	if perfil != nil {
+		caminhoDasQualificacoes := filepath.Join(pastaDoEstado, NomeDoRegistoDeQualificacoes)
+		chave := ChaveDaQualificacao{Dia: amb.Relogio().UTC().Format("2006-01-02"), PerfilDigest: perfil.Digest(), Fornecedor: string(fornecedor), Modelo: rota.Modelo}
+		feitas, qerr := QualificacoesDeHoje(caminhoDasQualificacoes, pastas, chave)
+		if qerr == nil && feitas.esgotada() {
+			qerr = ErrQualificacoesDoDia
+		}
+		if qerr != nil {
+			contador.Fechar()
+			fmt.Fprintf(stderr, "aos-ensaio ocr: RECUSADO — %v. Nenhum pedido foi enviado\n", qerr)
+			return nil, SaidaRecusada
+		}
+		fmt.Fprintf(stderr, "aos-ensaio ocr: QUALIFICACAO de um perfil (AOS-530): este perfil ja foi qualificado %d vez(es) hoje, de um maximo de %d; esta rota, %d de %d (contadas com as da experiencia qualificacao)\n",
+			feitas.DoPerfil, QualificacoesPorPerfilPorDia, feitas.DaRota, QualificacoesPorRotaPorDia)
+		v.registar = func() (OrdemDaQualificacao, error) {
+			return RegistarQualificacao(caminhoDasQualificacoes, pastas, chave)
+		}
+	}
 	if err := contador.Cabe(v.piorCaso); err != nil {
 		contador.Fechar()
 		fmt.Fprintf(stderr, "aos-ensaio ocr: RECUSADO — o pior caso (%d pedidos: %d imagens e 1 sonda) nao cabe: %v\n", v.piorCaso, v.piorCaso-1, err)
@@ -369,6 +487,13 @@ func prepararVisao(ctx context.Context, o opcoesDoOCR, b *BateriaOCR, amb Ambien
 func (v *execucaoDaVisao) sondar(ctx context.Context, stderr io.Writer) int {
 	s := v.motor.Sondar(ctx)
 	if s.Resultado == SondaOK {
+		// A sonda passou: a corrida conta entre as qualificações do dia, antes da primeira imagem.
+		if v.registar != nil {
+			if _, err := v.registar(); err != nil {
+				fmt.Fprintf(stderr, "aos-ensaio ocr: RECUSADO — %v\n", err)
+				return SaidaRecusada
+			}
+		}
 		return SaidaOK
 	}
 	fmt.Fprintf(stderr, "aos-ensaio ocr: a SONDA nao teve 200 (HTTP %d, %s): a corrida NAO COMECOU; gastou-se no maximo 1 pedido do tecto\n", s.HTTP, s.Resultado)

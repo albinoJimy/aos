@@ -370,7 +370,8 @@ func newGatewayModelClientComPerfis(verifier authn.Verifier, baseURL, model, api
 	// opções, escolhidos pelo alias que a hospedagem fixou no run. Existe mesmo com o interruptor do
 	// candidato desligado, para um run já fixado acabar enquanto o perfil estiver carregado. Sem
 	// nenhum perfil não-titular — o caso de sempre — devolve-se o adaptador do titular, sem
-	// despachante.
+	// despachante. Um registo de uso `tool` (AOS-530) não é não-titular ([perfisAssinados.naoTitulares])
+	// e por isso não ganha adaptador de run: o seu alias só é chamado por uma tool, pelo gateway.
 	naoTitulares := assinados.naoTitulares(model)
 	if len(naoTitulares) == 0 {
 		return titular, nil

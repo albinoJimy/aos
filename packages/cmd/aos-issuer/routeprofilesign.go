@@ -154,6 +154,12 @@ func resumoDoRegisto(w io.Writer, e routeentry.Entry) {
 	fmt.Fprintf(w, "route-profile-sign:   params do pedido: %s\n", params)
 	fmt.Fprintf(w, "route-profile-sign:   projection_version: %s; devolver: nunca (por esta via so entram perfis que nao devolvem estado)\n", projeccao)
 	fmt.Fprintf(w, "route-profile-sign:   board %q, regiao %q, fatia inicial %d%%\n", e.Board, e.Region, e.InitialSharePercent)
+	// O USO (AOS-530, ADR-042 §2.3): um registo sem o membro é de uso run, como todos os de antes.
+	if e.ForTool() {
+		fmt.Fprintf(w, "route-profile-sign:   uso: tool — o perfil de um alias que so uma tool chama; NUNCA e candidato a servir runs (fatia 0, sem canary nem disjuntor), e o relatorio citado e da experiencia ocr\n")
+	} else {
+		fmt.Fprintf(w, "route-profile-sign:   uso: run — um perfil que serve runs (o titular, ou um candidato se o alias nao for o do titular)\n")
+	}
 	fmt.Fprintf(w, "route-profile-sign:   digest do perfil %s; digest do registo %s; digest do relatorio %s\n", e.ProfileDigest, e.EntryDigest, e.ReportDigest)
 }
 

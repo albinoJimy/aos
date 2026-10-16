@@ -94,6 +94,56 @@ func lerRegistoDeQualificacoes(caminho string) (registoDeQualificacoes, error) {
 	return r, nil
 }
 
+// relatorioDeOCRQualificante é o que se lê de um relatório `ocr` do modo real para o contar entre
+// as qualificações de hoje (AOS-530): só conta o que mediu um perfil (traz a rota medida). Um
+// relatório destes só se escreve depois de a sonda passar.
+type relatorioDeOCRQualificante struct {
+	Modo        string `json:"modo"`
+	Experiencia string `json:"experiencia"`
+	DataUTC     string `json:"data_utc"`
+	Rota        struct {
+		Fornecedor string `json:"fornecedor"`
+		Modelo     string `json:"modelo"`
+	} `json:"rota"`
+	Veredicto *struct {
+		RotaMedida *struct {
+			DigestDoPerfil string `json:"digest_do_perfil"`
+		} `json:"rota_medida"`
+	} `json:"veredicto_do_ocr"`
+}
+
+// ocrQualificantesNosRelatorios conta, nos relatórios `ocr` reais das pastas dadas, os que
+// qualificaram um perfil hoje (AOS-530).
+func ocrQualificantesNosRelatorios(pastas []string, k ChaveDaQualificacao, vistos map[string]bool) OrdemDaQualificacao {
+	var o OrdemDaQualificacao
+	for _, pasta := range pastas {
+		achados, _ := filepath.Glob(filepath.Join(pasta, "ensaio-"+ModoReal+"-ocr-*.json"))
+		for _, caminho := range achados {
+			abs, err := filepath.Abs(caminho)
+			if err != nil || vistos[abs] {
+				continue
+			}
+			vistos[abs] = true
+			cru, err := os.ReadFile(caminho) // #nosec G304 -- relatorios do proprio banco, na pasta do dono
+			if err != nil {
+				continue
+			}
+			var r relatorioDeOCRQualificante
+			if json.Unmarshal(cru, &r) != nil || r.Modo != ModoReal || r.Experiencia != "ocr" || !strings.HasPrefix(r.DataUTC, k.Dia) ||
+				r.Veredicto == nil || r.Veredicto.RotaMedida == nil {
+				continue
+			}
+			if r.Rota.Fornecedor == k.Fornecedor && r.Rota.Modelo == k.Modelo {
+				o.DaRota++
+			}
+			if r.Veredicto.RotaMedida.DigestDoPerfil == k.PerfilDigest {
+				o.DoPerfil++
+			}
+		}
+	}
+	return o
+}
+
 // relatorioDeQualificacao é o que se lê de um relatório para contar as qualificações de hoje.
 type relatorioDeQualificacao struct {
 	Modo        string `json:"modo"`
@@ -144,6 +194,10 @@ func qualificacoesNosRelatorios(pastas []string, k ChaveDaQualificacao) OrdemDaQ
 			}
 		}
 	}
+	// Desde o AOS-530 contam também as corridas `ocr` que qualificaram um perfil.
+	ocr := ocrQualificantesNosRelatorios(pastas, k, vistos)
+	o.DoPerfil += ocr.DoPerfil
+	o.DaRota += ocr.DaRota
 	return o
 }
 

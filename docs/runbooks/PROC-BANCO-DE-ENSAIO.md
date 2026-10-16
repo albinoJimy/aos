@@ -575,7 +575,7 @@ revisão), e os quatro digests; e o relógio.
 | 7, `RECUSADO` | relatório e resumo | Acaba aqui. Uma razão firme não sai a repetir; os limiares não se mexem sem decisão registada |
 | 8 ou 4, `INCONCLUSIVO` | relatório e resumo | Resolver a causa (conta, ritmo, tecto) e repetir **noutra pasta**. Conta como uma das duas do dia se passou da sonda. **Um Ctrl-C dá sempre `inconclusivo`, nunca `recusado`**: o run apanhado pelo cancelamento sai da amostra |
 | 3 | nada, ou um relatório `inconclusivo` | Tecto do dia, qualificações do dia esgotadas, imagem do proxy, ou a pasta de saída já existia. A linha diz qual |
-| 11, antes de enviar | nada | O nó recusaria o registo: `perfil_devolve_estado`, `nome_da_rota_invalido`, `fatia_fora_do_intervalo`, `perfil_invalido`, `nome_fora_da_allowlist`. Corrigir o perfil, a fatia ou a allowlist. Nenhum pedido saiu |
+| 11, antes de enviar | nada | O nó recusaria o registo: `perfil_devolve_estado`, `nome_da_rota_invalido`, `fatia_fora_do_intervalo`, `perfil_invalido`, `nome_fora_da_allowlist`; no `qualificar-ocr` (registo de uso `tool`, AOS-530) também `perfil_de_tool_com_capacidades_erradas` (o perfil não declara `imagem`, ou declara `tools`). Corrigir o perfil, a fatia ou a allowlist. Nenhum pedido saiu |
 | 11, depois da corrida | relatório e resumo, **sem** `pacote\` | O relatório que a corrida escreveu não passa nas conferências do nó (a causa vem na linha e no resumo). Não devia acontecer: guardar a pasta e não repetir às cegas — a corrida contou como uma das do dia |
 | 1 | relatório e resumo, **sem** `pacote\`; ou nada | Outra falha, e nunca fica pacote: o relatório no disco deixou de ser o da corrida (`relatorio_trocado_depois_da_corrida`), o pacote foi alterado depois de escrito (`pacote_alterado_depois_de_escrito`), o código de saída e o relatório não dizem o mesmo, ou um ficheiro não se escreveu. Alguma coisa mexeu na pasta durante a corrida: ver o quê antes de repetir |
 | 2 | nada | Argumentos: falta uma opção; `--fatia` que não é só algarismos; `--board` ou `--regiao` fora de 1 a 64 letras, dígitos, `_` e `-`; `--saida` com aspas ou caracteres de controlo; alias com nome de dispositivo do Windows (`NUL`, `CON`, `COM1`…); allowlist externa que não se carrega |
@@ -670,9 +670,37 @@ OCR».
    fora deste braço. Uma recusa da chave, da conta ou do ritmo pára a corrida (sai com 4).
 
 6. **Ler o resumo**: os factos pela regra do banco e com os acentos exactos, por degradação, por
-   formato e com e sem acentos, e no modelo de visão o custo estimado. A proposta de 90% é do
-   desenho, não um veredicto: a escolha do motor é do dono. Com `--guardar-respostas`, o texto
-   lido de cada imagem fica na pasta `respostas-<relatório>/`, e só lá.
+   formato e com e sem acentos, e no modelo de visão o custo estimado. Desde o AOS-530 o resumo
+   traz o **veredicto** contra o limiar de **90% dos factos** — já não é proposta: é a decisão D7
+   do dono, de 2026-10-15 (`--limiar-de-factos` só aperta). `qualificado` exige também que nenhuma
+   imagem nas contas tenha ficado por ler (uma resposta cortada pelo limite de tokens falha a
+   imagem). A saída do `ocr` não depende do veredicto. Com `--guardar-respostas`, o texto lido de
+   cada imagem fica na pasta `respostas-<relatório>/`, e só lá.
+
+7. **Preparar o registo de uso `tool` do alias da tool de OCR** (AOS-530, ADR-042 §2.3), quando o
+   dono decidir. É o `qualificar` para uma tool: mede o perfil do alias com o modelo de visão e,
+   só com `qualificado` do modo real, deixa o registo (`"uso": "tool"`, fatia 0) e o relatório em
+   `pacote\`, por assinar. Primeiro ensaiar com o motor falso (sai 9, sem pacote):
+
+   ```powershell
+   $saida = "$env:TEMP\entrada-ocr-$(Get-Date -Format yyyyMMdd-HHmmss)"
+   go run ./cmd/aos-ensaio qualificar-ocr --motor falso --perfil <perfil-ocr.json> --board <board do no> --regiao <regiao do no> --saida $saida
+   ```
+
+   Depois o modo real (pago; só o dono):
+
+   ```powershell
+   go run ./cmd/aos-ensaio qualificar-ocr --motor visao --chaves $env:USERPROFILE\.aos-ensaio\chaves.env --visao-fornecedor openrouter --visao-modelo M --precos P --perfil <perfil-ocr.json> --board <board do no> --regiao <regiao do no> --saida <pasta nova>
+   ```
+
+   O perfil declara a capacidade `imagem` e não declara `tools`, e o seu `expected_model` tem de
+   ser a rota da corrida (`openrouter/<modelo>` na OpenRouter, `openai/<modelo>` no Kimi,
+   `anthropic/<modelo>` na Anthropic): senão sai 3 antes de enviar. Conta nas **qualificações do
+   dia** (duas por perfil, quatro por rota), no mesmo registo das qualificações dos candidatos.
+   Saídas: 0 pacote preparado (assinar e conferir como no passo 4 do «Entrar um modelo novo»); 7
+   recusado; 9 qualificado com o motor falso; 11 o nó recusaria o registo; 3 recusada antes de
+   enviar (tecto, qualificações do dia, `expected_model` de outra rota). O nó recusa ainda um
+   registo `tool` para o alias do seu titular — o `conferir` lembra-o, porque o posto não o sabe.
 
 ## Se correr mal
 

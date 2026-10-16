@@ -43,6 +43,11 @@ const (
 	CauseUnknownFormat = "formato_desconhecido"
 	// CauseShareOutOfRange — a fatia inicial não é um inteiro de 0 a 100.
 	CauseShareOutOfRange = "fatia_fora_do_intervalo"
+	// CauseBadUse — o membro `uso` não é `run` nem `tool` (AOS-530).
+	CauseBadUse = "uso_invalido"
+	// CauseToolWithShare — um registo de uso `tool` traz uma fatia de canary maior que zero. Um
+	// registo de uso `tool` nunca serve runs (ADR-042 §2.3).
+	CauseToolWithShare = "uso_tool_com_fatia"
 	// CauseBadProfile — o perfil que o registo traz não passa na leitura fechada do gateway.
 	CauseBadProfile = "perfil_invalido"
 	// CauseBadRouteName — o nome pedido do perfil não serve: tem um carácter que não cabe num nome
@@ -53,6 +58,9 @@ const (
 	// CauseProfileReturnsState — o perfil devolve estado opaco ao provider. Por esta via só entram
 	// perfis que não devolvem estado (decisão D8 do dono, 2026-10-11).
 	CauseProfileReturnsState = "perfil_devolve_estado"
+	// CauseToolProfileCapabilities — o perfil de um registo de uso `tool` não declara a capacidade
+	// `imagem`, ou declara `tools` (AOS-530, ADR-042 §2.3 e §2.4).
+	CauseToolProfileCapabilities = "perfil_de_tool_com_capacidades_erradas"
 	// CauseOtherEnvironment — o registo foi assinado para outro board ou outra região.
 	CauseOtherEnvironment = "registo_de_outro_ambiente"
 	// CauseProxyImageNotDeclared — a imagem do proxy que o registo cita não é a declarada para
@@ -70,10 +78,18 @@ const (
 	CauseReportInvalid = "relatorio_invalido"
 	// CauseReportNotCited — o relatório confere, mas o seu digest não é o que o registo cita.
 	CauseReportNotCited = "relatorio_nao_e_o_citado"
+	// CauseReportOfOtherExperiment — o registo é de uso `tool` e o relatório citado não é da
+	// experiência `ocr` (AOS-530, ADR-042 §2.3). Um registo de uso `run` com um relatório `ocr`
+	// recusa como antes, por [CauseReportUnknownShape].
+	CauseReportOfOtherExperiment = "relatorio_de_outra_experiencia"
 	// CauseReportUnknownShape — o relatório tem uma versão ou um membro que este nó não conhece,
 	// ou um valor de tipo errado num dos campos que se lêem.
 	CauseReportUnknownShape = "relatorio_de_forma_desconhecida"
-	// CauseReportWithoutVerdict — o relatório não é de uma qualificação: não traz veredicto.
+	// CauseReportWithoutVerdict — o relatório não é de uma qualificação: não traz veredicto. Para um
+	// registo de uso `tool`: um relatório `ocr` com a versão e o digest de si próprio, mas sem o bloco
+	// do veredicto. (Um relatório com a forma do AOS-529, anterior ao veredicto, não chega aqui: sem
+	// o digest de si próprio é [CauseReportInvalid]; com digest e sem versão,
+	// [CauseReportUnknownShape].)
 	CauseReportWithoutVerdict = "relatorio_sem_veredicto"
 	// CauseVerdictNotForProduction — o veredicto não vale para produção: a corrida não foi no
 	// modo `real`, ou o relatório diz ele próprio que não vale.
@@ -99,9 +115,9 @@ func Causes() []string {
 	return []string{
 		CauseNoTrustAnchor, CauseBadTrustAnchor, CauseSharedTrustAnchor, CauseDirUnreadable, CauseUnknownFile, CauseTooManyEntries,
 		CauseSignatureMissing, CauseSignatureInvalid,
-		CauseEntryUnreadable, CauseUnknownFormat, CauseShareOutOfRange, CauseBadProfile, CauseBadRouteName,
-		CauseProfileDigestMismatch, CauseProfileReturnsState, CauseOtherEnvironment, CauseProxyImageNotDeclared,
-		CauseReportMissing, CauseReportUnreadable, CauseReportInvalid, CauseReportNotCited, CauseReportUnknownShape,
+		CauseEntryUnreadable, CauseUnknownFormat, CauseShareOutOfRange, CauseBadUse, CauseToolWithShare, CauseBadProfile, CauseBadRouteName,
+		CauseProfileDigestMismatch, CauseProfileReturnsState, CauseToolProfileCapabilities, CauseOtherEnvironment, CauseProxyImageNotDeclared,
+		CauseReportMissing, CauseReportUnreadable, CauseReportInvalid, CauseReportNotCited, CauseReportOfOtherExperiment, CauseReportUnknownShape,
 		CauseReportWithoutVerdict, CauseVerdictNotForProduction, CauseNotQualified, CauseVerdictOfOtherProfile, CauseVerdictOfOtherProxyImage,
 		CauseNameNotAllowlisted, CauseDuplicateName,
 	}

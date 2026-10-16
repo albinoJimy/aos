@@ -566,7 +566,7 @@ func TestAOS519_ARecusaNaoRepeteConteudo(t *testing.T) {
 // (a lista é conferida com as constantes; quem acrescentar uma causa acrescenta-a aos dois sítios).
 func TestAOS519_VocabularioDasCausas(t *testing.T) {
 	causas := routeentry.Causes()
-	if len(causas) != 29 {
+	if len(causas) != 33 {
 		t.Fatalf("causas = %d; o vocabulario mudou — reveja o runbook e o ADR", len(causas))
 	}
 	vistas := map[string]bool{}

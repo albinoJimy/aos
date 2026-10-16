@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,8 +16,15 @@ import (
 // A EXPERIÊNCIA `ocr` (AOS-529, fase A5, «A5-ocr-medição»). Corre um MOTOR de OCR sobre cada
 // imagem da bateria de OCR e mede, por imagem: os factos presentes (pela regra dos factos do
 // banco, e também com os acentos exactos), o tempo, a memória máxima, o tamanho do texto e, num
-// motor que é um modelo, os tokens e o custo estimado. Não dá veredicto: o limiar de 90% do
-// desenho é uma proposta, e o relatório só o mostra ao lado.
+// motor que é um modelo, os tokens e o custo estimado.
+//
+// # O VEREDICTO (AOS-530, ADR-042 §2.3)
+//
+// Desde o AOS-530 o relatório traz um VEREDICTO (`veredicto_do_ocr`, [VeredictoOCR]) contra o
+// limiar de factos do dono — a D7 do desenho, decidida a 2026-10-15: pelo menos 90% dos factos
+// presentes ([LimiarDeFactosDoOCR]). É o que um registo de entrada de uso `tool` cita e o que o nó
+// confere (`routeentry.ReadOCRVerdict`). Por isso o relatório passou a ter versão
+// (`versao_do_relatorio`) e o digest de si próprio (`digest_do_relatorio`), como o da qualificação.
 //
 // # O MOTOR É PLUGÁVEL
 //
@@ -37,10 +45,26 @@ import (
 // (`deploy/server/gvisor/component/main.go`, `GV_EXEC_TIMEOUT`), 1 GiB (o `mem_limit` do serviço
 // `gvisor` em `deploy/server/docker-compose.prod.yml`) e nenhuma rede (`--network=none`).
 const (
-	LimiteDeTempoDoOCR    = 45 * time.Second
-	LimiteDeMemoriaDoOCR  = int64(1) << 30
-	LimiteDeProcessosOCR  = 512
-	PropostaDeFactosDoOCR = 0.90
+	LimiteDeTempoDoOCR   = 45 * time.Second
+	LimiteDeMemoriaDoOCR = int64(1) << 30
+	LimiteDeProcessosOCR = 512
+	// PropostaDeFactosDoOCR era a proposta do desenho; desde a D7 (2026-10-15) é o limiar do dono,
+	// [LimiarDeFactosDoOCR]. Fica com o mesmo valor, para quem a lia.
+	PropostaDeFactosDoOCR = LimiarDeFactosDoOCR
+)
+
+// O VEREDICTO DA EXPERIÊNCIA `ocr` (AOS-530).
+const (
+	// LimiarDeFactosDoOCR é a fracção mínima de factos presentes, pela regra dos factos do banco
+	// ([factoNaSaida]: sem acentos nem maiúsculas — a mesma do AOS-529 e das qualificações), sobre as
+	// imagens que entram nas contas. Decisão D7 do dono, 2026-10-15. Vai no relatório; a opção
+	// `--limiar-de-factos` só a aperta.
+	LimiarDeFactosDoOCR = 0.90
+	// VersaoDoRelatorioOCR é a versão do formato do relatório `ocr` que leva o veredicto. É a que o
+	// nó conhece (`routeentry.ReportVersion`); o teste do banco confere que coincidem.
+	VersaoDoRelatorioOCR = "1"
+	// RegraDoVeredictoOCR é a regra, em texto fixo, que vai no relatório.
+	RegraDoVeredictoOCR = "qualificado se a corrida completou, pelo menos uma imagem entrou nas contas, TODAS as imagens nas contas foram lidas (nenhuma falhou: tempo, memoria, erro do motor ou resposta cortada) e a fraccao de factos presentes pela regra do banco (sem acentos nem maiusculas) e pelo menos o limiar; senao recusado. As imagens fora do motor (o PDF no modelo de visao) nao entram nas contas. So um qualificado do modo real vale para producao"
 )
 
 // MotorOCR é um motor de OCR. Ler devolve o texto lido da imagem, ou um erro: [ErrOCRTempo] e
@@ -82,6 +106,10 @@ var (
 	// ErrOCRFora — a imagem está fora deste motor (por exemplo o PDF no modelo de visão): fica com o
 	// estado `fora`, e os factos dela não entram nas contas.
 	ErrOCRFora = errors.New("banco-ensaio: imagem fora deste motor")
+	// ErrOCRCortada — o motor parou a resposta pelo limite de tokens (AOS-530): uma transcrição
+	// cortada não é uma transcrição completa (a lição do Gemini no AOS-529, ADR-042 §2.8). A imagem
+	// falha, e os factos dela contam como ausentes.
+	ErrOCRCortada = errors.New("banco-ensaio: a resposta do motor de OCR veio cortada pelo limite de tokens")
 )
 
 // ParagemDoOCR é o erro de uma leitura que pára a corrida: o tecto do dia, o contador, ou uma
@@ -100,18 +128,21 @@ const (
 	CausaOCRMemoria = "memoria"
 	CausaOCRMotor   = "motor"
 	CausaOCRFormato = "formato"
+	CausaOCRCortada = "cortada"
 )
 
 // RelatorioOCR é o relatório da experiência `ocr`.
 type RelatorioOCR struct {
-	Experiencia    string       `json:"experiencia"`
-	DataUTC        string       `json:"data_utc"`
-	VersaoBateria  string       `json:"versao_bateria"`
-	DigestBateria  string       `json:"digest_bateria"`
-	Motor          string       `json:"motor"`
-	DescricaoMotor string       `json:"descricao_motor"`
-	Limites        LimitesDoOCR `json:"limites"`
-	Interrompida   bool         `json:"interrompida,omitempty"`
+	// VersaoDoRelatorio é [VersaoDoRelatorioOCR] (AOS-530).
+	VersaoDoRelatorio string       `json:"versao_do_relatorio"`
+	Experiencia       string       `json:"experiencia"`
+	DataUTC           string       `json:"data_utc"`
+	VersaoBateria     string       `json:"versao_bateria"`
+	DigestBateria     string       `json:"digest_bateria"`
+	Motor             string       `json:"motor"`
+	DescricaoMotor    string       `json:"descricao_motor"`
+	Limites           LimitesDoOCR `json:"limites"`
+	Interrompida      bool         `json:"interrompida,omitempty"`
 	// Paragem é a causa por que a corrida parou antes do fim (tecto, contador, recusa).
 	Paragem string             `json:"paragem,omitempty"`
 	Imagens []LeituraDaImagem  `json:"imagens"`
@@ -126,6 +157,112 @@ type RelatorioOCR struct {
 	Rota    *RotaDoOCR    `json:"rota,omitempty"`
 	Pedidos *PedidosDoOCR `json:"pedidos,omitempty"`
 	Custo   *CustoDoOCR   `json:"custo,omitempty"`
+
+	// VeredictoDoOCR é o veredicto contra o limiar de factos (AOS-530). Quem o põe é quem corre a
+	// experiência, depois de saber o modo ([VeredictoOCR]).
+	VeredictoDoOCR *VeredictoDoOCR `json:"veredicto_do_ocr,omitempty"`
+	// DigestDoRelatorio é o sha256 da forma canónica deste relatório sem este campo, como o da
+	// qualificação ([DigestDoRelatorio]). Quem o põe é [EscreverRelatorioOCR].
+	DigestDoRelatorio string `json:"digest_do_relatorio,omitempty"`
+}
+
+// VeredictoDoOCR é o bloco do veredicto de uma corrida `ocr`. Os nomes dos membros são os que o nó
+// lê pela leitura fechada (`routeentry.OCRVerdictFields`).
+type VeredictoDoOCR struct {
+	Veredicto string   `json:"veredicto"`
+	Razoes    []string `json:"razoes"`
+	Regra     string   `json:"regra"`
+	// LimiarDeFactos é a fracção mínima de factos presentes com que se decidiu.
+	LimiarDeFactos float64 `json:"limiar_de_factos"`
+	// ImagensNasContas são as imagens que não ficaram fora do motor; ImagensQueFalharam, as que
+	// dessas não foram lidas.
+	ImagensNasContas   int `json:"imagens_nas_contas"`
+	ImagensQueFalharam int `json:"imagens_que_falharam"`
+	// Factos e PresentesPelaRegra são as contagens dessas imagens, pela regra do banco.
+	Factos             int `json:"factos"`
+	PresentesPelaRegra int `json:"presentes_pela_regra"`
+	// ValeParaProducao: só um `qualificado` do modo real.
+	ValeParaProducao          bool   `json:"vale_para_producao"`
+	PorqueNaoValeParaProducao string `json:"porque_nao_vale_para_producao,omitempty"`
+	// RotaMedida é o perfil e a rota medidos, quando a corrida foi feita com `--perfil`: é ela que
+	// liga o relatório ao registo de entrada que o cita.
+	RotaMedida *RotaMedidaDoOCR `json:"rota_medida,omitempty"`
+}
+
+// RotaMedidaDoOCR identifica o que foi medido. Os nomes são os que o nó lê
+// (`routeentry.OCRMeasuredRouteFields`).
+type RotaMedidaDoOCR struct {
+	Fornecedor string `json:"fornecedor"`
+	Modelo     string `json:"modelo"`
+	// ModeloEsperado é o `expected_model` do perfil. O banco NÃO o compara com o modelo servido
+	// nesta experiência (está nos limites da medição): quem o compara é o gateway do nó, em cada
+	// chamada da tool.
+	ModeloEsperado string `json:"modelo_esperado"`
+	DigestDoPerfil string `json:"digest_do_perfil"`
+	// ImagemDoProxy é a imagem do proxy atrás da qual a corrida foi feita, e o seu digest; vazios
+	// num motor sem proxy (o falso).
+	ImagemDoProxy         string `json:"imagem_do_proxy,omitempty"`
+	DigestDaImagemDoProxy string `json:"digest_da_imagem_do_proxy,omitempty"`
+}
+
+// VeredictoOCR calcula o veredicto de uma corrida `ocr` contra o limiar dado, pela
+// [RegraDoVeredictoOCR]. Lê do relatório as imagens, o fim da corrida e o modo — chama-se depois de
+// o modo estar posto. `rota` é a rota medida (nil sem `--perfil`).
+//
+// A MEDIDA DOS FACTOS é a do AOS-529: `presentes_pela_regra` sobre `factos`, somados nas imagens
+// que entram nas contas — a regra dobrada do banco (factos.go), a mesma das qualificações. Os
+// acentos exactos ficam no relatório e não decidem: a regra do banco, desde o AOS-525, não conta um
+// acento como facto perdido.
+//
+// UMA IMAGEM QUE FALHOU RECUSA, mesmo com a fracção acima do limiar: o modelo da tool é um só, sem
+// nova tentativa nem recuo (ADR-042 §2.8), e uma imagem que ele não lê — por tempo, por erro ou por
+// uma resposta cortada — é uma chamada da tool que falha. Numa bateria de doze imagens nas contas,
+// uma falhada tira menos de 10% dos factos e passava pelo limiar sem se ver.
+func VeredictoOCR(r *RelatorioOCR, limiar float64, rota *RotaMedidaDoOCR) *VeredictoDoOCR {
+	v := &VeredictoDoOCR{Regra: RegraDoVeredictoOCR, LimiarDeFactos: limiar, Razoes: []string{}, RotaMedida: rota}
+	for _, l := range r.Imagens {
+		if l.Estado == EstadoOCRFora {
+			continue
+		}
+		v.ImagensNasContas++
+		if l.Estado != EstadoOCRLida {
+			v.ImagensQueFalharam++
+		}
+		v.Factos += l.Factos
+		v.PresentesPelaRegra += l.PresentesPelaRegra
+	}
+	if r.Interrompida {
+		v.Razoes = append(v.Razoes, "a corrida nao completou: o veredicto e sobre todas as imagens da bateria")
+	}
+	if v.ImagensNasContas == 0 || v.Factos == 0 {
+		v.Razoes = append(v.Razoes, "nenhuma imagem com factos entrou nas contas")
+	}
+	if v.ImagensQueFalharam > 0 {
+		v.Razoes = append(v.Razoes, fmt.Sprintf("%d imagem(ns) nas contas nao foram lidas (tempo, memoria, erro do motor ou resposta cortada)", v.ImagensQueFalharam))
+	}
+	if v.Factos > 0 && !factosNoLimiar(v.PresentesPelaRegra, v.Factos, limiar) {
+		v.Razoes = append(v.Razoes, fmt.Sprintf("factos presentes pela regra: %d de %d, abaixo do limiar de %.1f%%", v.PresentesPelaRegra, v.Factos, 100*limiar))
+	}
+	v.Veredicto = VeredictoQualificado
+	if len(v.Razoes) > 0 {
+		v.Veredicto = VeredictoRecusado
+	}
+	switch {
+	case v.Veredicto != VeredictoQualificado:
+		v.PorqueNaoValeParaProducao = "o veredicto nao e qualificado"
+	case r.Modo != ModoReal:
+		v.PorqueNaoValeParaProducao = "a corrida nao foi do modo real: um motor falso ou local nao e o modelo da tool"
+	default:
+		v.ValeParaProducao = true
+	}
+	return v
+}
+
+// factosNoLimiar diz se `presentes` de `factos` chega ao limiar. Compara-se em milésimas inteiras,
+// com o limiar arredondado para cima: 0,9 em vírgula flutuante não é exactamente 0,9, e 90 de 100
+// tem de passar, sem que 89,99% passe.
+func factosNoLimiar(presentes, factos int, limiar float64) bool {
+	return int64(presentes)*1000 >= int64(factos)*int64(math.Ceil(limiar*1000-1e-9))
 }
 
 // RotaDoOCR é o fornecedor e o modelo de um motor que é um modelo.
@@ -209,7 +346,7 @@ func limitesDaMedicao(b *BateriaOCR, m MotorOCR) []string {
 		fmt.Sprintf("imagens sinteticas: %d documentos, %d imagens; nenhum documento real", len(b.Documentos), len(b.Imagens)),
 		"uma fonte so, bitmap 5x7 desenhada para o banco, sem serifas; um documento impresso tem fontes vectoriais. Pode favorecer ou desfavorecer um motor face a outro: vale para a COMPARACAO entre motores, nao so para a taxa de cada um",
 		"degradacoes simuladas (ruido, rotacao de 1,5 graus, meia resolucao, JPEG de qualidade 55); nenhuma foto inclinada nem dobra de papel",
-		"sem veredicto: o limiar de 90% dos factos e uma proposta do desenho, nao uma medida",
+		"o veredicto (AOS-530) e contra o limiar de factos do dono sobre estas imagens sinteticas: diz que o motor transcreve esta bateria, nao que transcreve documentos reais",
 	}, m.Condicoes().Notas...)
 }
 
@@ -222,7 +359,8 @@ func CorrerExperienciaOCR(ctx context.Context, b *BateriaOCR, motor MotorOCR, re
 		relogio = time.Now
 	}
 	r := &RelatorioOCR{
-		Experiencia: "ocr", DataUTC: relogio().UTC().Format(time.RFC3339),
+		VersaoDoRelatorio: VersaoDoRelatorioOCR,
+		Experiencia:       "ocr", DataUTC: relogio().UTC().Format(time.RFC3339),
 		VersaoBateria: b.Versao, DigestBateria: b.Digest(),
 		Motor: motor.Nome(), DescricaoMotor: motor.Descricao(),
 		Limites: motor.Condicoes().Limites, LimitesDaMedicao: limitesDaMedicao(b, motor),
@@ -300,6 +438,8 @@ func causaDoErroOCR(err error) string {
 		return CausaOCRTempo
 	case errors.Is(err, ErrOCRMemoria):
 		return CausaOCRMemoria
+	case errors.Is(err, ErrOCRCortada):
+		return CausaOCRCortada
 	}
 	return CausaOCRMotor
 }
@@ -439,7 +579,30 @@ func ResumoOCREmTexto(r *RelatorioOCR) string {
 		fmt.Fprintf(&b, "  %-26s %3d/%-3d %5d %7s %7s %6dms %9s %12s\n", g.Grupo, g.Lidas, g.Imagens, g.Fora,
 			percentagem(g.PresentesPelaRegra, g.Factos), percentagem(g.PresentesComAcentos, g.Factos), g.TempoMaximoMs, mib(g.MemoriaMaximaBytes), usd(g.CustoMicroUSD))
 	}
-	fmt.Fprintf(&b, "\nproposta do desenho (nao e veredicto): pelo menos %.0f%% dos factos presentes na bateria\n", 100*PropostaDeFactosDoOCR)
+	if v := r.VeredictoDoOCR; v != nil {
+		fmt.Fprintf(&b, "\nVEREDICTO: %s — limiar do dono (D7): pelo menos %.1f%% dos factos presentes pela regra; %d de %d em %d imagem(ns) nas contas, %d nao lida(s)\n",
+			strings.ToUpper(v.Veredicto), 100*v.LimiarDeFactos, v.PresentesPelaRegra, v.Factos, v.ImagensNasContas, v.ImagensQueFalharam)
+		for _, razao := range v.Razoes {
+			fmt.Fprintf(&b, "  - %s\n", razao)
+		}
+		if v.ValeParaProducao {
+			b.WriteString("  vale para producao (modo real): pode ser citado por um registo de entrada de uso tool\n")
+		} else {
+			fmt.Fprintf(&b, "  NAO vale para producao: %s\n", v.PorqueNaoValeParaProducao)
+		}
+		if rm := v.RotaMedida; rm != nil {
+			imagem := "sem proxy"
+			if rm.DigestDaImagemDoProxy != "" {
+				imagem = rm.DigestDaImagemDoProxy
+			}
+			fmt.Fprintf(&b, "  rota medida: fornecedor=%s modelo=%s esperado=%s\n  perfil=%s\n  imagem do proxy=%s\n", rm.Fornecedor, rm.Modelo, rm.ModeloEsperado, rm.DigestDoPerfil, imagem)
+		}
+	} else {
+		b.WriteString("\nsem veredicto: este relatorio nao foi decidido contra o limiar de factos (AOS-530)\n")
+	}
+	if r.DigestDoRelatorio != "" {
+		fmt.Fprintf(&b, "digest do relatorio: %s\n", r.DigestDoRelatorio)
+	}
 	b.WriteString("\nlimites desta medicao:\n")
 	for _, l := range r.LimitesDaMedicao {
 		fmt.Fprintf(&b, "  - %s\n", l)
@@ -460,11 +623,35 @@ func EscreverRelatorioOCR(pasta string, r *RelatorioOCR) (string, string, error)
 		prefixo = "ensaio-" + ModoReal + "-ocr-"
 	}
 	base := filepath.Join(pasta, prefixo+r.Motor+"-"+carimbo)
+	// O digest do próprio relatório (AOS-530): sobre a forma canónica do JSON SEM o campo, e só
+	// depois se põe o campo — como no da qualificação (digest_relatorio.go).
+	r.DigestDoRelatorio = ""
+	semDigest, err := json.Marshal(r)
+	if err != nil {
+		return "", "", err
+	}
+	if r.DigestDoRelatorio, err = DigestDoRelatorio(semDigest); err != nil {
+		return "", "", err
+	}
 	cru, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return "", "", err
 	}
-	if err := os.WriteFile(base+".json", append(cru, '\n'), 0o600); err != nil {
+	if r.VeredictoDoOCR != nil && r.VeredictoDoOCR.RotaMedida != nil {
+		// Um relatório que mediu um perfil pode ser citado pelo seu digest: nunca se escreve por
+		// cima de outro (duas corridas no mesmo segundo, na mesma pasta). Falha em vez de sobrepor.
+		f, cerr := os.OpenFile(base+".json", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- pasta dos relatorios, dada por quem corre
+		if cerr != nil {
+			return "", "", fmt.Errorf("banco-ensaio: ja existe um relatorio de OCR com este nome (mesmo segundo, mesma pasta); nao se escreve por cima: %s", filepath.Base(base)+".json")
+		}
+		_, werr := f.Write(append(cru, '\n'))
+		if ferr := f.Close(); werr == nil {
+			werr = ferr
+		}
+		if werr != nil {
+			return "", "", werr
+		}
+	} else if err := os.WriteFile(base+".json", append(cru, '\n'), 0o600); err != nil {
 		return "", "", err
 	}
 	if err := os.WriteFile(base+".txt", []byte(ResumoOCREmTexto(r)), 0o600); err != nil {

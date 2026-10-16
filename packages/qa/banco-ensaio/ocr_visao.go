@@ -225,6 +225,7 @@ func (v *MotorOCRVisao) Ler(ctx context.Context, m MediaOCR) (LeituraOCR, error)
 			Message struct {
 				Content json.RawMessage `json:"content"`
 			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Usage struct {
 			PromptTokens     int64 `json:"prompt_tokens"`
@@ -244,6 +245,12 @@ func (v *MotorOCRVisao) Ler(ctx context.Context, m MediaOCR) (LeituraOCR, error)
 		v.mu.Unlock()
 	}
 	if legivel && len(doc.Choices) > 0 {
+		// UMA RESPOSTA CORTADA NÃO É UMA TRANSCRIÇÃO (AOS-530, ADR-042 §2.8): o motivo de paragem
+		// `length` diz que o modelo parou pelo limite de tokens. A imagem falha com a causa
+		// `cortada`; os tokens e o custo contam na mesma, porque o pedido foi pago.
+		if doc.Choices[0].FinishReason == "length" {
+			return l, ErrOCRCortada
+		}
 		l.Texto = textoDoConteudo(doc.Choices[0].Message.Content)
 	}
 	if strings.TrimSpace(l.Texto) == "" {
@@ -285,6 +292,9 @@ type VisaoFalsa struct {
 	SemAcentos bool
 	// Estado, quando não zero, é o código HTTP de todas as respostas.
 	Estado int
+	// Cortar faz o falso responder com o motivo de paragem `length` (AOS-530): uma resposta
+	// cortada pelo limite de tokens.
+	Cortar bool
 
 	mu        sync.Mutex
 	Recebidos int
@@ -351,8 +361,12 @@ func (v *VisaoFalsa) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			texto = tirarAcentos(texto)
 		}
 	}
+	paragem := "stop"
+	if v.Cortar {
+		paragem = "length"
+	}
 	resposta, _ := json.Marshal(map[string]any{
-		"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": texto}}},
+		"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": texto}, "finish_reason": paragem}},
 		"usage":   map[string]int64{"prompt_tokens": TokensDeEntradaDaVisaoFalsa, "completion_tokens": TokensDeSaidaDaVisaoFalsa},
 	})
 	w.Header().Set("Content-Type", "application/json")

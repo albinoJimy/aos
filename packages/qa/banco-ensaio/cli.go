@@ -153,7 +153,12 @@ const usoDoBanco = `aos-ensaio — banco de ensaio da fronteira runtime-modelo (
                                                    mostra o digest e os casos da bateria (com
                                                    --experiencia degraus, os da 2.0.0; conselheiro, os da 3.0.0)
   aos-ensaio ocr     [--motor falso|tesseract|visao ...]  mede um motor de OCR com imagens sinteticas (AOS-529;
-                                                   'aos-ensaio ocr -h' para as opcoes)
+                                                   'aos-ensaio ocr -h' para as opcoes); o relatorio traz o
+                                                   veredicto contra o limiar de factos (AOS-530)
+  aos-ensaio qualificar-ocr --motor visao|falso --perfil F --board B --regiao R --saida PASTA ...
+                                                   prepara o registo de entrada de USO TOOL do alias de uma
+                                                   tool de OCR para o dono assinar (AOS-530; 'aos-ensaio
+                                                   qualificar-ocr -h' para as opcoes)
   aos-ensaio limpar  [--chaves F | --contador F]   remove contentores e redes aos512-* que tenham ficado de uma
                                                    corrida anterior (um proxy orfao guarda a chave no ambiente)
                                                    e a trava do contador de um processo que ja morreu
@@ -239,6 +244,9 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		case "ocr":
 			// A experiência de OCR (AOS-529) tem as suas opções e o seu uso (ocr_cli.go).
 			return executarOCR(ctx, args[1:], stdout, stderr, amb, red)
+		case "qualificar-ocr":
+			// O registo de uso tool (AOS-530) tem as suas opções e o seu uso (qualificar_ocr.go).
+			return qualificarOCR(ctx, args[1:], stdout, stderr, amb, red)
 		}
 	}
 	return executarCom(ctx, args, stdout, stderr, amb, red, &corridaFeita{})

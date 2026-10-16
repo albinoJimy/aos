@@ -26,6 +26,10 @@ const (
 	ExperimentQualification = "qualificacao"
 	// VerdictQualified é o único veredicto que deixa um perfil entrar.
 	VerdictQualified = "qualificado"
+	// ExperimentOCR é a experiência cujo relatório um registo de uso [UseTool] cita (AOS-530,
+	// ADR-042 §2.3): o banco mede a transcrição de imagens e dá um veredicto contra o limiar de
+	// factos do dono.
+	ExperimentOCR = "ocr"
 )
 
 // Os membros que se lêem.
@@ -66,6 +70,39 @@ var qualifiedRouteFields = []string{
 func ReportTopFields() []string      { return append([]string(nil), reportTopFields...) }
 func QualificationFields() []string  { return append([]string(nil), qualificationFields...) }
 func QualifiedRouteFields() []string { return append([]string(nil), qualifiedRouteFields...) }
+
+// O RELATÓRIO DA EXPERIÊNCIA `ocr` (AOS-530). Os mesmos princípios: o nó lê só o que decide — a
+// versão, o modo, a experiência, o veredicto, se vale para produção, e o perfil e a imagem do
+// proxy da rota medida —, por listas FECHADAS de nomes, e não refaz o veredicto. As contagens das
+// imagens ficam por ler.
+const (
+	ocrFieldVerdictBlock  = "veredicto_do_ocr"
+	ocrFieldMeasuredRoute = "rota_medida"
+)
+
+// ocrReportTopFields são os membros do topo de um relatório `ocr` da versão [ReportVersion].
+var ocrReportTopFields = []string{
+	reportFieldVersion, reportFieldExperiment, "data_utc", "versao_bateria", "digest_bateria", "motor", "descricao_motor",
+	"limites", "interrompida", "paragem", "imagens", "resumo", "limites_da_medicao", reportFieldMode, "rota", "pedidos",
+	"custo", ocrFieldVerdictBlock, ReportDigestField,
+}
+
+// ocrVerdictFields são os membros do bloco `veredicto_do_ocr`.
+var ocrVerdictFields = []string{
+	qualFieldVerdict, "razoes", "regra", "limiar_de_factos", "imagens_nas_contas", "imagens_que_falharam", "factos",
+	"presentes_pela_regra", qualFieldForProduction, "porque_nao_vale_para_producao", ocrFieldMeasuredRoute,
+}
+
+// ocrMeasuredRouteFields são os membros do bloco `rota_medida`.
+var ocrMeasuredRouteFields = []string{
+	"fornecedor", "modelo", "modelo_esperado", routeFieldProfileDigest, "imagem_do_proxy", routeFieldProxyDigest,
+}
+
+// OCRReportTopFields, OCRVerdictFields e OCRMeasuredRouteFields devolvem cópias das listas fechadas
+// do relatório `ocr`, para o teste do banco as comparar com o que ele escreve.
+func OCRReportTopFields() []string     { return append([]string(nil), ocrReportTopFields...) }
+func OCRVerdictFields() []string       { return append([]string(nil), ocrVerdictFields...) }
+func OCRMeasuredRouteFields() []string { return append([]string(nil), ocrMeasuredRouteFields...) }
 
 // Verdict é o que o nó lê de um relatório de qualificação.
 type Verdict struct {
@@ -134,12 +171,84 @@ func ReadVerdict(raw []byte) (Verdict, error) {
 	return v, nil
 }
 
+// ReadOCRVerdict confere o digest de um relatório da experiência `ocr` e lê dele o veredicto, pela
+// leitura fechada (AOS-530). As causas são as de [ReadVerdict], mais
+// [CauseReportOfOtherExperiment] quando o relatório não é da experiência `ocr`. Um relatório com a
+// forma do AOS-529 (anterior ao veredicto) é [CauseReportInvalid] — não traz o digest de si
+// próprio — ou, se alguém lho acrescentar, [CauseReportUnknownShape] — não traz a versão. Um
+// relatório `ocr` com a versão e sem o bloco do veredicto é [CauseReportWithoutVerdict]; um sem `modo` (os motores
+// que não são um modelo pago) lê-se com o modo vazio, que não vale para produção; um sem
+// `rota_medida` lê-se sem perfil, que não é o de registo nenhum.
+//
+// NÃO decide se o veredicto serve: isso é de [CheckReport].
+func ReadOCRVerdict(raw []byte) (Verdict, error) {
+	digest, err := VerifyReportDigest(raw)
+	if err != nil {
+		return Verdict{}, refuse(CauseReportInvalid, "")
+	}
+	top, ok := strictObject(raw)
+	if !ok {
+		return Verdict{}, refuse(CauseReportUnknownShape, "")
+	}
+	experiment, okE := textOf(top[reportFieldExperiment])
+	if !okE {
+		return Verdict{}, refuse(CauseReportUnknownShape, "")
+	}
+	if experiment != ExperimentOCR {
+		return Verdict{}, refuse(CauseReportOfOtherExperiment, "")
+	}
+	version, okV := textOf(top[reportFieldVersion])
+	if !onlyKeys(top, ocrReportTopFields) || !okV || version != ReportVersion {
+		return Verdict{}, refuse(CauseReportUnknownShape, "")
+	}
+	v := Verdict{Digest: digest}
+	if raw, has := top[reportFieldMode]; has {
+		var okM bool
+		if v.Mode, okM = textOf(raw); !okM {
+			return Verdict{}, refuse(CauseReportUnknownShape, "")
+		}
+	}
+	block, has := top[ocrFieldVerdictBlock]
+	if !has {
+		return Verdict{}, refuse(CauseReportWithoutVerdict, "")
+	}
+	qual, ok := strictObject(block)
+	if !ok || !onlyKeys(qual, ocrVerdictFields) {
+		return Verdict{}, refuse(CauseReportUnknownShape, "")
+	}
+	var okVerdict, okFor bool
+	v.Verdict, okVerdict = textOf(qual[qualFieldVerdict])
+	v.ValidForProduction, okFor = boolOf(qual[qualFieldForProduction])
+	if !okVerdict || !okFor {
+		return Verdict{}, refuse(CauseReportUnknownShape, "")
+	}
+	if rawRoute, has := qual[ocrFieldMeasuredRoute]; has {
+		route, okRoute := strictObject(rawRoute)
+		if !okRoute || !onlyKeys(route, ocrMeasuredRouteFields) {
+			return Verdict{}, refuse(CauseReportUnknownShape, "")
+		}
+		var okProfile bool
+		if v.ProfileDigest, okProfile = textOf(route[routeFieldProfileDigest]); !okProfile {
+			return Verdict{}, refuse(CauseReportUnknownShape, "")
+		}
+		if proxy, has := route[routeFieldProxyDigest]; has {
+			var okProxy bool
+			if v.ProxyImageDigest, okProxy = textOf(proxy); !okProxy {
+				return Verdict{}, refuse(CauseReportUnknownShape, "")
+			}
+		}
+	}
+	return v, nil
+}
+
 // CheckReport confere o relatório citado contra o registo de entrada. A ORDEM é fixa:
 //
 //  1. o relatório confere o seu próprio digest;
 //  2. esse digest é o que o registo ASSINADO cita — é este passo que dá autenticidade ao que se
 //     lê a seguir, e por isso vem ANTES de se ler seja o que for do relatório;
-//  3. o relatório lê-se pela leitura fechada ([ReadVerdict]);
+//  3. o relatório lê-se pela leitura fechada: [ReadVerdict] para um registo de uso [UseRun] — a
+//     regra de sempre, sem mudança —, e [ReadOCRVerdict] para um de uso [UseTool], que só aceita
+//     um relatório da experiência `ocr` (AOS-530, ADR-042 §2.3);
 //  4. a corrida foi no modo `real` e o relatório diz que vale para produção;
 //  5. o veredicto é `qualificado`;
 //  6. o perfil qualificado é o do registo;
@@ -154,7 +263,11 @@ func CheckReport(e Entry, report []byte) error {
 	if digest != e.ReportDigest {
 		return refuse(CauseReportNotCited, "")
 	}
-	v, err := ReadVerdict(report)
+	read := ReadVerdict
+	if e.ForTool() {
+		read = ReadOCRVerdict
+	}
+	v, err := read(report)
 	if err != nil {
 		return err
 	}

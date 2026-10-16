@@ -9,6 +9,13 @@
 // que a qualificação correu, a fatia inicial do canary, e o board e a região do nó a que se
 // destina. Ao lado dele, na mesma pasta: a assinatura ed25519 do dono e o relatório citado.
 //
+// Desde o AOS-530 (ADR-042 §2.3, emenda ao ADR-041 §2.1) o registo pode trazer o membro `uso`:
+// `run` — a omissão, o que todos os registos de antes são — ou `tool`, o perfil de um alias que só
+// uma tool chama. Um registo SEM o membro lê-se exactamente como antes: os mesmos bytes, o mesmo
+// digest, a mesma assinatura e a mesma decisão. Um registo de uso `tool` tem fatia 0 e cita um
+// relatório da experiência `ocr` com veredicto ([CheckReport]); quem o impede de ser candidato é o
+// nó ([Entry.ForTool]).
+//
 //	<rotulo>.registo.json     o registo de entrada
 //	<rotulo>.registo.sig      a assinatura (base64), sobre os bytes EXACTOS do registo
 //	<rotulo>.relatorio.json   o relatório de qualificação que o registo cita
