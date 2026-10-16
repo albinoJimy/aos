@@ -218,7 +218,10 @@ func allowlistEmVigor(dir, ancora string) (*allowlist.Policy, string, error) {
 // [routeentry.ParseEntry] lê. Quem prende estes nomes aos do nó é a conferência: um nome que
 // mudasse lá recusava aqui (`registo_ilegivel`), antes de haver ficheiro.
 type registoPorAssinar struct {
-	Formato               string          `json:"formato"`
+	Formato string `json:"formato"`
+	// Uso é o uso do registo (AOS-530): vazio nos registos dos candidatos, que saem SEM o membro —
+	// os mesmos bytes de antes —, e `tool` nos do `qualificar-ocr`.
+	Uso                   string          `json:"uso,omitempty"`
 	Board                 string          `json:"board"`
 	Regiao                string          `json:"regiao"`
 	Perfil                json.RawMessage `json:"perfil"`
@@ -539,8 +542,25 @@ func qualificar(ctx context.Context, args []string, stdout, stderr io.Writer, am
 // São as barreiras 2, 3 e 4 do cabeçalho deste ficheiro. `depoisDeEscrever` é uma costura de
 // teste, chamada entre a escrita e a releitura; em produção é nil.
 func prepararPacote(pacote, rotulo string, base registoPorAssinar, feita corridaFeita, board, regiao string, depoisDeEscrever func(pacote string)) (noDisco routeentry.Entry, causa string, err error) {
+	rota := feita.relatorio.QualificacaoDoModelo.Rota
+	return prepararPacoteDe(pacote, rotulo, base, relatorioEscrito{
+		emJSON: feita.emJSON, digest: feita.relatorio.DigestDoRelatorio,
+		digestDoPerfil: rota.DigestDoPerfil, digestDaImagemDoProxy: rota.DigestDaImagemDoProxy,
+	}, board, regiao, depoisDeEscrever)
+}
+
+// relatorioEscrito é o que [prepararPacoteDe] precisa da corrida que acabou: onde ela escreveu o
+// relatório, o digest que ele tinha EM MEMÓRIA, e o perfil e a imagem do proxy que ele diz ter
+// medido. Serve o `qualificar` (a experiência `qualificacao`) e o `qualificar-ocr` (AOS-530).
+type relatorioEscrito struct {
+	emJSON, digest                        string
+	digestDoPerfil, digestDaImagemDoProxy string
+}
+
+// prepararPacoteDe são as barreiras 2, 3 e 4 sobre um relatório escrito por esta corrida.
+func prepararPacoteDe(pacote, rotulo string, base registoPorAssinar, feito relatorioEscrito, board, regiao string, depoisDeEscrever func(pacote string)) (noDisco routeentry.Entry, causa string, err error) {
 	nada := routeentry.Entry{}
-	relatorio, err := os.ReadFile(feita.emJSON) // #nosec G304 -- o relatorio que este processo acabou de escrever
+	relatorio, err := os.ReadFile(feito.emJSON) // #nosec G304 -- o relatorio que este processo acabou de escrever
 	if err != nil {
 		return nada, "", errors.New("nao foi possivel reler o relatorio que a corrida escreveu")
 	}
@@ -549,11 +569,10 @@ func prepararPacote(pacote, rotulo string, base registoPorAssinar, feita corrida
 	if err != nil {
 		return nada, routeentry.CauseReportInvalid, nil
 	}
-	if digest != feita.relatorio.DigestDoRelatorio {
+	if digest != feito.digest {
 		return nada, "", ErrRelatorioTrocado
 	}
-	rota := feita.relatorio.QualificacaoDoModelo.Rota
-	base.DigestDoPerfil, base.DigestDoRelatorio, base.DigestDaImagemDoProxy = rota.DigestDoPerfil, digest, rota.DigestDaImagemDoProxy
+	base.DigestDoPerfil, base.DigestDoRelatorio, base.DigestDaImagemDoProxy = feito.digestDoPerfil, digest, feito.digestDaImagemDoProxy
 	registo, err := montarRegisto(base)
 	if err != nil {
 		return nada, "", err

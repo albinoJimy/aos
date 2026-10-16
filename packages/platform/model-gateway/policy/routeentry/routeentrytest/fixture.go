@@ -173,3 +173,70 @@ func Good(t testing.TB, dir, label, profileJSON, board, region string, key Key) 
 	Write(t, dir, label, entry, routeentry.Sign(entry, key.Priv), report)
 	return entry, report
 }
+
+// ToolProfileJSON é um perfil de rota para um registo de uso `tool` (AOS-530): um alias que a
+// allowlist embebida autoriza (`gpt-4o-mini`), com a capacidade `imagem` e sem `tools`.
+const ToolProfileJSON = `{"requested":"gpt-4o-mini","expected_model":"openrouter/anthropic/modelo-de-visao","wire_class":"openai-chat-completions","capabilities":["imagem"]}`
+
+// OCRReportDoc devolve os membros de um relatório da experiência `ocr` com veredicto
+// `qualificado`, do modo `real`, para o perfil com o digest dado, atrás da imagem do proxy
+// declarada para produção — a forma que o banco escreve (AOS-530). O teste muda-lhe o que quiser
+// antes de o selar com [SealReport].
+func OCRReportDoc(profileDigest string) map[string]any {
+	return map[string]any{
+		"versao_do_relatorio": routeentry.ReportVersion,
+		"experiencia":         routeentry.ExperimentOCR,
+		"data_utc":            "2026-10-15T12:00:00Z",
+		"modo":                routeentry.ModeReal,
+		"motor":               "visao",
+		"imagens":             []any{},
+		"veredicto_do_ocr": map[string]any{
+			"veredicto":            routeentry.VerdictQualified,
+			"razoes":               []string{},
+			"regra":                "regra de teste",
+			"limiar_de_factos":     0.9,
+			"factos":               10,
+			"presentes_pela_regra": 10,
+			"vale_para_producao":   true,
+			"rota_medida": map[string]any{
+				"fornecedor":                "fornecedor-de-teste",
+				"modelo":                    "modelo-de-visao",
+				"modelo_esperado":           "openrouter/anthropic/modelo-de-visao",
+				"digest_do_perfil":          profileDigest,
+				"imagem_do_proxy":           routeentry.ProductionProxyImage,
+				"digest_da_imagem_do_proxy": routeentry.ProductionProxyImageDigest(),
+			},
+		},
+	}
+}
+
+// OCRVerdict devolve o bloco `veredicto_do_ocr` de um [OCRReportDoc].
+func OCRVerdict(doc map[string]any) map[string]any {
+	return doc["veredicto_do_ocr"].(map[string]any)
+}
+
+// OCRMeasuredRoute devolve o bloco `rota_medida` de um [OCRReportDoc].
+func OCRMeasuredRoute(doc map[string]any) map[string]any {
+	return OCRVerdict(doc)["rota_medida"].(map[string]any)
+}
+
+// ToolEntryDoc devolve os membros de um registo de entrada de uso `tool`: o de [EntryDoc] com
+// `uso: tool` e a fatia a 0.
+func ToolEntryDoc(t testing.TB, profileJSON, board, region, reportDigest string) map[string]any {
+	t.Helper()
+	d := EntryDoc(t, profileJSON, board, region, reportDigest)
+	d["uso"] = routeentry.UseTool
+	d["fatia_inicial_percentagem"] = 0
+	return d
+}
+
+// GoodTool escreve na pasta um registo VÁLIDO de uso `tool` para o perfil dado, a citar um
+// relatório `ocr` qualificado, assinado com a chave dada, e devolve os bytes do registo e do
+// relatório.
+func GoodTool(t testing.TB, dir, label, profileJSON, board, region string, key Key) (entry, report []byte) {
+	t.Helper()
+	report, reportDigest := SealReport(t, OCRReportDoc(ProfileDigest(t, profileJSON)))
+	entry = Marshal(t, ToolEntryDoc(t, profileJSON, board, region, reportDigest))
+	Write(t, dir, label, entry, routeentry.Sign(entry, key.Priv), report)
+	return entry, report
+}

@@ -104,7 +104,8 @@ func TestAOS529_ORelatorioDistingueOsTresMotoresFalsos(t *testing.T) {
 		t.Errorf("o resumo nao distingue os motores:\n%s\n%s\n%s", textos[0], textos[1], textos[2])
 	}
 	for _, s := range textos {
-		if !strings.Contains(s, "nao e veredicto") || !strings.Contains(s, "13 imagens") || !strings.Contains(s, aos529DigestDaBateriaOCR) {
+		// Estes relatórios saem de CorrerExperienciaOCR sem o veredicto do AOS-530, e o resumo di-lo.
+		if !strings.Contains(s, "sem veredicto") || !strings.Contains(s, "13 imagens") || !strings.Contains(s, aos529DigestDaBateriaOCR) {
 			t.Error("o resumo tem de dizer a bateria, os limites e que nao ha veredicto")
 		}
 	}

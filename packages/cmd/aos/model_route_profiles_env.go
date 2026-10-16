@@ -43,8 +43,14 @@ package main
 // nó, sem pasta de perfis, não é detectada.
 //
 // A FATIA do canary que o registo traz é lida, validada e mostrada. Só tem efeito no registo do
-// CANDIDATO que o nó serve — um registo para um alias que não é o do titular, com
+// CANDIDATO que o nó serve — um registo de uso `run` para um alias que não é o do titular, com
 // `AOS_MODEL_CANDIDATE=on` e a fatia maior que zero (AOS-520, ADR-041; `modelo_candidato.go`).
+//
+// O USO (AOS-530, ADR-042 §2.3). Um registo de uso `tool` é o perfil de um alias que só uma tool
+// chama: entra no conjunto de perfis do gateway como os outros, e nunca é candidato
+// ([perfisAssinados.naoTitulares]); a fatia dele é 0 e o relatório citado é da experiência `ocr`
+// (conferidos na leitura da pasta), e não pode ser do alias do titular
+// ([perfisAssinados.conferirUsoTool]).
 
 import (
 	"context"
@@ -242,6 +248,13 @@ func modelRouteProfilesBanner(p *perfisAssinados) []string {
 		fatia := fmt.Sprintf("%d%% — lida e validada, SEM EFEITO nesta versao (AOS-520)", e.InitialSharePercent)
 		if serve && e.EntryDigest == candidato.entryDigest {
 			fatia = fmt.Sprintf("%d%% — EM VIGOR: este registo e o do candidato que o no serve (AOS-520, ADR-041; ver a linha do modelo candidato)", e.InitialSharePercent)
+		}
+		if e.ForTool() {
+			// AOS-530: um registo de uso `tool` diz-se à parte, e a linha dos de uso `run` fica, byte
+			// a byte, a de antes.
+			linhas = append(linhas, fmt.Sprintf("perfil de rota ASSINADO de USO TOOL carregado (EPIC-06/AOS-530, ADR-042): registo %q, alias %q — o perfil de um alias que so uma tool chama; NUNCA e candidato: nao serve runs, nao tem adaptador de run, nao entra no canary nem no disjuntor, e um run fixado neste alias e recusado. Modelo esperado %q (digest do perfil %s). Digest do registo assinado %s; digest do relatorio citado %s (experiencia ocr, veredicto qualificado, do modo real, para este perfil e para a imagem do proxy declarada). Fatia 0 (um registo de uso tool nao tem canary). O perfil NAO autoriza o nome: a allowlist assinada autoriza-o para o board e a regiao deste no, conferido no arranque. Carregado so no arranque",
+				e.Label, e.Profile.Requested, e.Profile.ExpectedModel, e.ProfileDigest, e.EntryDigest, e.ReportDigest))
+			continue
 		}
 		origem := "ACRESCENTA-SE a tabela de perfis em codigo, que nao tem este alias"
 		if antes, tem := modelgateway.RouteProfileFor(e.Profile.Requested); tem {

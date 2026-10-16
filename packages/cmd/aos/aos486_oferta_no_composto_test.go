@@ -183,7 +183,9 @@ func aos486ComporCom(t *testing.T, projeccao string, tweak func(*Config)) *aos48
 	t.Setenv("AOS_MODEL_REGION", "")
 	t.Setenv("AOS_MODEL_BOARD", "")
 	t.Setenv("AOS_MODEL_API_KEY_PATH", "")
-	t.Setenv("AOS_MODEL_ALLOWLIST_BUNDLE_DIR", "")
+	// A allowlist EXTERNA só existe quando um teste a pede ([aos530ComAllowlistExterna]); na
+	// omissão a variável fica vazia, como sempre.
+	t.Setenv("AOS_MODEL_ALLOWLIST_BUNDLE_DIR", aos530AllowlistExterna)
 	t.Setenv("AOS_MODEL_PRICING_PATH", "")
 	t.Setenv("AOS_MODEL_AUDIT_PATH", "")
 	t.Setenv("AOS_MODEL_EGRESS_TIMEOUT", "")

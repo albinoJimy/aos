@@ -28,10 +28,29 @@ const (
 	fieldReportDigest  = "digest_do_relatorio"
 	fieldProxyDigest   = "digest_da_imagem_do_proxy"
 	fieldInitialShare  = "fatia_inicial_percentagem"
+	// fieldUse é o ÚNICO membro opcional (AOS-530, ADR-042 §2.3): sem ele o registo é de uso
+	// [UseRun], e os bytes, o digest e a assinatura de um registo de antes não mudam.
+	fieldUse = "uso"
 )
 
-// entryFields são os membros de um registo de entrada.
+// entryFields são os membros OBRIGATÓRIOS de um registo de entrada.
 var entryFields = []string{fieldFormat, fieldBoard, fieldRegion, fieldProfile, fieldProfileDigest, fieldReportDigest, fieldProxyDigest, fieldInitialShare}
+
+// allEntryFields são todos os membros que um registo pode ter: os obrigatórios e [fieldUse].
+var allEntryFields = append(append([]string(nil), entryFields...), fieldUse)
+
+// Os usos de um registo de entrada (AOS-530, ADR-042 §2.3 — emenda ao ADR-041 §2.1). Vocabulário
+// FECHADO: outro valor recusa ([CauseBadUse]).
+const (
+	// UseRun é o uso de sempre, e a omissão: o perfil serve turnos de runs. Um registo de uso run
+	// cujo alias não é o do titular é um candidato (ADR-041 §2.1).
+	UseRun = "run"
+	// UseTool é o perfil de um alias que só uma tool chama (a `ocr_read`, ADR-042). NUNCA é
+	// candidato: não conta como não-titular, não ganha adaptador de run, não entra no canary nem
+	// no disjuntor, e um run não se fixa nele. A fatia tem de ser 0 ([CauseToolWithShare]), e o
+	// relatório citado é da experiência `ocr` ([CheckReport]).
+	UseTool = "tool"
+)
 
 // Entry é um registo de entrada lido. Sair de [ParseEntry] não quer dizer que o nó o aceite: a
 // assinatura, o ambiente, o relatório e a allowlist conferem-se em [LoadDir].
@@ -53,9 +72,15 @@ type Entry struct {
 	// ProxyImageDigest é o digest da imagem do proxy que o registo cita.
 	ProxyImageDigest string
 	// InitialSharePercent é a fatia inicial do canary, de 0 a 100. Quem a usa é o AOS-520; aqui é
-	// só lida, validada e mostrada.
+	// só lida, validada e mostrada. Num registo de uso [UseTool] é sempre 0.
 	InitialSharePercent int
+	// Use é o uso do registo: [UseRun] (também quando o registo não traz o membro) ou [UseTool].
+	Use string
 }
+
+// ForTool diz se o registo é de uso [UseTool]: um perfil que só uma tool chama, e que nunca é
+// candidato a servir runs.
+func (e Entry) ForTool() bool { return e.Use == UseTool }
 
 // EntryDigest devolve o digest de um registo de entrada: `sha256:` sobre os bytes EXACTOS do
 // ficheiro. Não há forma canónica: o que se assina é o ficheiro, e mudar-lhe um espaço é mudar o
@@ -95,6 +120,10 @@ func VerifySignature(raw, signature []byte, pub ed25519.PublicKey) bool {
 // Devolve um [*Refusal] com a causa; nunca repete conteúdo do registo.
 //
 // A ORDEM das conferências é fixa, e é a das causas em [Causes].
+//
+// O membro `uso` é opcional (AOS-530): ausente, o registo é de uso [UseRun] e lê-se exactamente
+// como antes — o digest e a assinatura são sobre os bytes do ficheiro, e um ficheiro sem o membro
+// é o mesmo ficheiro de sempre. Presente, entra nos bytes e por isso na assinatura.
 func ParseEntry(raw []byte) (Entry, error) {
 	members, ok := strictObject(raw)
 	if !ok {
@@ -108,10 +137,15 @@ func ParseEntry(raw []byte) (Entry, error) {
 	} else if format != EntryFormat {
 		return Entry{}, refuse(CauseUnknownFormat, "")
 	}
-	if !onlyKeys(members, entryFields) || len(members) != len(entryFields) {
+	if !onlyKeys(members, allEntryFields) {
 		return Entry{}, refuse(CauseEntryUnreadable, "")
 	}
-	e := Entry{EntryDigest: EntryDigest(raw)}
+	for _, name := range entryFields {
+		if _, has := members[name]; !has {
+			return Entry{}, refuse(CauseEntryUnreadable, "")
+		}
+	}
+	e := Entry{EntryDigest: EntryDigest(raw), Use: UseRun}
 	texts := map[string]*string{
 		fieldBoard: &e.Board, fieldRegion: &e.Region,
 		fieldProfileDigest: &e.ProfileDigest, fieldReportDigest: &e.ReportDigest, fieldProxyDigest: &e.ProxyImageDigest,
@@ -136,6 +170,21 @@ func ParseEntry(raw []byte) (Entry, error) {
 		return Entry{}, refuse(CauseShareOutOfRange, "")
 	}
 	e.InitialSharePercent = share
+	if raw, has := members[fieldUse]; has {
+		use, isText := textOf(raw)
+		if !isText {
+			return Entry{}, refuse(CauseEntryUnreadable, "")
+		}
+		if use != UseRun && use != UseTool {
+			return Entry{}, refuse(CauseBadUse, "")
+		}
+		e.Use = use
+	}
+	// UM REGISTO DE USO TOOL NÃO TEM CANARY: a fatia é de runs, e nenhum run é servido por ele. Uma
+	// fatia maior que zero diria o contrário do uso — recusa-se em vez de a ignorar.
+	if e.ForTool() && e.InitialSharePercent > 0 {
+		return Entry{}, refuse(CauseToolWithShare, "")
+	}
 
 	// O perfil passa pela leitura fechada do gateway, a mesma dos perfis candidatos: os campos
 	// que ela lê, e nenhum outro. Não há por onde um perfil diga outra coisa que não seja um

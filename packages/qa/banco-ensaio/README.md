@@ -192,7 +192,7 @@ O banco não lê mais nenhuma variável, e nenhuma destas chega ao nó `aos`.
 | 4 | Parou a meio (`tecto_atingido`, `contador_inutilizavel`, `interrompida`, `chave_recusada`, `saldo_insuficiente`, `limite_de_ritmo`, `so_respostas_429`, `serie_de_429`) ou a sonda não a deixou começar (as três primeiras, mais `modelo_desconhecido` e `sonda_falhou`). O relatório parcial foi escrito e diz a causa. |
 | 5 | Modo `real` pedido em CI. |
 | 6 | Falta o Docker ou a imagem do proxy, ou o proxy não arrancou. |
-| 11 | Só `qualificar` e `conferir` (AOS-522): o nó recusaria o registo de entrada, ou o pacote assinado. |
+| 11 | Só `qualificar`, `qualificar-ocr` e `conferir` (AOS-522, AOS-530): o nó recusaria o registo de entrada, ou o pacote assinado. |
 | 1 | Outra falha. |
 
 ## O ficheiro de chaves, os tectos e o contador
@@ -813,12 +813,70 @@ fixado como o Tesseract, ou, os que são modelos, como o de visão.
 
 `ensaio-ocr-<motor>-<data>.json` e `.txt`. Por imagem: documento, degradação, formato, com ou sem
 acentos, bytes e dimensões, o digest do ficheiro, o estado (`lida`; `falhou` com a causa `tempo`,
-`memoria` ou `motor`; ou `fora`), os factos presentes **pela regra do banco** (sem acentos nem
+`memoria`, `motor` ou — desde o AOS-530 — `cortada`, uma resposta do modelo de visão parada pelo
+limite de tokens; ou `fora`), os factos presentes **pela regra do banco** (sem acentos nem
 maiúsculas, `factos.go`) e **com os acentos exactos**, os ausentes e os que só faltam pelo
 acento, o tempo, a memória máxima, o tamanho do texto e, no modelo de visão, os tokens e o custo
 estimado. No resumo, uma tabela curta por degradação, por formato, com e sem acentos, e no total
-(as imagens `fora` contam-se à parte); a proposta do desenho (90% dos factos) aparece ao lado,
-**sem veredicto**; e os limites da medição.
+(as imagens `fora` contam-se à parte); o veredicto (abaixo); e os limites da medição. Desde o
+AOS-530 o relatório traz `versao_do_relatorio` (`1`) e o **digest de si próprio**
+(`digest_do_relatorio`, a mesma forma canónica do da qualificação).
+
+### O veredicto (AOS-530)
+
+O relatório traz `veredicto_do_ocr`, contra o **limiar de factos do dono** — a D7 do desenho,
+decidida a 2026-10-15: pelo menos **90%** dos factos presentes (`LimiarDeFactosDoOCR`, que vai no
+relatório; `--limiar-de-factos F` aperta, de 0,90 a 1, e nunca alarga). A medida é a do AOS-529:
+`presentes_pela_regra` sobre `factos`, somados nas imagens que entram nas contas (as `fora` não
+entram) — a regra dobrada do banco, a mesma das qualificações; os acentos exactos ficam no
+relatório e não decidem.
+
+`qualificado` exige, **todas**: a corrida completa; pelo menos uma imagem nas contas; **nenhuma
+imagem nas contas por ler** (tempo, memória, erro do motor ou resposta cortada); e a fracção no
+limiar. Senão `recusado`, com as razões. A imagem por ler recusa mesmo com a fracção acima do
+limiar: o modelo da tool é um só, sem nova tentativa nem recuo (ADR-042 §2.8), e uma imagem que
+ele não lê é uma chamada da tool que falha — com doze imagens nas contas, uma falhada tira menos
+de 10% dos factos e passava sem se ver. `vale_para_producao` só num `qualificado` do **modo real**
+(o motor `visao`); os motores `falso` e `tesseract` não têm modo e nunca valem. A comparação é em
+milésimas inteiras, para 90 de 100 passar e 89,9% não.
+
+Com `--perfil FICHEIRO` (só nos motores `visao` e `falso`) o veredicto leva a **rota medida**: o
+fornecedor, o modelo, o `expected_model`, o digest do perfil e, no `visao`, a imagem do proxy e o
+seu digest. É ela que liga o relatório a um registo de entrada de uso `tool`. O perfil tem de
+declarar a capacidade `imagem` e não pode declarar `tools` (o modelo que lê a imagem não pode
+pedir efeitos). Um relatório com a rota medida nunca se escreve por cima de outro.
+
+**A saída do `ocr` não depende do veredicto**: 0 se a corrida completou, como antes. Quem age
+sobre ele é o `qualificar-ocr`.
+
+### Preparar o registo de uso `tool` (`qualificar-ocr`, AOS-530)
+
+```
+go run ./cmd/aos-ensaio qualificar-ocr --motor falso --perfil <perfil-ocr.json> --board board-eu --regiao eu --saida /tmp/entrada-ocr
+go run ./cmd/aos-ensaio qualificar-ocr --motor visao --chaves F --visao-fornecedor openrouter --visao-modelo M --precos P \
+                                       --perfil <perfil-ocr.json> --board B --regiao R --saida PASTA-NOVA
+```
+
+É o `qualificar` (AOS-522) para o alias de uma tool cujo efeito é uma chamada a um modelo de visão
+(ADR-042): corre a experiência `ocr` com o perfil e, **só com o veredicto `qualificado` de uma
+corrida completa do motor `visao`** (o modo real), deixa em `PASTA/pacote/` o registo de entrada
+de **uso `tool`** — `"uso": "tool"`, fatia `0` — e o relatório que ele cita. As mesmas barreiras:
+o registo provisório passa pela leitura do nó antes de qualquer pedido (um alias fora da
+allowlist sai 11 sem enviar nada); a pasta de saída é nova; o relatório relido do disco tem de ser
+o da corrida; e o pacote escrito volta a passar nas conferências do nó. **Não assina**: assina o
+dono, com a mesma linha do `aos-issuer route-profile-sign` que o comando imprime, e confere com o
+`aos-ensaio conferir`.
+
+Saídas: **0** pacote preparado; **7** recusado; **9** qualificado com o motor `falso` (nada para
+assinar); **11** o nó recusaria o registo; 4 parou a meio; 3 recusada antes de enviar; 5 o motor
+`visao` em CI; 6 sem infra-estrutura; 2 argumentos; 1 outra falha (nunca fica pacote).
+
+O que o nó faz com o registo de uso `tool` (pacote `routeentry`, `cmd/aos/modelo_candidato.go`):
+aceita-o só com um relatório `ocr` com veredicto `qualificado` do modo real, para o perfil e a
+imagem do proxy que o registo cita; recusa-o com fatia maior que zero (`uso_tool_com_fatia`), com
+um relatório de outra experiência (`relatorio_de_outra_experiencia`) ou para o alias do titular;
+e **nunca o trata como candidato** — não conta como não-titular, não ganha adaptador de run, não
+entra no canary nem no disjuntor, e um run fixado nele é recusado.
 
 **O texto lido não sai do banco**: nem no relatório, nem no resumo, nem nas saídas — só
 contagens e os factos sintéticos ausentes. Com `--guardar-respostas` fica, ao lado do relatório,
@@ -838,6 +896,9 @@ na pasta `respostas-<nome do relatório>/`, um ficheiro por imagem.
 - **A corrida real não foi feita aqui.** Os testes provam o adaptador do Tesseract com um Docker
   de teste e o de visão com um modelo de visão falso, não os motores. O guião do contentor não
   foi corrido contra a imagem real.
+- **O modelo servido não é comparado com o `expected_model` do perfil** nesta experiência (é dito
+  nos limites do relatório quando há `--perfil`): quem o compara é o gateway do nó, em cada chamada
+  da tool, com a governação da rota ligada.
 
 ## A devolução do estado opaco (AOS-516)
 

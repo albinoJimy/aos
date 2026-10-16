@@ -67,19 +67,48 @@ func modelCandidateFromEnv() (bool, error) {
 	}
 }
 
-// naoTitulares devolve os registos assinados cujo nome pedido não é o do titular, pela ordem do
-// rótulo. São os candidatos que a pasta tem; com o interruptor a `on` só pode haver um.
+// naoTitulares devolve os registos assinados de uso `run` cujo nome pedido não é o do titular, pela
+// ordem do rótulo. São os candidatos que a pasta tem; com o interruptor a `on` só pode haver um.
+//
+// UM REGISTO DE USO `tool` NUNCA É CANDIDATO (AOS-530, ADR-042 §2.3 — emenda ao ADR-041 §2.1: «um
+// candidato é um registo assinado cujo alias não é o do titular E cujo uso é `run`»). É AQUI, e só
+// aqui, que se exclui, e é por esta função que passam todas as vias de um candidato: a contagem do
+// arranque ([perfisAssinados.conferirCandidato]), o candidato a servir e com ele o canary e o
+// disjuntor ([perfisAssinados.candidatoAServir]), o adaptador de run do despachante
+// (`modelgatewaywiring.go`) e o alias que um run fixado pode ter ([Node.aliasServido]). O perfil
+// dele continua no conjunto do gateway: é por lá que a tool o chama.
 func (p *perfisAssinados) naoTitulares(titular string) []routeentry.Entry {
 	if p == nil {
 		return nil
 	}
 	var out []routeentry.Entry
 	for _, e := range p.entradas {
-		if e.Profile.Requested != titular {
+		if e.Profile.Requested != titular && !e.ForTool() {
 			out = append(out, e)
 		}
 	}
 	return out
+}
+
+// ErrModelToolEntryForTitular — a pasta de perfis assinados tem um registo de uso `tool` para o
+// alias do titular. Fail-closed: um registo assinado para o alias do titular SUBSTITUI o perfil do
+// titular para o nó inteiro (AOS-519), e um perfil de uso `tool` passaria a servir todos os runs —
+// o contrário do uso que o dono assinou (ADR-042 §2.3).
+var ErrModelToolEntryForTitular = errors.New("aos: a pasta de perfis de rota assinados tem um registo de uso tool para o alias do titular (AOS_MODEL_NAME) — um registo de uso tool e o perfil de um alias que so uma tool chama e nunca serve runs (ADR-042 2.3); para o alias do titular substituia o perfil de todos os runs. Retire o registo, ou assine-o para outro alias")
+
+// conferirUsoTool é a conferência de ARRANQUE dos registos de uso `tool`, com ou sem o interruptor
+// do candidato: nenhum pode ser do alias do titular. A fatia de um registo de uso `tool` já foi
+// conferida na leitura da pasta (`uso_tool_com_fatia`).
+func (p *perfisAssinados) conferirUsoTool(titular string) error {
+	if p == nil {
+		return nil
+	}
+	for _, e := range p.entradas {
+		if e.ForTool() && e.Profile.Requested == titular {
+			return fmt.Errorf("%w: registo %q", ErrModelToolEntryForTitular, e.Label)
+		}
+	}
+	return nil
 }
 
 // candidatoAServir devolve o candidato que este nó SERVE, se servir algum: o interruptor a `on`,
@@ -226,9 +255,14 @@ func (c *clientePorModelo) Call(ctx context.Context, view agentruntime.PromptVie
 }
 
 // aliasServido diz se este nó tem como servir um run fixado no alias dado: o do titular, ou o de
-// um perfil assinado carregado. É a pergunta que a retoma faz ANTES de re-hospedar um run fixado
-// por escolha, para um run que o despachante recusaria não chegar a ser re-hospedado e a falhar no
-// primeiro turno vivo.
+// um perfil assinado carregado de uso `run`. É a pergunta que a retoma faz ANTES de re-hospedar um
+// run fixado por escolha, para um run que o despachante recusaria não chegar a ser re-hospedado e a
+// falhar no primeiro turno vivo.
+//
+// O alias de um registo de uso `tool` NÃO é servido (AOS-530): um run fixado nele é recusado com
+// [modelgateway.PinnedCauseModelNotServed], por todas as vias que fazem esta pergunta — a retoma, o
+// crash-resume e o `POST /runs` de um run em curso —, e o despachante, que não tem adaptador para
+// ele, recusa-o com a mesma causa.
 func (n *Node) aliasServido(alias string) bool {
 	if n == nil || alias == "" {
 		return false

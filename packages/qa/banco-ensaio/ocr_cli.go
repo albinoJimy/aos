@@ -8,7 +8,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+
+	modelgateway "github.com/aos-ref/platform/model-gateway"
 )
 
 // O SUBCOMANDO `ocr` (AOS-529). Tem as suas opções e o seu texto de uso, como o `qualificar`:
@@ -37,21 +40,62 @@ opcoes:
   --saida PASTA          onde escrever o relatorio (omissao: a pasta relatorios do dono)
   --silencioso           nao mostra o resumo, so os caminhos
   --guardar-respostas    grava, ao lado do relatorio, o texto lido de cada imagem (so la)
+  --limiar-de-factos F   o limiar do veredicto (AOS-530), de 0.90 (a omissao, D7 do dono) a 1; so aperta
+  --perfil FICHEIRO      (so motores visao e falso) o perfil da rota do alias da tool, com a capacidade
+                         imagem e sem tools: o digest dele, o modelo e a imagem do proxy vao para a rota
+                         medida do veredicto, que liga o relatorio a um registo de entrada de uso tool
 
-Um motor novo entra como adaptador (ocr_motores.go). Sem veredicto: saida 0 se a corrida
-completou; 2 argumentos; 3 recusada antes de enviar (chaves, tecto, contador); 4 interrompida;
-5 motor visao em CI; 6 sem Docker, sem a imagem do motor ou sem o proxy.
+O relatorio traz o VEREDICTO (AOS-530): qualificado ou recusado contra o limiar de factos, e se vale
+para producao (so um qualificado do motor visao, que e o modo real). A saida NAO depende dele: 0 se a
+corrida completou; 2 argumentos; 3 recusada antes de enviar (chaves, tecto, contador); 4 interrompida;
+5 motor visao em CI; 6 sem Docker, sem a imagem do motor ou sem o proxy. Para preparar o registo de
+uso tool a partir do veredicto: aos-ensaio qualificar-ocr. Um motor novo entra como adaptador
+(ocr_motores.go).
 `
 
 type opcoesDoOCR struct {
 	motor, falso, imagem, linguas, saida      string
 	chaves, visaoFornecedor, visaoModelo      string
-	precos                                    string
+	precos, perfil                            string
+	limiar                                    float64
 	silencioso, guardar, soPlano, reconstruir bool
+}
+
+// ocrFeito é o que uma corrida `ocr` deixou escrito: o relatório, tal como foi gravado, e o
+// caminho do JSON. Fica vazio quando a linha de comandos sai sem ter escrito relatório. É por aqui
+// que o `qualificar-ocr` lê a corrida que acabou de fazer (AOS-530), e não um relatório de fora.
+type ocrFeito struct {
+	relatorio *RelatorioOCR
+	emJSON    string
+}
+
+// ErrPerfilDoOCR — o perfil dado com `--perfil` não é o de uma rota que lê imagens.
+var ErrPerfilDoOCR = errors.New("o perfil da rota medida pela experiencia ocr tem de declarar a capacidade " + modelgateway.CapabilityImage + " e nao pode declarar " + modelgateway.CapabilityTools + " (ADR-042 2.3 e 2.4: o modelo que le a imagem nao pode pedir efeitos)")
+
+// lerPerfilDoOCR lê e confere o perfil de `--perfil`: a leitura fechada do gateway, o nome da rota
+// do banco, a capacidade `imagem` e nenhuma `tools`.
+func lerPerfilDoOCR(caminho string) (*modelgateway.RouteProfile, error) {
+	doc, err := os.ReadFile(caminho) // #nosec G304 -- caminho dado pelo operador na linha de comandos
+	if err != nil {
+		return nil, errors.New("nao foi possivel ler o ficheiro de --perfil")
+	}
+	p, err := LerPerfilCandidato(doc)
+	if err != nil {
+		return nil, err
+	}
+	if !slices.Contains(p.Capabilities, modelgateway.CapabilityImage) || slices.Contains(p.Capabilities, modelgateway.CapabilityTools) {
+		return nil, ErrPerfilDoOCR
+	}
+	return p, nil
 }
 
 // executarOCR corre o subcomando `ocr`.
 func executarOCR(ctx context.Context, args []string, stdout, stderr io.Writer, amb Ambiente, red *Redactor) int {
+	return executarOCRCom(ctx, args, stdout, stderr, amb, red, &ocrFeito{})
+}
+
+// executarOCRCom é o subcomando `ocr`, com o relatório escrito deixado em `feito`.
+func executarOCRCom(ctx context.Context, args []string, stdout, stderr io.Writer, amb Ambiente, red *Redactor, feito *ocrFeito) int {
 	if len(args) > 0 && args[0] == "bateria" {
 		return mostrarBateriaOCR(args[1:], stdout, stderr)
 	}
@@ -72,7 +116,15 @@ func executarOCR(ctx context.Context, args []string, stdout, stderr io.Writer, a
 	fs.BoolVar(&o.guardar, "guardar-respostas", false, "")
 	fs.BoolVar(&o.soPlano, "so-plano", false, "")
 	fs.BoolVar(&o.reconstruir, "reconstruir-contador", false, "")
+	fs.StringVar(&o.perfil, "perfil", "", "")
+	fs.Float64Var(&o.limiar, "limiar-de-factos", LimiarDeFactosDoOCR, "")
 	if err := fs.Parse(args); err != nil {
+		return SaidaUso
+	}
+	// O LIMIAR SÓ APERTA: abaixo da D7 do dono o veredicto não seria o dele. (`!(x >= y)` apanha
+	// também um NaN.)
+	if !(o.limiar >= LimiarDeFactosDoOCR) || o.limiar > 1 {
+		fmt.Fprintf(stderr, "aos-ensaio ocr: --limiar-de-factos tem de estar entre %.2f (o limiar do dono, D7) e 1: so aperta\n", LimiarDeFactosDoOCR)
 		return SaidaUso
 	}
 	if fs.NArg() > 0 {
@@ -95,6 +147,20 @@ func executarOCR(ctx context.Context, args []string, stdout, stderr io.Writer, a
 	if o.motor != NomeMotorTesseract && o.imagem != "" {
 		fmt.Fprintln(stderr, "aos-ensaio ocr: --imagem so vale com --motor tesseract")
 		return SaidaUso
+	}
+	var perfil *modelgateway.RouteProfile
+	if o.perfil != "" {
+		// Um registo de uso tool é de um alias que o nó chama pelo gateway: um modelo, real ou falso.
+		// O Tesseract local não é uma rota do gateway.
+		if o.motor != NomeMotorVisao && o.motor != NomeMotorFalso {
+			fmt.Fprintln(stderr, "aos-ensaio ocr: --perfil so vale com --motor visao ou falso")
+			return SaidaUso
+		}
+		var perr error
+		if perfil, perr = lerPerfilDoOCR(o.perfil); perr != nil {
+			fmt.Fprintf(stderr, "aos-ensaio ocr: --perfil: %v\n", perr)
+			return SaidaUso
+		}
 	}
 	bateria, err := CarregarBateriaOCR()
 	if err != nil {
@@ -163,11 +229,23 @@ func executarOCR(ctx context.Context, args []string, stdout, stderr io.Writer, a
 	if visao != nil {
 		visao.preencher(r, amb)
 	}
+	// O VEREDICTO (AOS-530), depois do modo: é ele que diz se vale para produção.
+	var rota *RotaMedidaDoOCR
+	if perfil != nil {
+		rota = &RotaMedidaDoOCR{Fornecedor: NomeMotorFalso, Modelo: m.Nome(), ModeloEsperado: perfil.ExpectedModel, DigestDoPerfil: perfil.Digest()}
+		if visao != nil {
+			rota.Fornecedor, rota.Modelo = string(visao.fornecedor), visao.modelo
+			rota.ImagemDoProxy, rota.DigestDaImagemDoProxy = ImagemDoProxy, digestDaImagem(ImagemDoProxy)
+		}
+		r.LimitesDaMedicao = append(r.LimitesDaMedicao, "o banco nao compara, nesta experiencia, o modelo que o proxy diz ter servido com o modelo esperado do perfil: quem o compara e o gateway do no, em cada chamada da tool")
+	}
+	r.VeredictoDoOCR = VeredictoOCR(r, o.limiar, rota)
 	emJSON, emTexto, err := EscreverRelatorioOCR(pasta, r)
 	if err != nil {
 		fmt.Fprintf(stderr, "aos-ensaio ocr: %v\n", err)
 		return SaidaErro
 	}
+	*feito = ocrFeito{relatorio: r, emJSON: emJSON}
 	if !o.silencioso {
 		fmt.Fprint(stdout, ResumoOCREmTexto(r))
 	}
