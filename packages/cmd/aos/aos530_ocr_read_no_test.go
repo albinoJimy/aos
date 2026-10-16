@@ -43,6 +43,7 @@ import (
 	"github.com/aos-ref/kernel/reference-monitor/authz"
 	"github.com/aos-ref/platform/audit"
 	identity "github.com/aos-ref/platform/identity"
+	"github.com/aos-ref/platform/model-gateway/policy/allowlist"
 	rt "github.com/aos-ref/platform/model-gateway/policy/routeentry/routeentrytest"
 	"github.com/aos-ref/platform/model-gateway/port"
 	"github.com/aos-ref/platform/registry/domain"
@@ -403,6 +404,19 @@ func TestAOS530_No_AToolMediadaPeloGatewayDoNo(t *testing.T) {
 			if len(selos) != 1 || selos[0].Principal.NHIID != durAgent || selos[0].RunID != runID || selos[0].StepID != med[0].step || selos[0].Decision != audit.DecisionAllow {
 				t.Fatalf("o selo do gateway tinha de ser do principal %q, do run %q e do passo %q: %+v", durAgent, runID, med[0].step, selos)
 			}
+			// E a tool de origem, numa obligation própria; os selos dos turnos do titular não a têm.
+			if origem := aos530OrigemDoSelo(selos[0]); origem != ocrToolName {
+				t.Fatalf("o selo da chamada da tool tinha de levar a tool de origem %q; veio %q (%+v)", ocrToolName, origem, selos[0].Obligations)
+			}
+			turnos := aos530SelosDoGateway(t, n, aos486Modelo)
+			if len(turnos) != 2 {
+				t.Fatalf("quer 2 selos de turnos do titular; vieram %d", len(turnos))
+			}
+			for _, s := range turnos {
+				if s.RunID != runID || len(s.Obligations) != 1 || aos530OrigemDoSelo(s) != "" {
+					t.Fatalf("o selo de um turno do titular nao leva tool de origem: %+v", s.Obligations)
+				}
+			}
 
 			// A métrica.
 			metricas := aos530Metricas(t, n)
@@ -759,4 +773,17 @@ func TestAOS530_No_IdentidadeDepoisDaRetoma(t *testing.T) {
 	if len(selos) != 1 || selos[0].Principal.NHIID != acnAgent || selos[0].RunID != acnRunID || selos[0].StepID != med[0].step || selos[0].Decision != audit.DecisionAllow {
 		t.Fatalf("o selo da chamada depois da retoma tinha de ser do principal %q, do run e do passo %q: %+v", acnAgent, med[0].step, selos)
 	}
+	if aos530OrigemDoSelo(selos[0]) != ocrToolName {
+		t.Fatalf("o selo da chamada depois da retoma tinha de levar a tool de origem: %+v", selos[0].Obligations)
+	}
+}
+
+// aos530OrigemDoSelo devolve a tool de origem selada num registo do audit de governacao, ou "".
+func aos530OrigemDoSelo(r audit.AuditRecord) string {
+	for _, o := range r.Obligations {
+		if o.Type == allowlist.ObligationOrigin {
+			return o.Params["tool"]
+		}
+	}
+	return ""
 }

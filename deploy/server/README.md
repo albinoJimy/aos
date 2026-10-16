@@ -2065,8 +2065,9 @@ todos estão feitos (as recusas estão abaixo).
    com a contabilidade composta, o nó não arranca.
 4. **A rota no proxy**: descomentar o bloco `ocr-visao` no `litellm/config.yaml` **do servidor**
    (o do repositório é a semente e o deploy nunca o reescreve), com o modelo medido
-   (`openrouter/anthropic/claude-haiku-5.5`) e a chave do fornecedor em `secrets/model.env` (o nome
-   da variável é o que o bloco referir). O `expected_model` do registo assinado tem de ser este
+   (`openrouter/anthropic/claude-haiku-5.5`) e, no `api_key`, a **mesma** variável que a rota do
+   titular já usa no `config.yaml` do servidor (o titular vai pela OpenRouter): não se cria uma
+   chave nova. O `expected_model` do registo assinado tem de ser este
    `model`; com `AOS_MODEL_ROUTE_GOVERNANCE=enforce`, um modelo servido diferente faz a tool falhar.
 5. **As imagens** em `/opt/aos/gvisor/seed/` (a pasta que o serviço `gvisor` já monta), nomes sem
    subpastas, legíveis pelo uid 65532 (pasta 0755, ficheiros 0644). O compose monta-a no nó, só de
@@ -2102,6 +2103,13 @@ todos estão feitos (as recusas estão abaixo).
 8. **Recriar o nó** e confirmar: a linha de arranque `tool ocr_read LIGADA (EPIC-07/AOS-530,
    ADR-042)` (com o alias, o digest do perfil e a postura do custo), e no `/metrics`
    `aos_ocr_read_total{resultado="..."}`.
+
+**Onde fica selada a chamada.** No selo de governação por chamada do gateway
+(`modelgw-gov:<board>`, o da allowlist), no audit de governação do gateway (`AOS_MODEL_AUDIT_PATH`):
+o principal do token do run, o run, o passo da tool call e a **tool de origem** numa obligation
+`model_call_origin` (`{"tool": "ocr_read"}`). Um turno do titular não leva essa obligation, e o
+selo dele é byte a byte o de antes. (O ADR-042 fala do «selo de atribuição»: o nó não compõe o
+recorder de atribuição, e é por isso o selo de governação que leva a tool de origem.)
 
 **O que o arranque recusa**, com a `ocr_read` no `tools.json`: sem `AOS_OCR_SEED_DIR` ou com a
 pasta ilegível (`ErrOCRSemPasta`); o alias fora da allowlist em vigor para o board e a região do nó

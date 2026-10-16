@@ -72,7 +72,8 @@ model_list:
   # - model_name: ocr-visao
   #   litellm_params:
   #     model: openrouter/anthropic/claude-haiku-5.5
-  #     api_key: os.environ/OPENROUTER_API_KEY
+  #     api_key: os.environ/<a MESMA variavel que a rota do titular ja usa no config.yaml do
+  #               servidor — o titular vai pela OpenRouter; nao se cria uma chave nova>
 
 litellm_settings:
   # `false` (AOS-505): um parâmetro que o provider não suporte passa a ser um ERRO visível, em

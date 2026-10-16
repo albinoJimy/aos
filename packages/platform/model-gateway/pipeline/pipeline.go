@@ -81,7 +81,7 @@ type Exchange struct {
 	// (ADR-008). Vazio se o chamador não o fornece (a agregação por run mantém-se).
 	TreeID string
 	// OriginTool é o identificador da tool que fez o pedido (AOS-530, ADR-042 §2.2), vindo de
-	// [port.ChatRequest.OriginTool]. Vazio num turno do executor. Entra no selo de atribuição.
+	// [port.ChatRequest.OriginTool]. Vazio num turno do executor. Entra no selo de atribuição e no de governação da allowlist.
 	OriginTool string
 
 	// RequestedModel/Provider/Region é o que o pedido pediu (o Provider pedido é
