@@ -2074,6 +2074,16 @@ byte a byte e o `/metrics`. Pôr a entrada é um acto do dono, **por PR ao repos
 O arranque declara tudo isto na linha da tool (`CUSTO: …`, com a reserva em tokens e micro-USD e o
 tecto em vigor).
 
+**A resposta não medida cobra a reserva inteira** — sem `usage`, ou com um corpo que o nó não
+interpreta mesmo que traga `usage`. É uma extensão conservadora ao ADR-042 §2.6, que não previa o
+caso: o mesmo molde da admissão de um turno sem usage, que confirma a provisão inteira em vez de
+cobrar zero por uma chamada paga.
+
+**Onde o custo da tool aparece e onde não aparece.** Está no evento `budget.toolcall.model_cost`, no
+consumo durável do run (burn-down, retoma, quota por principal) e no span `aos.activity` da tool
+call. **Não** entra no total do span `invoke_agent` nem no `TotalCostMicroUSD` do resultado do run,
+que somam só os turnos do titular.
+
 **Por confirmar na série de produção** (Notas do AOS-530 — offline não dá): que o `usage` que o
 proxy devolve para um pedido com imagem conta os tokens da imagem (comparar o `input_tokens` do
 evento `budget.toolcall.model_cost` com a ordem de grandeza da reserva e com a conta da OpenRouter);
@@ -2096,7 +2106,21 @@ todos estão feitos (as recusas estão abaixo).
    `AOS_MODEL_ROUTE_PROFILES_DIR=/etc/aos/perfis-de-rota` e a âncora dos perfis.
 3. **O preço do par** (`ocr-visao`, região do nó) na tabela do operador
    (`/opt/aos/model-pricing/pricing.json`), se `AOS_MODEL_PRICING_PATH` estiver definida — sem ele,
-   com a contabilidade composta, o nó não arranca.
+   com a contabilidade composta, o nó não arranca. O preço é o do **modelo atrás da rota** do passo
+   4, `openrouter/anthropic/claude-haiku-5.5`: o mesmo modelo cujo preço a semente da tabela já tem
+   para o titular (`gpt-4o`/`eu`, 100000 de entrada e 500000 de saída — 0,10 e 0,50 USD/Mtok —,
+   lido na OpenRouter a 2026-10-12, secção «O custo do modelo em dólares»). Confirmar o preço do dia antes de
+   o copiar; se a rota passar a outro modelo, o preço muda com ela.
+
+   **Quantas `ocr_read` cabem num run** com os tectos de produção (`AOS_BUDGET_MAX_TOKENS=200000`,
+   `AOS_BUDGET_MAX_COST_MICRO_USD=100000`) e esse preço: cada chamada reserva 12 288 tokens e
+   8192 × 0,10 + 4096 × 0,50 = 819 + 2048 = **2867 micro-USD**. No pior caso (cada chamada a custar
+   a reserva inteira) cabem **16 pelos tokens** (200000 / 12288) e **34 pelos dólares**
+   (100000 / 2867) — decidem os tokens —, menos o que os turnos do titular já tiverem gasto. Com o
+   custo medido (a ordem de grandeza do AOS-529 foi ~0,0001 USD, ~100 micro-USD, por imagem) a
+   reserva volta quase toda ao run depois de cada chamada, e cabem mais: cada chamada só desconta o
+   que custou, mas a seguinte só sai se ainda couber uma reserva inteira (12 288 tokens e 2867
+   micro-USD) no que resta.
 4. **A rota no proxy**: descomentar o bloco `ocr-visao` no `litellm/config.yaml` **do servidor**
    (o do repositório é a semente e o deploy nunca o reescreve), com o modelo medido
    (`openrouter/anthropic/claude-haiku-5.5`) e, no `api_key`, a **mesma** variável que a rota do

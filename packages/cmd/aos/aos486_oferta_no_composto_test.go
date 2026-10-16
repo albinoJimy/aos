@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -148,6 +149,8 @@ type aos486No struct {
 	execs    map[string]*int64
 	// nativo: o nó fala em mensagens nativas — o pedido não é UMA mensagem com o prompt.
 	nativo bool
+	// log é o que o arranque do nó escreveu (AOS-530: a inércia sem a `ocr_read`).
+	log *bytes.Buffer
 }
 
 // aos486Compor levanta o nó: execução durável sobre Event Store em disco, cifra por-titular,
@@ -231,13 +234,14 @@ func aos486ComporCom(t *testing.T, projeccao string, tweak func(*Config)) *aos48
 		tweak(&cfg)
 	}
 
-	node, err := Bootstrap(ctx, cfg, io.Discard)
+	logArranque := &bytes.Buffer{}
+	node, err := Bootstrap(ctx, cfg, logArranque)
 	if err != nil {
 		t.Fatalf("Bootstrap: %v", err)
 	}
 	t.Cleanup(func() { _ = node.Close() })
 
-	n := &aos486No{node: node, upstream: up, execs: map[string]*int64{}, nativo: projeccao != "text"}
+	n := &aos486No{node: node, upstream: up, execs: map[string]*int64{}, nativo: projeccao != "text", log: bytes.NewBuffer(append([]byte(nil), logArranque.Bytes()...))}
 	for _, nome := range aos486OrdemDoFicheiro {
 		conta := new(int64)
 		n.execs[nome] = conta

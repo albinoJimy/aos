@@ -700,6 +700,17 @@ func TestAOS530_No_SemAToolNadaMuda(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "aos_ocr_read_total") {
 		t.Fatal("sem a tool a familia nao existe")
 	}
+	// O arranque: sem a linha da tool (nem a postura do custo dela). O log não é vazio — o resto do
+	// banner do nó está lá —, para que a ausência meça alguma coisa.
+	arranque := n.log.String()
+	if !strings.Contains(arranque, "[aos]") {
+		t.Fatalf("o arranque tinha de ter escrito o banner do no: %s", arranque)
+	}
+	for _, linha := range []string{"tool " + ocrToolName + " LIGADA", "CUSTO: ", EventTypeToolModelCost, ocrToolName} {
+		if strings.Contains(arranque, linha) {
+			t.Fatalf("sem a tool o arranque nao fala dela (%q): %s", linha, arranque)
+		}
+	}
 }
 
 // IDENTIDADE DEPOIS DE UMA RETOMA. A credencial do run não é persistida: a retoma de um run

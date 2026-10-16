@@ -15,6 +15,7 @@ import (
 
 	"github.com/aos-ref/platform/audit"
 	modelgateway "github.com/aos-ref/platform/model-gateway"
+	"github.com/aos-ref/platform/model-gateway/internal/adapters"
 	"github.com/aos-ref/platform/model-gateway/metering/cost"
 	"github.com/aos-ref/platform/model-gateway/port"
 	"github.com/aos-ref/platform/model-gateway/pricing"
@@ -117,6 +118,11 @@ func TestAOS530_RespostaPagaNaoMedidaSoAUmaTool(t *testing.T) {
 			var envolvido *modelgateway.PaidRejectionError
 			if errors.As(errTurno, &envolvido) {
 				t.Fatal("um turno nao recebe o invólucro")
+			}
+			// O MESMO valor de antes: a marca do adaptador sai sempre no gateway.
+			var marca *adapters.UndecodedResponseError
+			if errors.As(errTurno, &marca) {
+				t.Fatal("um turno nao recebe a marca da resposta ilegivel do adaptador")
 			}
 			pedido := aos505Pedido("gpt-4o")
 			pedido.OriginTool = "ocr_read"

@@ -1058,7 +1058,9 @@ quem não liga a tool.
 - [x] **Replay sem nova chamada.** O replay do run reproduz todos os `prompt_hash` com o provider
       falso a contar zero pedidos novos e sem nenhum evento de custo novo.
 - [x] **Inércia.** Sem a `ocr_read` no `tools.json`, o nó é o de antes: o arranque, o pedido ao
-      titular byte a byte e o `/metrics`.
+      titular byte a byte e o `/metrics`. *(Provado: o pedido ao titular pelos goldens do AOS-486/490
+      e da porta, o `/metrics` sem a família, e o arranque sem a linha da tool nem a postura do custo
+      dela; o banner inteiro não é comparado byte a byte com o de antes.)*
 - [x] **O Tesseract descrito como alternativa local NÃO implementada**, no runbook e neste ticket,
       com o que falta para a ter.
 - [ ] **Sobre JetStream.** O smoke de um run com a `ocr_read` corre sobre o Event Store JetStream,
