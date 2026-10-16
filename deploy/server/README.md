@@ -2052,16 +2052,21 @@ byte a byte e o `/metrics`. Pôr a entrada é um acto do dono, **por PR ao repos
   `AOS_BUDGET_MAX_TOKENS` não há reserva, como para os turnos; sem o tecto em dólares a dimensão é
   medida e não nega.
 - **Depois** de o provider responder — com a transcrição aceite **ou** recusada (`ocr_cortado`,
-  `ocr_vazio`, `resposta_invalida`, e `modelo_servido_diferente` em `enforce`, cujo custo o gateway
-  devolve com o erro) —, a reserva salda-se pelo custo **medido** pelo gateway e grava-se no stream
+  `ocr_vazio`, `resposta_invalida`, `modelo_servido_diferente` em `enforce`, e `erro_do_gateway`
+  quando a resposta veio sem `usage` com a contabilidade composta ou com um corpo que o nó não
+  interpreta; o gateway devolve o custo, ou a marca de não medido, com o erro) —, a reserva
+  salda-se pelo custo **medido** pelo gateway e grava-se no stream
   do run um evento `budget.toolcall.model_cost`, um por tool call (idempotente por `run_id` e
   `step_id`), só com números e nomes: `tool`, `step_id`, `alias`, `modelo_servido`, `resultado`,
-  `input_tokens`, `output_tokens`, `cost_micro_usd` (e `usage_ausente` quando o provider não ecoou
-  usage). Nunca o texto nem a imagem. O evento **soma ao consumo durável do run** ao lado dos
+  `input_tokens`, `output_tokens`, `cost_micro_usd` e `usage_ausente`. Nunca o texto nem a imagem.
+  Uma resposta **não medida** (sem `usage`, custo não calculável, corpo ilegível) cobra a **reserva
+  inteira**, como a admissão de um turno sem usage: o evento leva `usage_ausente: true` e os valores
+  cobrados (8 192 e 4 096 tokens e o custo reservado). Sem orçamento composto não houve reserva e o
+  evento sai com `usage_ausente` e zeros. O evento **soma ao consumo durável do run** ao lado dos
   turnos: o burn-down vê-o, e um run retomado nasce com `tecto − já consumido`. Um custo medido
   acima da reserva grava-se como foi. O replay não grava custo (não chama a tool).
-- Uma chamada **sem resposta** (prazo, cancelamento, erro do gateway antes de o provider responder)
-  liberta a reserva e não grava evento: o nó não sabe o que o fornecedor cobrou. Se o fornecedor
+- Uma chamada **sem resposta** (prazo, cancelamento, erro do gateway antes de o provider responder,
+  ou um status que não é 200) liberta a reserva e não grava evento: o nó não sabe o que o fornecedor cobrou. Se o fornecedor
   tiver cobrado um pedido cuja resposta não chegou, esse custo só aparece na conta da OpenRouter.
 - Uma falha a gravar o evento é dita no log do nó (`gravar o custo do passo … FALHOU`) e não falha
   a tool — o efeito já foi pago (a mesma escolha do AOS-287).

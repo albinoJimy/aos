@@ -374,3 +374,68 @@ func TestAOS530_No_FalhaConsomeALeituraUnica(t *testing.T) {
 		t.Fatal("nenhuma das duas chega ao provider")
 	}
 }
+
+// UMA RESPOSTA PAGA E NÃO MEDIDA COBRA A RESERVA INTEIRA (o molde da admissão do turno): o provider
+// responde 200 sem `usage`, ou com um corpo que o adaptador não interpreta. O evento leva
+// `usage_ausente` e os valores cobrados (os tectos de tokens e o custo reservado), o consumo
+// durável soma-os, e a segunda chamada do mesmo run já não cabe no que resta.
+func TestAOS530_No_RespostaNaoMedidaCobraAReserva(t *testing.T) {
+	const ilegivel = `{"id":"x","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":[{"type":"image_url","image_url":{"url":"x"}}]},"finish_reason":"stop"}],"usage":{"prompt_tokens":900,"completion_tokens":30,"total_tokens":930}}`
+	casos := []struct {
+		nome, preco string
+		amb         map[string]string
+		semUsage    bool
+		corpo       string
+		custo       int64
+		resultado   string
+	}{
+		{"sem usage com custo composto", aos530PrecoComTool, aos530Orcamento("30000"), true, "", 22938, ocrCausaGateway},
+		{"corpo ilegivel com custo composto", aos530PrecoComTool, aos530Orcamento("30000"), false, ilegivel, 22938, ocrCausaGateway},
+		// Só tokens: sem contabilidade de custo o gateway devolve a resposta, a transcrição passa,
+		// e a reserva cobrada é a de tokens.
+		{"sem usage so com tokens", "", map[string]string{"AOS_BUDGET_MAX_TOKENS": "20000"}, true, "", 0, ocrResultadoTranscrito},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			n := aos530Compor(t, aos530Opcoes{preco: c.preco, ambiente: c.amb})
+			n.upstream.ocrSemUsage, n.upstream.ocrCorpo = c.semUsage, c.corpo
+			runID := "run-530-nao-medida"
+			evs := n.correr(t, runID,
+				[2]string{ocrToolName, `{"doc_id":"` + aos530Doc + `"}`},
+				[2]string{ocrToolName, `{"doc_id":"` + aos530Doc + `"}`})
+			custos := aos530Custos(t, evs)
+			if len(custos) != 1 {
+				t.Fatalf("quer 1 evento de custo; vieram %+v", custos)
+			}
+			p := custos[0].p
+			if !p.UsageAusente || p.InputTokens != ocrTokensDeEntradaMax || p.OutputTokens != ocrMaxTokens || p.CostMicroUSD != c.custo || p.Resultado != c.resultado {
+				t.Fatalf("o evento leva usage_ausente e a reserva cobrada (custo %d, %s): %+v", c.custo, c.resultado, p)
+			}
+			if _, tool := n.upstream.separar(t); len(tool) != 1 || n.node.ocr.lido(ocrCausaTecto) != 1 {
+				t.Fatalf("a segunda chamada ja nao cabe: pedidos=%d tecto=%d", len(tool), n.node.ocr.lido(ocrCausaTecto))
+			}
+			consumo, err := consumoDuravelParaOrcamento(newTurnLedgerBurndown(n.node.EventStore))(context.Background(), runID)
+			if err != nil || consumo.CostMicroUSD != c.custo || consumo.Tokens < ocrTokensDeEntradaMax+ocrMaxTokens {
+				t.Fatalf("o consumo duravel soma a reserva cobrada: %+v (%v)", consumo, err)
+			}
+		})
+	}
+}
+
+// UMA CHAMADA SEM RESPOSTA DEVOLVE A RESERVA. O tecto em dólares só comporta UMA reserva de cada
+// vez; a primeira chamada recebe um 500 (sem resposta, sem custo, sem evento); a segunda só cabe se
+// a reserva da primeira tiver voltado ao run.
+func TestAOS530_No_ChamadaSemRespostaDevolveAReserva(t *testing.T) {
+	n := aos530Compor(t, aos530Opcoes{preco: aos530PrecoComTool, ambiente: aos530Orcamento("23500")})
+	n.upstream.ocrFalhas = 1
+	evs := n.correr(t, "run-530-sem-resposta",
+		[2]string{ocrToolName, `{"doc_id":"` + aos530Doc + `"}`},
+		[2]string{ocrToolName, `{"doc_id":"` + aos530Doc + `"}`})
+	if n.node.ocr.lido(ocrCausaGateway) != 1 || n.node.ocr.lido(ocrResultadoTranscrito) != 1 || n.node.ocr.lido(ocrCausaTecto) != 0 {
+		t.Fatalf("a primeira falha sem resposta e a segunda transcreve: gateway=%d transcritas=%d tecto=%d",
+			n.node.ocr.lido(ocrCausaGateway), n.node.ocr.lido(ocrResultadoTranscrito), n.node.ocr.lido(ocrCausaTecto))
+	}
+	if c := aos530Custos(t, evs); len(c) != 1 || c[0].p.CostMicroUSD != 840 {
+		t.Fatalf("so a chamada respondida grava custo: %+v", c)
+	}
+}

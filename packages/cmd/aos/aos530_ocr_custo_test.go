@@ -20,6 +20,7 @@ import (
 	"time"
 
 	budget "github.com/aos-ref/control-plane/budget"
+	"github.com/aos-ref/integration"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 	modelgateway "github.com/aos-ref/platform/model-gateway"
 	"github.com/aos-ref/platform/model-gateway/port"
@@ -207,3 +208,92 @@ func aos530Custos(t *testing.T, evs []eventstore.Event) []aos530Custo {
 // aos530PrecoComTool é a tabela de preços dos testes: o titular quase de graça, o alias da tool a
 // 0,8 USD/Mtok de entrada e 4 USD/Mtok de saída.
 const aos530PrecoComTool = `{"version":"t-530","entries":[{"model":"gpt-4o","region":"eu","rate":{"input_per_mtok_micro_usd":1,"output_per_mtok_micro_usd":1,"cache_read_per_mtok_micro_usd":1,"cache_write_per_mtok_micro_usd":1}},{"model":"ocr-visao","region":"eu","rate":{"input_per_mtok_micro_usd":800000,"output_per_mtok_micro_usd":4000000,"cache_read_per_mtok_micro_usd":80000,"cache_write_per_mtok_micro_usd":1000000}}]}`
+
+// UM ERRO DE RESERVA QUE NÃO É DE TECTO (o run sem nó de orçamento — defeito de composição) falha
+// com `orcamento_indisponivel`, distinto de `tecto_do_run`, e o gateway não é chamado.
+func TestAOS530_Custo_ReservaSemNoEOrcamentoIndisponivel(t *testing.T) {
+	pasta := t.TempDir()
+	if err := os.WriteFile(filepath.Join(pasta, "a.png"), aos530PNG(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gw := &aos530GwFalso{resp: aos530Resposta("x", port.FinishStop, 1)}
+	l := aos530LigacaoFalsa(t, pasta, gw)
+	rb, err := integration.NewRunBudget(1_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.ligarCusto(rb, nil, nil) // nenhum run hospedado: o nó do run-530 não existe
+	_, custo, err := l.executar(aos530ComCredencial(), aos530Entrada("a.png"))
+	if causaDaFalhaOCR(err) != ocrCausaOrcamento || custo != 0 || gw.contagem() != 0 || l.lido(ocrCausaTecto) != 0 {
+		t.Fatalf("quer orcamento_indisponivel sem pedido; veio %v pedidos=%d", err, gw.contagem())
+	}
+}
+
+// aos530GwQueCancela responde e, antes de devolver, cancela o contexto do run: a resposta foi paga
+// e o cancelamento chega depois.
+type aos530GwQueCancela struct {
+	cancelar func()
+	resp     port.ChatResponse
+	err      error
+}
+
+func (g *aos530GwQueCancela) Chat(context.Context, port.ChatRequest) (port.ChatResponse, error) {
+	g.cancelar()
+	return g.resp, g.err
+}
+
+// O CANCELAMENTO DEPOIS DE PAGO NÃO APAGA O CUSTO: o evento grava-se no Event Store real (que
+// recusa um Append com o contexto cancelado) — pela resposta aceite e pela recusa paga.
+func TestAOS530_Custo_CancelamentoDepoisDePagoGravaNaMesma(t *testing.T) {
+	pasta := t.TempDir()
+	if err := os.WriteFile(filepath.Join(pasta, "a.png"), aos530PNG(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recusa := &modelgateway.PaidRejectionError{Err: errors.New("recusada"), Usage: port.Usage{PromptTokens: 900, CompletionTokens: 40, CostMicroUSD: 91}}
+	for _, c := range []struct {
+		nome  string
+		resp  port.ChatResponse
+		err   error
+		custo int64
+	}{
+		{"aceite", aos530Resposta("texto", port.FinishStop, 840), nil, 840},
+		{"recusa paga", port.ChatResponse{}, recusa, 91},
+	} {
+		t.Run(c.nome, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(aos530ComCredencial())
+			defer cancel()
+			es := storeDeTeste(t)
+			l := aos530LigacaoFalsa(t, pasta, &aos530GwQueCancela{cancelar: cancel, resp: c.resp, err: c.err})
+			l.ligarCusto(nil, registoDeCustoDeTool(es, producerDoCustoDeTool()), nil)
+			_, _, _ = l.executar(ctx, aos530Entrada("a.png"))
+			evs, err := es.Read(context.Background(), "run-530", 1)
+			if err != nil {
+				t.Fatalf("o evento tinha de estar gravado: %v", err)
+			}
+			if cs := aos530Custos(t, evs); len(cs) != 1 || cs[0].p.CostMicroUSD != c.custo {
+				t.Fatalf("quer 1 evento com %d; vieram %+v", c.custo, cs)
+			}
+		})
+	}
+}
+
+// UMA RESPOSTA NÃO MEDIDA SEM ORÇAMENTO COMPOSTO: não houve reserva, o evento grava-se com
+// `usage_ausente` e zeros.
+func TestAOS530_Custo_NaoMedidaSemReservaGravaZeros(t *testing.T) {
+	pasta := t.TempDir()
+	if err := os.WriteFile(filepath.Join(pasta, "a.png"), aos530PNG(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	semUsage := aos530Resposta("texto", port.FinishStop, 0)
+	semUsage.Usage = port.Usage{Ausente: true}
+	l := aos530LigacaoFalsa(t, pasta, &aos530GwFalso{resp: semUsage})
+	reg := &aos530Registos{}
+	l.ligarCusto(nil, reg.registar, nil)
+	_, custo, err := l.executar(aos530ComCredencial(), aos530Entrada("a.png"))
+	if err != nil || custo != 0 || len(reg.p) != 1 {
+		t.Fatalf("a transcricao passa e grava um evento: %v custo=%d %+v", err, custo, reg.p)
+	}
+	if p := reg.p[0]; !p.UsageAusente || p.InputTokens != 0 || p.OutputTokens != 0 || p.CostMicroUSD != 0 {
+		t.Fatalf("sem reserva: usage_ausente e zeros: %+v", p)
+	}
+}

@@ -78,6 +78,12 @@ type aos530Upstream struct {
 	titularServido string
 	// apiBase, quando preenchido, é o endpoint que o proxy declara em todas as respostas.
 	apiBase string
+	// ocrSemUsage faz a transcrição responder 200 sem `usage`; ocrCorpo, quando preenchido, é o
+	// corpo cru da resposta 200 da transcrição; ocrFalhas é quantos pedidos da tool (os primeiros)
+	// recebem um 500 sem resposta.
+	ocrSemUsage bool
+	ocrCorpo    string
+	ocrFalhas   int
 }
 
 func (u *aos530Upstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -87,6 +93,11 @@ func (u *aos530Upstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	guiao, servido, fim, entrada, titularServido := u.guiao, u.ocrServido, u.ocrFim, u.ocrEntrada, u.titularServido
 	if u.apiBase != "" {
 		w.Header().Set("x-litellm-model-api-base", u.apiBase)
+	}
+	semUsage, corpoCru, falha := u.ocrSemUsage, u.ocrCorpo, false
+	if u.ocrFalhas > 0 && strings.Contains(string(corpo), `"model":"`+aos530AliasTool+`"`) {
+		u.ocrFalhas--
+		falha = true
 	}
 	u.mu.Unlock()
 	var cab struct {
@@ -104,12 +115,25 @@ func (u *aos530Upstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if entrada == 0 {
 			entrada = 900
 		}
+		if falha {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"falha"}`))
+			return
+		}
 		w.Header().Set(port.HeaderServedModel, servido)
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		if corpoCru != "" {
+			_, _ = w.Write([]byte(corpoCru))
+			return
+		}
+		r := map[string]any{
 			"id": "cmpl-ocr", "object": "chat.completion", "model": servido,
 			"choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": aos530TextoMarcador + "\nTotal: 12,34 EUR"}, "finish_reason": fim}},
 			"usage":   map[string]any{"prompt_tokens": entrada, "completion_tokens": 30, "total_tokens": entrada + 30},
-		})
+		}
+		if semUsage {
+			delete(r, "usage")
+		}
+		_ = json.NewEncoder(w).Encode(r)
 		return
 	}
 	if titularServido != "" {

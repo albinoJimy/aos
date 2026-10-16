@@ -630,6 +630,10 @@ func (l *ligacaoOCR) executar(ctx context.Context, input []byte) ([]byte, int64,
 	if causa != "" {
 		return l.falhar(causa, 0)
 	}
+	// A reserva que não for saldada volta ao run: é o caminho de uma chamada sem resposta (erro antes
+	// do provider, prazo, cancelamento) e de um panic dentro do gateway. Depois de saldada, libertar
+	// é um no-op (a reserva resolve-se uma vez).
+	defer l.libertar(ctx, reserva, in)
 	cctx, cancel := context.WithTimeout(ctx, l.prazo)
 	defer cancel()
 	resp, err := l.gw.Chat(cctx, port.ChatRequest{
@@ -657,14 +661,13 @@ func (l *ligacaoOCR) executar(ctx context.Context, input []byte) ([]byte, int64,
 		default:
 			causa = ocrCausaGateway
 		}
-		// Uma recusa DEPOIS de o provider responder (o modelo servido diferente em `enforce`) custou
-		// dinheiro: o gateway devolve o custo com o erro ([modelgateway.PaidRejectionError]), e
-		// grava-se. Sem resposta não há custo conhecido e a reserva volta ao run.
+		// Uma recusa DEPOIS de o provider responder (o modelo servido diferente em `enforce`, uma
+		// resposta sem usage ou ilegível) custou dinheiro: o gateway devolve o custo — ou a marca de
+		// não medido — com o erro ([modelgateway.PaidRejectionError]), e grava-se. Sem resposta não há
+		// custo conhecido e a reserva volta ao run (o `defer` acima).
 		if usage, servido, pago := modelgateway.PaidRejectionOf(err); pago {
-			l.fecharPago(ctx, reserva, in, usage, servido, causa)
-			return l.falhar(causa, usage.CostMicroUSD)
+			return l.falhar(causa, l.fecharPago(ctx, reserva, in, usage, servido, causa))
 		}
-		l.libertar(ctx, reserva, in)
 		return l.falhar(causa, 0)
 	}
 	// O custo medido pelo gateway (tabela de preços; zero sem contabilidade composta). Volta pelo
@@ -677,12 +680,12 @@ func (l *ligacaoOCR) executar(ctx context.Context, input []byte) ([]byte, int64,
 		servido = port.SanitizeServedModel(resp.Model)
 	}
 	out, resultado := l.interpretar(resp, parte, formato, servido)
-	l.fecharPago(ctx, reserva, in, resp.Usage, servido, resultado)
+	custo := l.fecharPago(ctx, reserva, in, resp.Usage, servido, resultado)
 	if resultado != ocrResultadoTranscrito {
-		return l.falhar(resultado, resp.Usage.CostMicroUSD)
+		return l.falhar(resultado, custo)
 	}
 	l.contar(ocrResultadoTranscrito)
-	return out, resp.Usage.CostMicroUSD, nil
+	return out, custo, nil
 }
 
 // interpretar decide o que uma resposta do modelo é: o resultado `aos-ocr/v1` e `transcrito`, ou a

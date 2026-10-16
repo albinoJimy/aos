@@ -22,12 +22,17 @@ package main
 // dimensão em dólares é medida e nunca nega ([integration.UnlimitedCostMicroUSD]), e a reserva da
 // tool segue a mesma regra.
 //
+// Uma chamada SEM RESPOSTA (erro antes do provider, prazo, cancelamento, panic no gateway) liberta
+// a reserva. Uma resposta NÃO MEDIDA (sem `usage`, custo não calculável, corpo que o adaptador não
+// interpreta) cobra a reserva inteira — ver [ligacaoOCR.fecharPago].
+//
 // # O evento durável
 //
 // Cada resposta do provider grava UM evento [EventTypeToolModelCost] no stream do run — também
 // quando a tool recusa a resposta (cortada, vazia, com uma tool call) e quando o gateway a recusa
-// depois de a contar (o modelo servido diferente em `enforce`, que chega com o custo num
-// [modelgateway.PaidRejectionError]). Só números e nomes de vocabulário fechado: o custo, os
+// depois de o provider responder (o modelo servido diferente em `enforce`, uma resposta sem
+// `usage` com a contabilidade composta, um corpo ilegível), que chega num
+// [modelgateway.PaidRejectionError] com o custo ou com a marca de não medido. Só números e nomes de vocabulário fechado: o custo, os
 // tokens, o alias, o modelo servido, o resultado da tool; nunca o texto nem os bytes.
 //
 // IDEMPOTENTE por (`run_id`, `step_id`) da tool call. A chave do envelope é
@@ -105,12 +110,13 @@ type custoDeToolPayload struct {
 	ModeloServido string `json:"modelo_servido,omitempty"`
 	// Resultado é o desfecho da tool, no vocabulário de [ocrCausas] (`transcrito` ou a causa).
 	Resultado string `json:"resultado"`
-	// Tokens e custo MEDIDOS pelo gateway (o custo pela tabela de preços; zero sem contabilidade).
+	// Tokens e custo MEDIDOS pelo gateway (o custo pela tabela de preços; zero sem contabilidade) —
+	// ou, com UsageAusente, os COBRADOS: a reserva inteira, ou zeros sem orçamento composto.
 	InputTokens  int64 `json:"input_tokens"`
 	OutputTokens int64 `json:"output_tokens"`
 	CostMicroUSD int64 `json:"cost_micro_usd"`
-	// UsageAusente marca uma resposta em que o provider não ecoou usage: os zeros acima não são
-	// uma medição.
+	// UsageAusente marca uma resposta paga e NÃO medida (sem usage, custo não calculável, corpo
+	// ilegível): os números acima não são uma medição, são o que se cobrou ([ligacaoOCR.fecharPago]).
 	UsageAusente bool `json:"usage_ausente,omitempty"`
 }
 
@@ -189,32 +195,47 @@ func (l *ligacaoOCR) reservar(ctx context.Context, runID string) (*integration.R
 	}
 }
 
-// fecharPago salda a reserva pelo custo medido e grava o evento durável de uma chamada que o
-// provider respondeu, qualquer que seja o resultado da tool. Corre sem o cancelamento do contexto
-// do run: o caminho cancelado é o que mais precisa de deixar o custo gravado.
-func (l *ligacaoOCR) fecharPago(ctx context.Context, reserva *integration.ReservaDeEfeito, in entradaOCR, usage port.Usage, servido, resultado string) {
+// fecharPago salda a reserva e grava o evento durável de uma chamada que o provider respondeu,
+// qualquer que seja o resultado da tool, e devolve o custo cobrado (micro-USD). Corre sem o
+// cancelamento do contexto do run: o caminho cancelado é o que mais precisa de deixar o custo
+// gravado.
+//
+// MEDIDA, salda-se pelo medido. NÃO MEDIDA — o provider não ecoou `usage`, o custo não se calculou,
+// ou a resposta não se interpretou —, cobra-se a RESERVA INTEIRA, o molde da admissão do turno
+// (`integration/model_admission.go`, «usage a zero ⇒ fica a provisão cobrada»): saldar por zero
+// faria uma chamada paga não descer o tecto. O evento leva então `usage_ausente` e os valores
+// cobrados (os tectos de tokens da tool e o custo reservado), para que o consumo durável os some.
+// Sem orçamento composto não houve reserva: o evento sai com `usage_ausente` e zeros.
+func (l *ligacaoOCR) fecharPago(ctx context.Context, reserva *integration.ReservaDeEfeito, in entradaOCR, usage port.Usage, servido, resultado string) int64 {
 	ctx = context.WithoutCancel(ctx)
-	real := budget.Amount{Tokens: usage.PromptTokens + usage.CompletionTokens, CostMicroUSD: usage.CostMicroUSD}
-	if _, err := reserva.Saldar(ctx, real); err != nil {
-		l.logf("[aos] ocr_read (AOS-530): saldar a reserva do passo %q do run %q FALHOU (%v) — o tecto do run nesta incarnacao pode nao refletir o custo medido; o evento duravel do custo segue", in.StepID, in.RunID, err)
-	}
-	if l.registarCusto == nil {
-		return
-	}
 	p := custoDeToolPayload{
 		Tool: ocrToolName, StepID: in.StepID, Alias: l.alias, ModeloServido: servido, Resultado: resultado,
 		InputTokens: usage.PromptTokens, OutputTokens: usage.CompletionTokens, CostMicroUSD: usage.CostMicroUSD,
-		UsageAusente: !usage.Definido(),
+	}
+	if !usage.Definido() {
+		p.UsageAusente = true
+		p.InputTokens, p.OutputTokens, p.CostMicroUSD = 0, 0, 0
+		if reserva != nil {
+			p.InputTokens, p.OutputTokens, p.CostMicroUSD = ocrTokensDeEntradaMax, ocrMaxTokens, reserva.Reservado().CostMicroUSD
+		}
+	}
+	real := budget.Amount{Tokens: p.InputTokens + p.OutputTokens, CostMicroUSD: p.CostMicroUSD}
+	if _, err := reserva.Saldar(ctx, real); err != nil {
+		l.logf("[aos] ocr_read (AOS-530): saldar a reserva do passo %q do run %q FALHOU (%v) — o tecto do run nesta incarnacao pode nao refletir o custo; o evento duravel do custo segue", in.StepID, in.RunID, err)
+	}
+	if l.registarCusto == nil {
+		return p.CostMicroUSD
 	}
 	if err := l.registarCusto(ctx, in.RunID, p); err != nil {
 		// FAIL-SOFT DECLARADO, a escolha do AOS-287: o efeito já aconteceu e foi pago; falhar a tool
 		// agora trocaria um custo por gravar por um run partido. Não se degrada em silêncio.
-		l.logf("[aos] ocr_read (AOS-530): gravar o custo do passo %q do run %q FALHOU (%v) — a chamada foi paga (%d micro-USD) e a incarnacao seguinte NAO o vera no consumo duravel. Degradacao declarada, nao silenciosa", in.StepID, in.RunID, err, usage.CostMicroUSD)
+		l.logf("[aos] ocr_read (AOS-530): gravar o custo do passo %q do run %q FALHOU (%v) — a chamada foi paga (%d micro-USD) e a incarnacao seguinte NAO o vera no consumo duravel. Degradacao declarada, nao silenciosa", in.StepID, in.RunID, err, p.CostMicroUSD)
 	}
+	return p.CostMicroUSD
 }
 
 // libertar devolve a reserva de uma chamada que não teve resposta (erro antes do provider, prazo,
-// cancelamento).
+// cancelamento, panic no gateway). Sobre uma reserva já saldada não faz nada.
 func (l *ligacaoOCR) libertar(ctx context.Context, reserva *integration.ReservaDeEfeito, in entradaOCR) {
 	if err := reserva.Libertar(context.WithoutCancel(ctx)); err != nil {
 		l.logf("[aos] ocr_read (AOS-530): libertar a reserva do passo %q do run %q FALHOU (%v)", in.StepID, in.RunID, err)

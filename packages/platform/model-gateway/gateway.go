@@ -359,9 +359,10 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 	ex.OriginTool = req.OriginTool
 
 	var resp port.ChatResponse
-	// pago marca que o provider respondeu e que o custo da resposta foi contado: uma recusa
-	// DEPOIS disto custou dinheiro (AOS-530, ver [PaidRejectionError]).
-	pago := false
+	// respondeu marca que o provider respondeu ao pedido (e por isso o cobrou); pago, que além disso
+	// o custo da resposta foi contado. Uma recusa DEPOIS de respondeu custou dinheiro (AOS-530, ver
+	// [PaidRejectionError]); sem pago, o custo não é conhecido.
+	respondeu, pago := false, false
 	runErr := g.pipe.Execute(ctx, ex, func(ctx context.Context, ex *pipeline.Exchange) error {
 		// AOS-530: uma parte de imagem só sai para uma rota que declare `imagem`. A recusa entra
 		// AQUI — o primeiro passo depois dos estágios — porque precisa da rota RESOLVIDA (o
@@ -399,6 +400,12 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 			return derr
 		}
 		r, err := g.adapter.Chat(ctx, req, cred)
+		if ilegivel, ok := err.(*adapters.UndecodedResponseError); ok {
+			// AOS-530: uma resposta 200 que não se interpreta foi paga. A marca sai sempre (um
+			// turno vê o erro de antes); só um pedido de uma tool fica a saber que foi respondido.
+			err = ilegivel.Err
+			respondeu = req.OriginTool != ""
+		}
 		if err != nil {
 			g.contarRecusaDeParametros(req.Model, enviados, err)
 			if comEstado > 0 || req.HasImages() {
@@ -409,6 +416,7 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 			return err
 		}
 		resp = r
+		respondeu = true
 		resp.SentParams = enviados
 		// AOS-505: o que o proxy declarou fica AQUI. O host do endpoint e as marcas de valor
 		// inexacto saem da resposta antes de qualquer outro passo e só voltam a ser lidos pela
@@ -436,14 +444,19 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 	})
 	if runErr != nil {
 		span.SetAttribute(agentruntime.AttrErrorType, errType(runErr))
-		if pago && req.OriginTool != "" {
+		if respondeu && req.OriginTool != "" {
 			// AOS-530: a recusa de uma resposta paga leva o custo a quem fez o pedido — só a uma
-			// tool; um turno vê o erro de sempre (ver [PaidRejectionError]).
+			// tool; um turno vê o erro de sempre (ver [PaidRejectionError]). Sem o custo contado
+			// (sem usage, custo não calculável, corpo ilegível) vai como NÃO MEDIDO.
 			servido := resp.Route.Model
 			if servido == "" {
 				servido = port.SanitizeServedModel(resp.Model)
 			}
-			return port.ChatResponse{}, &PaidRejectionError{Err: runErr, Usage: resp.Usage, ServedModel: servido}
+			usage := resp.Usage
+			if !pago {
+				usage = port.Usage{Ausente: true}
+			}
+			return port.ChatResponse{}, &PaidRejectionError{Err: runErr, Usage: usage, ServedModel: servido}
 		}
 		return port.ChatResponse{}, runErr
 	}

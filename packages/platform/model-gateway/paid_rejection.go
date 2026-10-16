@@ -6,10 +6,12 @@ import (
 	"github.com/aos-ref/platform/model-gateway/port"
 )
 
-// PaidRejectionError é o erro de uma chamada que o provider RESPONDEU, cujo custo o gateway JÁ
-// CONTOU pela tabela de preços, e que mesmo assim foi recusada depois disso — hoje, a comparação
-// do modelo servido com o perfil da rota em `enforce` (ADR-036 §2.8) e um estágio de metering que
-// falhe a seguir ao custo.
+// PaidRejectionError é o erro de uma chamada que o provider RESPONDEU — e por isso cobrou — e que
+// mesmo assim foi recusada depois disso: a comparação do modelo servido com o perfil da rota em
+// `enforce` (ADR-036 §2.8), um estágio de metering que falhe a seguir ao custo, uma resposta sem
+// `usage` com a contabilidade de custo composta (`ErrUsageAusente`), um custo não calculável, ou
+// uma resposta 200 que o adaptador não interpreta. Quando o custo foi contado, [Usage] leva-o;
+// quando não foi, [Usage] vem marcado `Ausente` (não medido) e quem a pediu decide quanto cobrar.
 //
 // PORQUE EXISTE (AOS-530, ADR-042 §2.6). O efeito de uma tool cujo efeito é uma chamada a um
 // modelo custou dinheiro mesmo quando o gateway recusa a resposta — «custou e grava-se». Sem este
@@ -27,7 +29,8 @@ import (
 type PaidRejectionError struct {
 	// Err é a recusa, tal como o gateway a devolveria sem o invólucro.
 	Err error
-	// Usage é o usage medido da resposta recusada, com [port.Usage.CostMicroUSD] já calculado.
+	// Usage é o usage medido da resposta recusada, com [port.Usage.CostMicroUSD] já calculado; ou
+	// `Ausente` quando o custo não foi contado.
 	Usage port.Usage
 	// ServedModel é o modelo que o proxy declarou ter servido (sanitizado), ou vazio.
 	ServedModel string
