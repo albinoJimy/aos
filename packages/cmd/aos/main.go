@@ -2478,6 +2478,26 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	}); err != nil {
 		return nil, nil, err
 	}
+	// A TOOL `ocr_read` (AOS-530, ADR-042): com o bloco `modelo` no registo de tools, o nó só
+	// arranca com o alias na allowlist em vigor, um registo assinado de uso `tool` para ele, o
+	// preço do par (com a contabilidade composta) e a pasta semeada montada. Sem o bloco não lê
+	// nada mais e não compõe nada: o arranque é o de antes.
+	specs, err := readModelToolSpecs()
+	if err != nil {
+		return nil, nil, err
+	}
+	// ocrPorEntregar é a ligação composta e ainda não entregue no cliente: qualquer falha de
+	// arranque daqui para baixo fecha-lhe a pasta (o os.Root aberto). Nil depois da entrega.
+	var ocrPorEntregar *ligacaoOCR
+	defer func() { ocrPorEntregar.fechar() }()
+	if spec := specDoOCR(specs); spec != nil {
+		ligacao, oerr := comporLigacaoOCR(spec, assinados, pol, region, board, costRec != nil)
+		if oerr != nil {
+			return nil, nil, oerr
+		}
+		// O registo `tool` existe (conferido acima), pelo que a pasta de perfis também.
+		assinados.ocr, ocrPorEntregar = ligacao, ligacao
+	}
 	// CUTOVER DURO (AOS-278): o gateway compõe-se com um verifier LIGADO TARDIAMENTE. Nasce a
 	// negar fail-closed; o Bootstrap liga-o (via o binder devolvido) ao verifier REAL do nó —
 	// o MESMO que verifica as tool calls. NÃO há stub allow-all no caminho.
@@ -2542,6 +2562,7 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	// replay-then-continue valha para QUALQUER modelo — incluindo um cfg.Model injectado,
 	// que por este caminho a perdia em silêncio. O decorador continua a ser o outermost:
 	// Bootstrap envolve o que quer que saia daqui, incluindo o enriquecedor de tools.
+	ocrPorEntregar = nil // entregue no cliente: quem a fecha passa a ser o nó (Node.Close)
 	return client, modelVerifier.bind, nil
 }
 

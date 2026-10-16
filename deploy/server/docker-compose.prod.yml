@@ -357,6 +357,10 @@ services:
       AOS_BACKUP_RETENTION: "${AOS_BACKUP_RETENTION:-}"
       AOS_BACKUP_VAULT_TRANSIT_MOUNT: "${AOS_BACKUP_VAULT_TRANSIT_MOUNT:-}"
       AOS_SANDBOX_SEED_DIR: "${AOS_SANDBOX_SEED_DIR:-}"
+      # AOS-530 (ADR-042) — a tool ocr_read. VAZIO POR OMISSAO ⇒ DESLIGADO: so e lida com a
+      # entrada ocr_read no registo de tools (model-tools/tools.json), que o deploy NAO poe. Para
+      # ligar: README, «Ligar o OCR» — AOS_OCR_SEED_DIR=/etc/aos/ocr-seed (a montagem abaixo).
+      AOS_OCR_SEED_DIR: "${AOS_OCR_SEED_DIR:-}"
 
       # --- TRÊS QUE FICAM DE FORA, E PORQUÊ --------------------------------------------------
       #
@@ -667,6 +671,12 @@ services:
       # o preço é do operador e nenhum deploy o reescreve. Só o `aos` a monta — o `aos-orq` não
       # mede dólares, quem tem a tabela é o nó.
       - ./model-pricing:/etc/aos/model-pricing:ro
+      # PASTA SEMEADA DA ocr_read (AOS-530, ADR-042 §2.4). A MESMA que o servico gvisor monta
+      # (./gvisor/seed), so de leitura. Montada SEMPRE, no molde das de cima (um `volumes:`
+      # condicional nao existe em compose): o que decide se e LIDA e AOS_OCR_SEED_DIR, vazia por
+      # omissao, E a entrada ocr_read no registo de tools. Com as duas por definir o no nem a abre.
+      # Tem de ser legivel pelo uid 65532: pasta 0755, ficheiros 0644.
+      - ./gvisor/seed:/etc/aos/ocr-seed:ro
       # CA interna (bundle) + material privado por FICHEIRO. Os três são montados sempre; o que
       # decide se são USADOS são as envs acima. Montar um ficheiro que o nó ignora é inócuo —
       # já um `volumes:` condicional não existe em compose, e um bind em falta impede o arranque.

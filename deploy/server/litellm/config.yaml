@@ -63,6 +63,18 @@ model_list:
   #     api_key: os.environ/MOONSHOT_API_KEY
   #     api_base: https://api.kimi.com/coding/v1
 
+  # --- O modelo de visao da tool ocr_read (AOS-530, ADR-042) --------------------------------
+  # Um alias PROPRIO, que so a tool chama: nunca serve runs. So passa no no com o alias na
+  # allowlist assinada (re-assinada pelo dono) e um registo de entrada assinado de uso `tool`
+  # cujo expected_model e o `model` abaixo; trocar o `model` sem um registo novo e apanhado pela
+  # comparacao do modelo servido (AOS_MODEL_ROUTE_GOVERNANCE). E o modelo medido pelo AOS-529.
+  # Passos do dono: deploy/server/README.md, «Ligar o OCR».
+  # - model_name: ocr-visao
+  #   litellm_params:
+  #     model: openrouter/anthropic/claude-haiku-5.5
+  #     api_key: os.environ/<a MESMA variavel que a rota do titular ja usa no config.yaml do
+  #               servidor — o titular vai pela OpenRouter; nao se cria uma chave nova>
+
 litellm_settings:
   # `false` (AOS-505): um parâmetro que o provider não suporte passa a ser um ERRO visível, em
   # vez de ser descartado em silêncio. Hoje o nó não envia nenhum parâmetro opcional (só `model`,

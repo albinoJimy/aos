@@ -2026,6 +2026,142 @@ docker inspect -f '{{.State.Status}} reinícios={{.RestartCount}}' aos-aos-1    
 docker logs aos-aos-1 2>&1 | grep -c 'NAO tem fonte de preco'                    # 0
 ```
 
+### Ligar o OCR — a tool `ocr_read` (AOS-530, ADR-042) — nada ligado hoje
+
+A `ocr_read` lê uma imagem (PNG ou JPEG) da pasta semeada e devolve o texto transcrito por um
+**modelo de visão**, por **uma** chamada ao Model Gateway do nó — o mesmo dos turnos, com a
+allowlist assinada, o perfil da rota, a comparação do modelo servido e a tabela de preços —, com o
+**token NHI do run** e o run e o passo da tool call. É mediada pelo RM como qualquer tool
+(`cap:fs.read`, recurso `doc://{doc_id}`; **uma leitura por run**, partilhada com a `doc_read`, SÓ
+com `cap:fs.read` em `AOS_PRIVILEGED_CAPS` — passo 6b abaixo). Não corre na sandbox nem fala com o proxy directamente. O
+resultado é JSON `aos-ocr/v1` (texto, `sha256`, tamanho e formato da imagem, alias, modelo servido,
+digest do perfil, digest da instrução, motor `modelo`), `untrusted` como o de qualquer tool. O
+replay usa o resultado capturado e **não** volta a chamar o modelo.
+
+**Sem a entrada `ocr_read` no `tools.json`, o nó é o de antes** — o arranque, o pedido ao titular
+byte a byte e o `/metrics`. Pôr a entrada é um acto do dono, **por PR ao repositório** (passo 7).
+
+**O que esta versão AINDA NÃO faz — o custo no run (AOS-530, peça 3b).** O custo que o gateway
+mede pela tabela de preços vai só ao span `aos.activity`: **não** há evento durável do custo, ele
+**não** conta no consumo durável do run e **não** há reserva no tecto em dólares
+(`AOS_BUDGET_MAX_COST_MICRO_USD`) antes da chamada. Um run com o tecto em dólares ligado pode gastar
+em `ocr_read` além do tecto até a 3b entrar. O arranque di-lo na linha da tool.
+
+**Passos do dono, por ordem.** Cada um sem o seguinte é inerte; o nó só arranca com a tool quando
+todos estão feitos (as recusas estão abaixo).
+
+1. **A allowlist re-assinada** com o alias `ocr-visao` no board do nó (`board-eu`, regiões `eu` e
+   `eu-west`) — e a **release** que a embebe; ou um bundle externo assinado
+   (`AOS_MODEL_ALLOWLIST_BUNDLE_DIR` + `AOS_MODEL_ALLOWLIST_TRUST_ANCHOR`). Não se reaproveita o
+   `gpt-4o-mini`.
+2. **O registo de entrada assinado de uso `tool`** para `ocr-visao`: o banco de ensaio na
+   experiência `ocr`, em modo real, com veredicto `qualificado`; `aos-ensaio qualificar-ocr`
+   prepara o registo por assinar (perfil com a capacidade `imagem`, sem `tools`, e o
+   `expected_model` da rota do proxy); o dono assina-o e põe os três ficheiros em
+   `/opt/aos/perfis-de-rota/` (secção «Perfis de rota assinados»), com
+   `AOS_MODEL_ROUTE_PROFILES_DIR=/etc/aos/perfis-de-rota` e a âncora dos perfis.
+3. **O preço do par** (`ocr-visao`, região do nó) na tabela do operador
+   (`/opt/aos/model-pricing/pricing.json`), se `AOS_MODEL_PRICING_PATH` estiver definida — sem ele,
+   com a contabilidade composta, o nó não arranca.
+4. **A rota no proxy**: descomentar o bloco `ocr-visao` no `litellm/config.yaml` **do servidor**
+   (o do repositório é a semente e o deploy nunca o reescreve), com o modelo medido
+   (`openrouter/anthropic/claude-haiku-5.5`) e, no `api_key`, a **mesma** variável que a rota do
+   titular já usa no `config.yaml` do servidor (o titular vai pela OpenRouter): não se cria uma
+   chave nova. O `expected_model` do registo assinado tem de ser este
+   `model`; com `AOS_MODEL_ROUTE_GOVERNANCE=enforce`, um modelo servido diferente faz a tool falhar.
+5. **As imagens** em `/opt/aos/gvisor/seed/` (a pasta que o serviço `gvisor` já monta), só no
+   nível de topo e como **ficheiros regulares**: subpastas, ligações simbólicas (nem para dentro
+   da pasta se seguem), FIFOs e, em unix, ficheiros com mais de uma ligação física são recusados,
+   e um nome acabado em `.` ou espaço também. Legíveis pelo uid 65532 (pasta 0755, ficheiros
+   0644) — um ficheiro sem permissão de leitura sai `ficheiro_ilegivel`. O compose monta-a no nó, só de
+   leitura, em `/etc/aos/ocr-seed`.
+6. **A variável** no `.env`: `AOS_OCR_SEED_DIR=/etc/aos/ocr-seed`.
+6b. **(Opcional) Uma leitura por run:** `cap:fs.read` em `AOS_PRIVILEGED_CAPS` (por exemplo
+   `cap:http.post,cap:fs.read`). Sem ela a regra «uma leitura por run» NÃO vale: um run pode ler
+   várias imagens (e pagar uma chamada por cada). Lê antes o aviso no `docker-compose.prod.yml`,
+   junto de `AOS_PRIVILEGED_CAPS`: armar `cap:fs.read` muda também a `doc_read` de todos os runs.
+7. **A entrada no `tools.json` — por PR ao repositório e uma release, NUNCA editando o servidor.**
+   O `deploy/server/model-tools/tools.json` do repositório é a fonte: o deploy copia a pasta
+   `model-tools/` para `/opt/aos/model-tools/` por `rsync` **sem** `--ignore-existing`
+   (`.github/workflows/deploy.yml`), pelo que uma edição feita à mão no servidor é desfeita no
+   deploy seguinte. A entrada, por exemplo:
+
+   ```json
+   {
+     "name": "ocr_read",
+     "description": "Transcreve o texto de uma imagem (PNG ou JPEG) da pasta de documentos, por id.",
+     "parameters": {
+       "type": "object",
+       "properties": { "doc_id": { "type": "string", "description": "id da imagem a transcrever" } },
+       "required": ["doc_id"]
+     },
+     "capability": "cap:fs.read",
+     "reversibility": "reversible",
+     "mutation": "none",
+     "resource_type": "file",
+     "resource_value": "doc://{doc_id}",
+     "resource_region": "eu-west",
+     "egress": "external",
+     "modelo": { "alias": "ocr-visao" }
+   }
+   ```
+
+   O bloco `modelo` é **exclusivo** do `sandbox` (os dois recusam o arranque), só a `ocr_read` o
+   pode ter, e a `capability` e o `resource_value` têm de ser **exactamente** os de cima; um nome
+   repetido no registo recusa o arranque. O `egress` declarado é `external`: a imagem **sai do
+   servidor** para o fornecedor do modelo (pelo gateway do nó e pelo proxy — ADR-042 §4). O que o
+   declarado decide: **no RM** do nó o egress vem da capability (`cap:fs.*` ⇒ sem egress), e o
+   campo só entra no contrato do catálogo assinado (`AOS_MODEL_TOOLS_REGISTER`) e no `GET /tools`;
+   **no `aos-orq`** o egress declarado conta para a classe de risco do nó do plano, e portanto
+   para a aprovação automática. A `resource_region` alinha-se ao board, como a da `doc_read`.
+   **Para um plano do `aos-orq` usar a tool**, o `orq/snapshot.json` precisa também da entrada
+   `ocr_read`: o mesmo nome, o `digest` do contrato que o nó serve em `GET /tools`, e `egress`,
+   `reversibility` e `mutation` não menos arriscados do que os do nó (o `aos-orq` confere-os
+   contra o catálogo do nó e recusa o snapshot com a divergência — `cmd/aos-orq/snapshot.go`,
+   `compararSnapshotComCatalogo`).
+8. **Recriar o nó** e confirmar: a linha de arranque `tool ocr_read LIGADA (EPIC-07/AOS-530,
+   ADR-042)` (com o alias, o digest do perfil e a postura do custo), e no `/metrics`
+   `aos_ocr_read_total{resultado="..."}`.
+
+**Onde fica selada a chamada.** No selo de governação por chamada do gateway
+(`modelgw-gov:<board>`, o da allowlist), no audit de governação do gateway (`AOS_MODEL_AUDIT_PATH`):
+o principal do token do run, o run, o passo da tool call e a **tool de origem** numa obligation
+`model_call_origin` (`{"tool": "ocr_read"}`). Um turno do titular não leva essa obligation, e o
+selo dele é byte a byte o de antes. (O ADR-042 fala do «selo de atribuição»: o nó não compõe o
+recorder de atribuição, e é por isso o selo de governação que leva a tool de origem.)
+
+**O que o arranque recusa**, com a `ocr_read` no `tools.json`: sem `AOS_OCR_SEED_DIR` ou com a
+pasta ilegível (`ErrOCRSemPasta`); o alias fora da allowlist em vigor para o board e a região do nó
+(`ErrOCRAliasForaDaAllowlist`); sem o registo assinado de uso `tool` para o alias
+(`ErrOCRSemRegistoTool`); com a contabilidade de custo composta, sem preço para o par
+(`ErrOCRSemPreco`); sem o gateway composto a partir do ambiente (`ErrOCRSemGateway`); uma entrada
+com `sandbox` e `modelo` (`ErrModelToolBindingConflict`).
+
+**As falhas da tool** são causas de vocabulário fechado, no erro da tool (que o run vê) e em
+`aos_ocr_read_total`: `sem_credencial`, `ficheiro_fora_da_raiz` (só o que a raiz recusa por
+escape, ou um separador no nome), `nome_nao_canonico` (acaba em `.` ou espaço),
+`ficheiro_em_falta`, `ficheiro_ilegivel` (sem permissão, ou erro de leitura),
+`ficheiro_nao_regular`, `ficheiro_com_varias_ligacoes` (unix), `ficheiro_trocado` (o ficheiro aberto não é o que o nome era), `ficheiro_grande` (> 4 MiB),
+`formato_nao_aceite` (todas antes de chamar o modelo, sem custo), `tempo_esgotado`, `cancelado`, `erro_do_gateway` (sem o corpo do
+provider), `modelo_servido_diferente` (em `enforce`), `ocr_cortado` (`finish_reason` `length`;
+`max_tokens` 4096), `ocr_vazio`, `resposta_invalida`. Sem nova tentativa e sem failover.
+
+**O prazo efectivo** de uma chamada é o MENOR entre os 60 s da tool e o tempo máximo de cada
+pedido ao modelo do nó, `AOS_MODEL_EGRESS_TIMEOUT` (omissão do gateway 30 s em produção, 60 s
+fora dela; o deploy de produção usa 120 s). Quando é o do gateway a esgotar-se primeiro, a
+causa pode sair `erro_do_gateway` em vez de `tempo_esgotado`.
+
+**A alternativa local — o Tesseract no gVisor — DESCRITA, NÃO IMPLEMENTADA.** É o caminho para
+documentos que **não podem sair do servidor**: outra ligação da mesma tool (`motor: local` no
+resultado), sem rede e sem custo. O AOS-529 mediu-o a 82,5% dos factos (76,2% com acentos exactos),
+~0,9 s por imagem, dentro dos limites do gVisor. O que falta para a ter (AOS-530, «A alternativa
+local»): um verbo `ocr` no guest com a regra de caminho do `read`; o motor no rootfs do sandbox com
+versão fixa e digest verificado no build — o Tesseract precisa da Leptonica e de outras
+bibliotecas, pelo que o rootfs passa a ser uma árvore copiada de uma imagem e montada só de leitura;
+o `pdftoppm` se houver PDF; o resultado `aos-ocr/v1` com `motor: local`, a versão do motor, sem
+modelo servido e com custo zero declarado. Usá-la quando os documentos não puderem ir ao fornecedor
+do modelo; nesse caso a ligação `modelo` não se usa.
+
 ### A forma da resposta do provider — `AOS_MODEL_RESPONSE_SHAPE` (AOS-507)
 
 Uma resposta que gasta tokens de saída e chega com o texto vazio fecha `empty_output`, e o registo

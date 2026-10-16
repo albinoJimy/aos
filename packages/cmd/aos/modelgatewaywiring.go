@@ -363,6 +363,12 @@ func newGatewayModelClientComPerfis(verifier authn.Verifier, baseURL, model, api
 		opts = append(opts, modelgateway.WithRouteProfileSet(conjunto))
 	}
 	opts = append(opts, extra...)
+	// AOS-530 (ADR-042 §2.1): a tool `ocr_read`, quando composta, chama ESTE gateway — o mesmo
+	// objecto que serve os turnos, não um segundo —, e é no audit de governação dele que a chamada
+	// fica selada.
+	if assinados != nil && assinados.ocr != nil {
+		assinados.ocr.gw, assinados.ocr.govAudit = gw, govAudit
+	}
 	titular := modelgateway.NewModelClient(gw, model, opts...)
 	// AOS-520 (ADR-041 §2.5): UM GATEWAY, UM ADAPTADOR POR ALIAS. Com um perfil assinado para um
 	// alias que NÃO é o do titular, o cliente de modelo passa a ser um despachante: o adaptador do

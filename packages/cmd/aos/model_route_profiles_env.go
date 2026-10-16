@@ -116,6 +116,10 @@ type perfisAssinados struct {
 	// despachante é o cliente de modelo por alias do nó, quando existe (um perfil assinado
 	// não-titular carregado). É por ele que o disjuntor LIGADO vê o resultado de cada pedido.
 	despachante *clientePorModelo
+	// ocr é a tool `ocr_read` composta (AOS-530, ADR-042), quando o registo de tools a declara: a
+	// tool chama o alias de um registo de uso `tool` desta pasta, pelo MESMO gateway. nil ⇒ sem a
+	// tool. O gateway liga-se-lhe na composição ([newGatewayModelClientComPerfis]).
+	ocr *ligacaoOCR
 }
 
 // perfis devolve o conjunto de perfis do nó: a tabela em código (nil) sem pasta ou sem registos.

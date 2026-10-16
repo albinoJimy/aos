@@ -54,6 +54,12 @@ const capabilityModelInvoke = "model:invoke"
 // registo (não só pela partição).
 const obligationGovernance = "governance"
 
+// ObligationOrigin é o tipo da obligation que sela a ORIGEM de uma chamada feita por uma tool
+// (AOS-530, ADR-042 §2.2): `Params["tool"]` é [GovRecord.OriginTool]. É o mesmo tipo e a mesma forma
+// do selo de atribuição (metering/attribution), e é por este selo — o de governação por chamada — que
+// a tool de origem fica no audit do nó, que não compõe o recorder de atribuição.
+const ObligationOrigin = "model_call_origin"
+
 // Hop é um elo (sub → act_as) da cadeia on-behalf-of, em forma primitiva.
 type Hop struct {
 	Sub   string
@@ -88,6 +94,10 @@ type GovRecord struct {
 	// RunID/StepID correlacionam com a trajectória (opcional).
 	RunID  string
 	StepID string
+	// OriginTool é a tool que fez a chamada (AOS-530, ADR-042 §2.2); vazio num turno do executor.
+	// Quando não vazio, sela-se numa obligation própria [ObligationOrigin], a seguir à de governação;
+	// vazio, o selo é, byte a byte, o de sempre.
+	OriginTool string
 	// Timestamp é observacional (a ordem no WORM é o AuditSeq).
 	Timestamp time.Time
 }
@@ -213,6 +223,11 @@ func (r *Recorder) seal(ctx context.Context, rec GovRecord, extra map[string]str
 			Type:   obligationGovernance,
 			Params: params,
 		}},
+	}
+	// AOS-530: uma chamada feita por uma tool sela a tool numa obligation à parte. Num turno do
+	// executor não há obligation nova e o registo é, byte a byte, o de antes.
+	if rec.OriginTool != "" {
+		ar.Obligations = append(ar.Obligations, audit.Obligation{Type: ObligationOrigin, Params: map[string]string{"tool": rec.OriginTool}})
 	}
 	return r.store.Append(ctx, ar)
 }

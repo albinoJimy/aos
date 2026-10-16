@@ -2419,6 +2419,22 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// AOS-530 — A TOOL `ocr_read`, POR RESULTADO. Só sai com a tool no registo de tools: sem ela a
+	// família não existe e o /metrics é o de antes. Uma amostra por resultado do vocabulário
+	// fechado, sempre presentes com a tool ligada: o zero é um zero verdadeiro.
+	if h.node != nil && h.node.ocr != nil {
+		for i, r := range ocrCausas() {
+			labels := `{resultado="` + r + `"}`
+			if i == 0 {
+				g("aos_ocr_read_total",
+					"Execucoes da tool ocr_read desde o arranque, por resultado (AOS-530, ADR-042): transcrito, ou a causa da falha — entrada_invalida, sem_credencial, ficheiro_fora_da_raiz, nome_nao_canonico, ficheiro_em_falta, ficheiro_ilegivel, ficheiro_nao_regular, ficheiro_com_varias_ligacoes, ficheiro_trocado, ficheiro_grande, formato_nao_aceite (todas antes de chamar o modelo, sem custo), tempo_esgotado, cancelado, erro_do_gateway, modelo_servido_diferente, ocr_cortado, ocr_vazio, resposta_invalida. Vocabulario fechado: nenhum texto do modelo, nenhum byte da imagem.",
+					"counter", float64(h.node.ocr.lido(r)), labels)
+				continue
+			}
+			amostra("aos_ocr_read_total", labels, float64(h.node.ocr.lido(r)))
+		}
+	}
+
 	// AOS-507 — TURNOS PELA FORMA DA RESPOSTA DO PROVIDER. Só sai com a medição ligada: com `off` a
 	// família não existe, e o /metrics é o de antes. Uma amostra por série dos três vocabulários
 	// fechados (342 no máximo), sempre presentes: o zero é um zero verdadeiro.
