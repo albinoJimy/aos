@@ -2427,7 +2427,7 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			labels := `{resultado="` + r + `"}`
 			if i == 0 {
 				g("aos_ocr_read_total",
-					"Execucoes da tool ocr_read desde o arranque, por resultado (AOS-530, ADR-042): transcrito, ou a causa da falha — entrada_invalida, sem_credencial, ficheiro_fora_da_raiz, ficheiro_em_falta, ficheiro_nao_regular, ficheiro_grande, formato_nao_aceite (todas antes de chamar o modelo, sem custo), tempo_esgotado, cancelado, erro_do_gateway, modelo_servido_diferente, ocr_cortado, ocr_vazio, resposta_invalida. Vocabulario fechado: nenhum texto do modelo, nenhum byte da imagem.",
+					"Execucoes da tool ocr_read desde o arranque, por resultado (AOS-530, ADR-042): transcrito, ou a causa da falha — entrada_invalida, sem_credencial, ficheiro_fora_da_raiz, nome_nao_canonico, ficheiro_em_falta, ficheiro_ilegivel, ficheiro_nao_regular, ficheiro_com_varias_ligacoes, ficheiro_grande, formato_nao_aceite (todas antes de chamar o modelo, sem custo), tempo_esgotado, cancelado, erro_do_gateway, modelo_servido_diferente, ocr_cortado, ocr_vazio, resposta_invalida. Vocabulario fechado: nenhum texto do modelo, nenhum byte da imagem.",
 					"counter", float64(h.node.ocr.lido(r)), labels)
 				continue
 			}

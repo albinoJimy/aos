@@ -1,0 +1,51 @@
+//go:build unix
+
+package main
+
+// AOS-530 (peça 3a, revisão) — os casos de leitura que só unix deixa montar com o disco real: uma
+// ligação física (o mesmo inode também fora da raiz), uma ligação simbólica para DENTRO da raiz, um
+// FIFO, e um ficheiro sem permissão de leitura.
+
+import (
+	"os"
+	"path/filepath"
+	"syscall"
+	"testing"
+
+	"github.com/aos-ref/platform/model-gateway/port"
+)
+
+func TestAOS530_OCR_LeituraUnix(t *testing.T) {
+	fora, pasta := t.TempDir(), t.TempDir()
+	png := aos530PNG(t)
+	if err := os.WriteFile(filepath.Join(fora, "segredo.png"), png, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pasta, "fatura.png"), png, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	casos := map[string]string{}
+	if os.Link(filepath.Join(fora, "segredo.png"), filepath.Join(pasta, "ligada.png")) == nil {
+		casos["ligada.png"] = ocrCausaVariasLigacoes
+	}
+	if os.Symlink("fatura.png", filepath.Join(pasta, "atalho.png")) == nil {
+		casos["atalho.png"] = ocrCausaNaoRegular
+	}
+	if syscall.Mkfifo(filepath.Join(pasta, "fifo.png"), 0o600) == nil {
+		casos["fifo.png"] = ocrCausaNaoRegular
+	}
+	if os.Geteuid() != 0 {
+		if err := os.WriteFile(filepath.Join(pasta, "fechada.png"), png, 0o000); err == nil {
+			casos["fechada.png"] = ocrCausaIlegivel
+		}
+	}
+	for doc, causa := range casos {
+		t.Run(doc, func(t *testing.T) {
+			gw := &aos530GwFalso{resp: aos530Resposta("texto", port.FinishStop, 1)}
+			l := aos530LigacaoFalsa(t, pasta, gw)
+			if _, _, err := l.executar(aos530ComCredencial(), aos530Entrada(doc)); causaDaFalhaOCR(err) != causa || gw.contagem() != 0 {
+				t.Fatalf("%s: quer %s sem pedido; veio %v pedidos=%d", doc, causa, err, gw.contagem())
+			}
+		})
+	}
+}

@@ -26,8 +26,9 @@ package main
 //     ANTES de ler o ficheiro: nunca se forja um principal (AOS-278).
 //   - A LEITURA (§2.4). De uma montagem só de leitura da pasta semeada, por `AOS_OCR_SEED_DIR`
 //     (não `AOS_SANDBOX_SEED_DIR`, que carrega a pasta inteira em memória), confinada com
-//     [os.Root], só no nível de topo, só ficheiros regulares, até [port.MaxImageBytes], PNG ou JPEG
-//     pelos primeiros bytes. Tudo isto ANTES de chamar o modelo, sem custo.
+//     [os.Root], só no nível de topo, sem seguir ligações simbólicas, só ficheiros regulares (conferidos
+//     outra vez no descritor aberto), até [port.MaxImageBytes], PNG ou JPEG pelos primeiros bytes.
+//     Tudo isto ANTES de chamar o modelo, sem custo ([ligacaoOCR.lerImagem]).
 //   - O PEDIDO (§2.4). A instrução fixa e versionada que o AOS-529 mediu ([ocrInstrucaoSistema],
 //     [ocrInstrucaoPedido]), na mesma forma — mensagem `system` com a instrução, mensagem `user`
 //     com o pedido e a parte de imagem —; `Tools` vazio; `max_tokens` [ocrMaxTokens]; prazo
@@ -124,21 +125,33 @@ func ocrDigestDaInstrucao(sistema, pedido string) string {
 // run) e o rótulo da métrica. Nenhuma leva texto do modelo, corpo do provider, bytes da imagem ou
 // o `doc_id`.
 const (
-	ocrCausaEntrada        = "entrada_invalida"
-	ocrCausaSemNHI         = "sem_credencial"
-	ocrCausaForaDaRaiz     = "ficheiro_fora_da_raiz"
-	ocrCausaEmFalta        = "ficheiro_em_falta"
-	ocrCausaNaoRegular     = "ficheiro_nao_regular"
-	ocrCausaGrande         = "ficheiro_grande"
-	ocrCausaFormato        = "formato_nao_aceite"
-	ocrCausaTempo          = "tempo_esgotado"
-	ocrCausaCancelado      = "cancelado"
-	ocrCausaGateway        = "erro_do_gateway"
-	ocrCausaModeloServido  = "modelo_servido_diferente"
-	ocrCausaCortado        = "ocr_cortado"
-	ocrCausaVazio          = "ocr_vazio"
-	ocrCausaRespostaForma  = "resposta_invalida"
-	ocrResultadoTranscrito = "transcrito"
+	ocrCausaEntrada    = "entrada_invalida"
+	ocrCausaSemNHI     = "sem_credencial"
+	ocrCausaForaDaRaiz = "ficheiro_fora_da_raiz"
+	ocrCausaEmFalta    = "ficheiro_em_falta"
+	ocrCausaNaoRegular = "ficheiro_nao_regular"
+	ocrCausaGrande     = "ficheiro_grande"
+	// ocrCausaIlegivel — o ficheiro existe e o processo não o pode ler (permissão, erro de E/S).
+	// Distinta de `ficheiro_fora_da_raiz`, que é só o que o [os.Root] recusa por escape, e de
+	// `ficheiro_em_falta`: cada uma manda o operador procurar um defeito diferente.
+	ocrCausaIlegivel = "ficheiro_ilegivel"
+	// ocrCausaVariasLigacoes — um ficheiro regular com mais de uma ligação física (hardlink), em
+	// unix: o mesmo inode pode estar também fora da raiz, e o [os.Root] não o vê. Causa própria, e
+	// não `ficheiro_nao_regular`: o ficheiro É regular, e o operador tem de saber que é a ligação.
+	ocrCausaVariasLigacoes = "ficheiro_com_varias_ligacoes"
+	// ocrCausaNomeNaoCanonico — um nome que o sistema de ficheiros normaliza para outro (no
+	// Windows, um `.` ou um espaço no fim): o ficheiro lido não seria o que o RM decidiu e o WORM
+	// selou.
+	ocrCausaNomeNaoCanonico = "nome_nao_canonico"
+	ocrCausaFormato         = "formato_nao_aceite"
+	ocrCausaTempo           = "tempo_esgotado"
+	ocrCausaCancelado       = "cancelado"
+	ocrCausaGateway         = "erro_do_gateway"
+	ocrCausaModeloServido   = "modelo_servido_diferente"
+	ocrCausaCortado         = "ocr_cortado"
+	ocrCausaVazio           = "ocr_vazio"
+	ocrCausaRespostaForma   = "resposta_invalida"
+	ocrResultadoTranscrito  = "transcrito"
 )
 
 // ocrCausas são todos os resultados, pela ordem da métrica: o de sucesso e as causas de falha.
@@ -146,7 +159,8 @@ func ocrCausas() []string {
 	return []string{
 		ocrResultadoTranscrito,
 		ocrCausaEntrada, ocrCausaSemNHI,
-		ocrCausaForaDaRaiz, ocrCausaEmFalta, ocrCausaNaoRegular, ocrCausaGrande, ocrCausaFormato,
+		ocrCausaForaDaRaiz, ocrCausaNomeNaoCanonico, ocrCausaEmFalta, ocrCausaIlegivel, ocrCausaNaoRegular,
+		ocrCausaVariasLigacoes, ocrCausaGrande, ocrCausaFormato,
 		ocrCausaTempo, ocrCausaCancelado, ocrCausaGateway, ocrCausaModeloServido,
 		ocrCausaCortado, ocrCausaVazio, ocrCausaRespostaForma,
 	}
@@ -244,9 +258,11 @@ type ligacaoOCR struct {
 	alias, region, board string
 	// perfilDigest é o digest do perfil do registo assinado de uso `tool` do alias.
 	perfilDigest string
-	// raiz é a pasta semeada, aberta com [os.Root] no arranque; pasta é o caminho, para o arranque.
-	raiz  *os.Root
-	pasta string
+	// raiz é a pasta semeada, aberta com [os.Root] no arranque ([raizOS]); pasta é o caminho, para
+	// o arranque. raizAberta é o [os.Root] que [ligacaoOCR.fechar] fecha.
+	raiz       raizDoOCR
+	raizAberta *os.Root
+	pasta      string
 	// gw é o gateway do nó — o mesmo dos turnos. Ligado na composição do gateway.
 	gw gatewayDoOCR
 	// govAudit é o audit de governação desse gateway: onde a chamada da tool fica selada (o selo
@@ -317,7 +333,7 @@ func comporLigacaoOCR(spec *modelToolSpec, assinados *perfisAssinados, externa *
 func novaLigacaoOCR(alias, region, board, perfilDigest, pasta string, raiz *os.Root) *ligacaoOCR {
 	l := &ligacaoOCR{
 		alias: alias, region: region, board: board, perfilDigest: perfilDigest,
-		raiz: raiz, pasta: pasta, prazo: ocrPrazo,
+		raiz: raizOS{raiz}, raizAberta: raiz, pasta: pasta, prazo: ocrPrazo,
 		digestDaInstrucao: ocrDigestDaInstrucao(ocrInstrucaoSistema, ocrInstrucaoPedido),
 		contagem:          map[string]*atomic.Int64{},
 	}
@@ -329,8 +345,8 @@ func novaLigacaoOCR(alias, region, board, perfilDigest, pasta string, raiz *os.R
 
 // fechar liberta a pasta. Idempotente e nil-safe.
 func (l *ligacaoOCR) fechar() {
-	if l != nil && l.raiz != nil {
-		_ = l.raiz.Close()
+	if l != nil && l.raizAberta != nil {
+		_ = l.raizAberta.Close()
 	}
 }
 
@@ -433,49 +449,101 @@ func comporReescritas(sandboxRw, ocrRw func(referencemonitor.Call) (referencemon
 	}
 }
 
+// raizDoOCR é o que a leitura usa da pasta: o Lstat do nome e a abertura só de leitura. É o
+// [os.Root] da pasta ([raizOS]); os testes trocam-no para simular o que o disco não deixa simular
+// em todos os sistemas (sem permissão, um ficheiro trocado entre o Lstat e a abertura).
+type raizDoOCR interface {
+	Lstat(nome string) (fs.FileInfo, error)
+	abrir(nome string) (ficheiroDoOCR, error)
+}
+
+// ficheiroDoOCR é o ficheiro aberto: lê-se, e o Stat é sobre o DESCRITOR, não sobre o caminho.
+type ficheiroDoOCR interface {
+	io.Reader
+	Stat() (fs.FileInfo, error)
+	Close() error
+}
+
+// raizOS é o [os.Root] da pasta semeada.
+type raizOS struct{ *os.Root }
+
+// abrir abre só de leitura, com [ocrFlagsDeAbertura] (O_NONBLOCK em unix: um FIFO posto no lugar
+// do ficheiro entre o Lstat e a abertura não pendura a tool; a verificação no descritor recusa-o).
+func (r raizOS) abrir(nome string) (ficheiroDoOCR, error) {
+	return r.OpenFile(nome, os.O_RDONLY|ocrFlagsDeAbertura, 0)
+}
+
+// causaDoErroDeFicheiro classifica um erro do Lstat ou da abertura: em falta, sem permissão, ou —
+// o resto, que é o que o [os.Root] recusa por escape — fora da raiz.
+func causaDoErroDeFicheiro(err error) string {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return ocrCausaEmFalta
+	case errors.Is(err, fs.ErrPermission):
+		return ocrCausaIlegivel
+	default:
+		return ocrCausaForaDaRaiz
+	}
+}
+
+// conferirFicheiro é a decisão sobre um FileInfo: regular, até ao tecto, e uma só ligação física.
+func conferirFicheiro(info fs.FileInfo) string {
+	switch {
+	case !info.Mode().IsRegular():
+		// Inclui as ligações simbólicas: no nível de topo não se seguem, nem para dentro da raiz.
+		return ocrCausaNaoRegular
+	case info.Size() > port.MaxImageBytes:
+		return ocrCausaGrande
+	case ligacoesMultiplas(info):
+		return ocrCausaVariasLigacoes
+	}
+	return ""
+}
+
 // lerImagem lê a imagem `doc` da pasta, com os limites do ADR-042 §2.4, e devolve a parte de
 // imagem e o formato, ou a causa da recusa. Nada aqui chama o modelo.
+//
+// A DECISÃO FINAL É SOBRE O DESCRITOR. O Lstat do nome é um filtro barato (recusa cedo uma ligação
+// simbólica, uma pasta, um ficheiro grande); mas entre ele e a abertura o nome pode ser trocado. Por
+// isso, depois de abrir, o Stat do DESCRITOR volta a conferir tudo — regular, tamanho, ligações — e
+// a leitura é limitada ao tecto. O que se lê é o que se conferiu.
 func (l *ligacaoOCR) lerImagem(doc string) (port.ImagePart, string, string) {
 	// SÓ O NÍVEL DE TOPO. Um separador, `..`, um caminho absoluto, uma unidade ou um `:` nunca
 	// nomeiam um ficheiro do topo da pasta: recusados antes de tocar no disco. O [os.Root] recusa
-	// de novo o que sair da raiz (incluindo por ligação simbólica).
+	// de novo o que sair da raiz.
 	if doc == "." || doc == ".." || strings.ContainsAny(doc, `/\:`+"\x00") || filepath.IsAbs(doc) || filepath.VolumeName(doc) != "" {
 		return port.ImagePart{}, "", ocrCausaForaDaRaiz
 	}
+	// UM NOME QUE O SISTEMA NORMALIZA lê outro ficheiro que o selado: no Windows, `fatura.png.` e
+	// `fatura.png ` abrem `fatura.png`. Recusados em todos os sistemas (nenhum nome legítimo da pasta
+	// acaba assim). A diferença de maiúsculas num sistema que não as distingue fica declarada no
+	// README do nó.
+	if strings.HasSuffix(doc, ".") || strings.HasSuffix(doc, " ") {
+		return port.ImagePart{}, "", ocrCausaNomeNaoCanonico
+	}
 	info, err := l.raiz.Lstat(doc)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return port.ImagePart{}, "", ocrCausaEmFalta
-		}
-		return port.ImagePart{}, "", ocrCausaForaDaRaiz
+		return port.ImagePart{}, "", causaDoErroDeFicheiro(err)
 	}
-	if info.Mode()&fs.ModeSymlink != 0 {
-		// Uma ligação simbólica só se segue DENTRO da raiz: o [os.Root] recusa a que sai dela.
-		if info, err = l.raiz.Stat(doc); err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				return port.ImagePart{}, "", ocrCausaEmFalta
-			}
-			return port.ImagePart{}, "", ocrCausaForaDaRaiz
-		}
+	if causa := conferirFicheiro(info); causa != "" {
+		return port.ImagePart{}, "", causa
 	}
-	if !info.Mode().IsRegular() {
-		return port.ImagePart{}, "", ocrCausaNaoRegular
-	}
-	if info.Size() > port.MaxImageBytes {
-		return port.ImagePart{}, "", ocrCausaGrande
-	}
-	f, err := l.raiz.Open(doc)
+	f, err := l.raiz.abrir(doc)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return port.ImagePart{}, "", ocrCausaEmFalta
-		}
-		return port.ImagePart{}, "", ocrCausaForaDaRaiz
+		return port.ImagePart{}, "", causaDoErroDeFicheiro(err)
 	}
 	defer f.Close()
-	// O tamanho volta a ser limitado na LEITURA: o ficheiro pode ter crescido depois do Stat.
+	noDescritor, err := f.Stat()
+	if err != nil {
+		return port.ImagePart{}, "", ocrCausaIlegivel
+	}
+	if causa := conferirFicheiro(noDescritor); causa != "" {
+		return port.ImagePart{}, "", causa
+	}
+	// O tamanho volta a ser limitado na LEITURA: o ficheiro pode crescer depois do Stat.
 	dados, err := io.ReadAll(io.LimitReader(f, port.MaxImageBytes+1))
 	if err != nil {
-		return port.ImagePart{}, "", ocrCausaEmFalta
+		return port.ImagePart{}, "", ocrCausaIlegivel
 	}
 	if len(dados) > port.MaxImageBytes {
 		return port.ImagePart{}, "", ocrCausaGrande

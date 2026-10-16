@@ -173,10 +173,11 @@ func TestAOS530_OCR_LimitesAntesDoCusto(t *testing.T) {
 		{"texto.png", ocrCausaFormato},
 		{"vazio.png", ocrCausaFormato},
 	}
-	// FORA DA RAIZ POR LIGAÇÃO SIMBÓLICA — onde o sistema deixa criar uma (no Windows exige um
-	// privilégio que o CI pode não ter; aí o caso é dito e não corre).
+	// UMA LIGAÇÃO SIMBÓLICA NO TOPO não se segue (nem para dentro, nem para fora): não é um ficheiro
+	// regular. Onde o sistema deixa criar uma (no Windows exige um privilégio que o CI pode não ter;
+	// aí o caso é dito e não corre; o caso com a raiz falsa, abaixo, corre em todos).
 	if err := os.Symlink(filepath.Join(fora, "segredo.png"), filepath.Join(pasta, "ligacao.png")); err == nil {
-		casos = append(casos, struct{ doc, causa string }{"ligacao.png", ocrCausaForaDaRaiz})
+		casos = append(casos, struct{ doc, causa string }{"ligacao.png", ocrCausaNaoRegular})
 	} else {
 		t.Logf("sem ligacoes simbolicas neste sistema (%v): o caso da ligacao para fora da raiz nao corre aqui", err)
 	}

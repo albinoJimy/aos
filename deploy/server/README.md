@@ -2032,8 +2032,8 @@ A `ocr_read` lê uma imagem (PNG ou JPEG) da pasta semeada e devolve o texto tra
 **modelo de visão**, por **uma** chamada ao Model Gateway do nó — o mesmo dos turnos, com a
 allowlist assinada, o perfil da rota, a comparação do modelo servido e a tabela de preços —, com o
 **token NHI do run** e o run e o passo da tool call. É mediada pelo RM como qualquer tool
-(`cap:fs.read`, recurso `doc://{doc_id}`: **uma leitura por run**, partilhada com a `doc_read`, com
-`cap:fs.read` em `AOS_PRIVILEGED_CAPS`). Não corre na sandbox nem fala com o proxy directamente. O
+(`cap:fs.read`, recurso `doc://{doc_id}`; **uma leitura por run**, partilhada com a `doc_read`, SÓ
+com `cap:fs.read` em `AOS_PRIVILEGED_CAPS` — passo 6b abaixo). Não corre na sandbox nem fala com o proxy directamente. O
 resultado é JSON `aos-ocr/v1` (texto, `sha256`, tamanho e formato da imagem, alias, modelo servido,
 digest do perfil, digest da instrução, motor `modelo`), `untrusted` como o de qualquer tool. O
 replay usa o resultado capturado e **não** volta a chamar o modelo.
@@ -2069,10 +2069,17 @@ todos estão feitos (as recusas estão abaixo).
    titular já usa no `config.yaml` do servidor (o titular vai pela OpenRouter): não se cria uma
    chave nova. O `expected_model` do registo assinado tem de ser este
    `model`; com `AOS_MODEL_ROUTE_GOVERNANCE=enforce`, um modelo servido diferente faz a tool falhar.
-5. **As imagens** em `/opt/aos/gvisor/seed/` (a pasta que o serviço `gvisor` já monta), nomes sem
-   subpastas, legíveis pelo uid 65532 (pasta 0755, ficheiros 0644). O compose monta-a no nó, só de
+5. **As imagens** em `/opt/aos/gvisor/seed/` (a pasta que o serviço `gvisor` já monta), só no
+   nível de topo e como **ficheiros regulares**: subpastas, ligações simbólicas (nem para dentro
+   da pasta se seguem), FIFOs e, em unix, ficheiros com mais de uma ligação física são recusados,
+   e um nome acabado em `.` ou espaço também. Legíveis pelo uid 65532 (pasta 0755, ficheiros
+   0644) — um ficheiro sem permissão de leitura sai `ficheiro_ilegivel`. O compose monta-a no nó, só de
    leitura, em `/etc/aos/ocr-seed`.
 6. **A variável** no `.env`: `AOS_OCR_SEED_DIR=/etc/aos/ocr-seed`.
+6b. **(Opcional) Uma leitura por run:** `cap:fs.read` em `AOS_PRIVILEGED_CAPS` (por exemplo
+   `cap:http.post,cap:fs.read`). Sem ela a regra «uma leitura por run» NÃO vale: um run pode ler
+   várias imagens (e pagar uma chamada por cada). Lê antes o aviso no `docker-compose.prod.yml`,
+   junto de `AOS_PRIVILEGED_CAPS`: armar `cap:fs.read` muda também a `doc_read` de todos os runs.
 7. **A entrada no `tools.json`** (`/opt/aos/model-tools/tools.json`), por exemplo:
 
    ```json
@@ -2119,11 +2126,18 @@ pasta ilegível (`ErrOCRSemPasta`); o alias fora da allowlist em vigor para o bo
 com `sandbox` e `modelo` (`ErrModelToolBindingConflict`).
 
 **As falhas da tool** são causas de vocabulário fechado, no erro da tool (que o run vê) e em
-`aos_ocr_read_total`: `sem_credencial`, `ficheiro_fora_da_raiz`, `ficheiro_em_falta`,
-`ficheiro_nao_regular`, `ficheiro_grande` (> 4 MiB), `formato_nao_aceite` (todas antes de chamar
-o modelo, sem custo), `tempo_esgotado` (60 s), `cancelado`, `erro_do_gateway` (sem o corpo do
+`aos_ocr_read_total`: `sem_credencial`, `ficheiro_fora_da_raiz` (só o que a raiz recusa por
+escape, ou um separador no nome), `nome_nao_canonico` (acaba em `.` ou espaço),
+`ficheiro_em_falta`, `ficheiro_ilegivel` (sem permissão, ou erro de leitura),
+`ficheiro_nao_regular`, `ficheiro_com_varias_ligacoes` (unix), `ficheiro_grande` (> 4 MiB),
+`formato_nao_aceite` (todas antes de chamar o modelo, sem custo), `tempo_esgotado`, `cancelado`, `erro_do_gateway` (sem o corpo do
 provider), `modelo_servido_diferente` (em `enforce`), `ocr_cortado` (`finish_reason` `length`;
 `max_tokens` 4096), `ocr_vazio`, `resposta_invalida`. Sem nova tentativa e sem failover.
+
+**O prazo efectivo** de uma chamada é o MENOR entre os 60 s da tool e o tempo máximo de cada
+pedido ao modelo do nó, `AOS_MODEL_EGRESS_TIMEOUT` (omissão do gateway 30 s em produção, 60 s
+fora dela; o deploy de produção usa 120 s). Quando é o do gateway a esgotar-se primeiro, a
+causa pode sair `erro_do_gateway` em vez de `tempo_esgotado`.
 
 **A alternativa local — o Tesseract no gVisor — DESCRITA, NÃO IMPLEMENTADA.** É o caminho para
 documentos que **não podem sair do servidor**: outra ligação da mesma tool (`motor: local` no
