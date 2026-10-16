@@ -1513,9 +1513,9 @@ de ser escrita por ele. Os passos no servidor, por ordem, estão em «Ligar a fa
 
 | Ficheiro | O que é |
 |---|---|
-| `<rotulo>.registo.json` | `formato` (`aos-registo-de-entrada-de-perfil/1`), `board`, `regiao`, `perfil` (o JSON do `--perfil` do banco), `digest_do_perfil`, `digest_do_relatorio`, `digest_da_imagem_do_proxy` e `fatia_inicial_percentagem` (0 a 100). Os três digests copiam-se do relatório |
+| `<rotulo>.registo.json` | `formato` (`aos-registo-de-entrada-de-perfil/1`), `board`, `regiao`, `perfil` (o JSON do `--perfil` do banco), `digest_do_perfil`, `digest_do_relatorio`, `digest_da_imagem_do_proxy`, `fatia_inicial_percentagem` (0 a 100) e, opcional, `uso` (`run`, a omissão, ou `tool` — AOS-530). Os três digests copiam-se do relatório. Um registo `tool` é o perfil de um alias que só uma tool chama (a `ocr_read`): nunca é candidato, tem fatia 0, não pode ser do alias do titular, e cita um relatório `ocr` do modo real com veredicto `qualificado`, preparado pelo `aos-ensaio qualificar-ocr` |
 | `<rotulo>.registo.sig` | A assinatura do dono, escrita pelo `aos-issuer route-profile-sign` |
-| `<rotulo>.relatorio.json` | O relatório da qualificação (`aos-ensaio real --experiencia qualificacao`), tal como o banco o escreveu |
+| `<rotulo>.relatorio.json` | O relatório da qualificação (`aos-ensaio real --experiencia qualificacao`; para um registo `tool`, o da experiência `ocr`), tal como o banco o escreveu |
 
 Qualquer outro ficheiro na pasta faz o nó recusar arrancar.
 
