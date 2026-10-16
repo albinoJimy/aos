@@ -2041,11 +2041,55 @@ replay usa o resultado capturado e **não** volta a chamar o modelo.
 **Sem a entrada `ocr_read` no `tools.json`, o nó é o de antes** — o arranque, o pedido ao titular
 byte a byte e o `/metrics`. Pôr a entrada é um acto do dono, **por PR ao repositório** (passo 7).
 
-**O que esta versão AINDA NÃO faz — o custo no run (AOS-530, peça 3b).** O custo que o gateway
-mede pela tabela de preços vai só ao span `aos.activity`: **não** há evento durável do custo, ele
-**não** conta no consumo durável do run e **não** há reserva no tecto em dólares
-(`AOS_BUDGET_MAX_COST_MICRO_USD`) antes da chamada. Um run com o tecto em dólares ligado pode gastar
-em `ocr_read` além do tecto até a 3b entrar. O arranque di-lo na linha da tool.
+**O custo no run (AOS-530, peça 3b; ADR-042 §2.6).** Cada chamada tem duas metades:
+
+- **Antes**, com o orçamento por-run composto (`AOS_BUDGET_MAX_TOKENS`), a tool **reserva** no tecto
+  do run o máximo de uma chamada: 12 288 tokens (8 192 de entrada — a instrução e uma imagem, ~5×
+  a ordem de grandeza que os fornecedores documentam para a maior imagem que aceitam — mais os
+  4 096 do `max_tokens`) e o custo desses tokens pela tabela de preços do nó para o par
+  (`ocr-visao`, região do nó). Se não couber no que resta ao run — em tokens, ou em dólares com
+  `AOS_BUDGET_MAX_COST_MICRO_USD` —, a tool falha com `tecto_do_run` e **nenhum pedido sai**. Sem
+  `AOS_BUDGET_MAX_TOKENS` não há reserva, como para os turnos; sem o tecto em dólares a dimensão é
+  medida e não nega.
+- **Depois** de o provider responder — com a transcrição aceite **ou** recusada (`ocr_cortado`,
+  `ocr_vazio`, `resposta_invalida`, `modelo_servido_diferente` em `enforce`, e `erro_do_gateway`
+  quando a resposta veio sem `usage` com a contabilidade composta ou com um corpo que o nó não
+  interpreta; o gateway devolve o custo, ou a marca de não medido, com o erro) —, a reserva
+  salda-se pelo custo **medido** pelo gateway e grava-se no stream
+  do run um evento `budget.toolcall.model_cost`, um por tool call (idempotente por `run_id` e
+  `step_id`), só com números e nomes: `tool`, `step_id`, `alias`, `modelo_servido`, `resultado`,
+  `input_tokens`, `output_tokens`, `cost_micro_usd` e `usage_ausente`. Nunca o texto nem a imagem.
+  Uma resposta **não medida** (sem `usage`, custo não calculável, corpo ilegível) cobra a **reserva
+  inteira**, como a admissão de um turno sem usage: o evento leva `usage_ausente: true` e os valores
+  cobrados (8 192 e 4 096 tokens e o custo reservado). Sem orçamento composto não houve reserva e o
+  evento sai com `usage_ausente` e zeros. O evento **soma ao consumo durável do run** ao lado dos
+  turnos: o burn-down vê-o, e um run retomado nasce com `tecto − já consumido`. Um custo medido
+  acima da reserva grava-se como foi. O replay não grava custo (não chama a tool).
+- Uma chamada **sem resposta** (prazo, cancelamento, erro do gateway antes de o provider responder,
+  ou um status que não é 200) liberta a reserva e não grava evento: o nó não sabe o que o fornecedor cobrou. Se o fornecedor
+  tiver cobrado um pedido cuja resposta não chegou, esse custo só aparece na conta da OpenRouter.
+- Uma falha a gravar o evento é dita no log do nó (`gravar o custo do passo … FALHOU`) e não falha
+  a tool — o efeito já foi pago (a mesma escolha do AOS-287).
+
+O arranque declara tudo isto na linha da tool (`CUSTO: …`, com a reserva em tokens e micro-USD e o
+tecto em vigor).
+
+**A resposta não medida cobra a reserva inteira** — sem `usage`, ou com um corpo que o nó não
+interpreta mesmo que traga `usage`. É uma extensão conservadora ao ADR-042 §2.6, que não previa o
+caso: o mesmo molde da admissão de um turno sem usage, que confirma a provisão inteira em vez de
+cobrar zero por uma chamada paga.
+
+**Onde o custo da tool aparece e onde não aparece.** Está no evento `budget.toolcall.model_cost`, no
+consumo durável do run (burn-down, retoma, quota por principal) e no span `aos.activity` da tool
+call. **Não** entra no total do span `invoke_agent` nem no `TotalCostMicroUSD` do resultado do run,
+que somam só os turnos do titular.
+
+**Por confirmar na série de produção** (Notas do AOS-530 — offline não dá): que o `usage` que o
+proxy devolve para um pedido com imagem conta os tokens da imagem (comparar o `input_tokens` do
+evento `budget.toolcall.model_cost` com a ordem de grandeza da reserva e com a conta da OpenRouter);
+e o limite de tamanho e de dimensões de imagem do fornecedor (o nó recusa acima de 4 MiB). Uma
+tool call que falhou **consome** a leitura única de `cap:fs.read` (confirmado em teste: o resultado
+de erro torna o contexto `untrusted`, e a segunda leitura é negada pelo taint).
 
 **Passos do dono, por ordem.** Cada um sem o seguinte é inerte; o nó só arranca com a tool quando
 todos estão feitos (as recusas estão abaixo).
@@ -2062,7 +2106,21 @@ todos estão feitos (as recusas estão abaixo).
    `AOS_MODEL_ROUTE_PROFILES_DIR=/etc/aos/perfis-de-rota` e a âncora dos perfis.
 3. **O preço do par** (`ocr-visao`, região do nó) na tabela do operador
    (`/opt/aos/model-pricing/pricing.json`), se `AOS_MODEL_PRICING_PATH` estiver definida — sem ele,
-   com a contabilidade composta, o nó não arranca.
+   com a contabilidade composta, o nó não arranca. O preço é o do **modelo atrás da rota** do passo
+   4, `openrouter/anthropic/claude-haiku-5.5`: o mesmo modelo cujo preço a semente da tabela já tem
+   para o titular (`gpt-4o`/`eu`, 100000 de entrada e 500000 de saída — 0,10 e 0,50 USD/Mtok —,
+   lido na OpenRouter a 2026-10-12, secção «O custo do modelo em dólares»). Confirmar o preço do dia antes de
+   o copiar; se a rota passar a outro modelo, o preço muda com ela.
+
+   **Quantas `ocr_read` cabem num run** com os tectos de produção (`AOS_BUDGET_MAX_TOKENS=200000`,
+   `AOS_BUDGET_MAX_COST_MICRO_USD=100000`) e esse preço: cada chamada reserva 12 288 tokens e
+   8192 × 0,10 + 4096 × 0,50 = 819 + 2048 = **2867 micro-USD**. No pior caso (cada chamada a custar
+   a reserva inteira) cabem **16 pelos tokens** (200000 / 12288) e **34 pelos dólares**
+   (100000 / 2867) — decidem os tokens —, menos o que os turnos do titular já tiverem gasto. Com o
+   custo medido (a ordem de grandeza do AOS-529 foi ~0,0001 USD, ~100 micro-USD, por imagem) a
+   reserva volta quase toda ao run depois de cada chamada, e cabem mais: cada chamada só desconta o
+   que custou, mas a seguinte só sai se ainda couber uma reserva inteira (12 288 tokens e 2867
+   micro-USD) no que resta.
 4. **A rota no proxy**: descomentar o bloco `ocr-visao` no `litellm/config.yaml` **do servidor**
    (o do repositório é a semente e o deploy nunca o reescreve), com o modelo medido
    (`openrouter/anthropic/claude-haiku-5.5`) e, no `api_key`, a **mesma** variável que a rota do
@@ -2142,7 +2200,9 @@ com `sandbox` e `modelo` (`ErrModelToolBindingConflict`).
 escape, ou um separador no nome), `nome_nao_canonico` (acaba em `.` ou espaço),
 `ficheiro_em_falta`, `ficheiro_ilegivel` (sem permissão, ou erro de leitura),
 `ficheiro_nao_regular`, `ficheiro_com_varias_ligacoes` (unix), `ficheiro_trocado` (o ficheiro aberto não é o que o nome era), `ficheiro_grande` (> 4 MiB),
-`formato_nao_aceite` (todas antes de chamar o modelo, sem custo), `tempo_esgotado`, `cancelado`, `erro_do_gateway` (sem o corpo do
+`formato_nao_aceite` (todas antes de chamar o modelo, sem custo), `tecto_do_run` (a reserva não
+cabe no que resta ao run), `orcamento_indisponivel` (a reserva falhou por um defeito de composição;
+ambas sem pedido ao provider), `tempo_esgotado`, `cancelado`, `erro_do_gateway` (sem o corpo do
 provider), `modelo_servido_diferente` (em `enforce`), `ocr_cortado` (`finish_reason` `length`;
 `max_tokens` 4096), `ocr_vazio`, `resposta_invalida`. Sem nova tentativa e sem failover.
 

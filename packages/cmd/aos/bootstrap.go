@@ -2568,7 +2568,10 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		return nil, err
 	}
 	// (7-ter) A TOOL `ocr_read` (AOS-530, ADR-042 §2.1) — uma CostingToolFunc no RM do nó, cujo
-	// efeito é UMA chamada ao gateway do nó. Só com ela composta; sem ela, nada.
+	// efeito é UMA chamada ao gateway do nó. Só com ela composta; sem ela, nada. O custo (§2.6,
+	// peça 3b) liga-se aqui, onde já há o orçamento por-run e o Event Store: a reserva no tecto do
+	// run antes de cada chamada e o evento durável do custo depois.
+	ocrLigada.ligarCusto(runBudget, registoDeCustoDeTool(es, producerDoCustoDeTool()), log)
 	if err := registarOCR(sec, ocrLigada, log); err != nil {
 		return nil, err
 	}

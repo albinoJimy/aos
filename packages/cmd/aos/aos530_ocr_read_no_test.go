@@ -48,6 +48,7 @@ import (
 	"github.com/aos-ref/platform/model-gateway/port"
 	"github.com/aos-ref/platform/registry/domain"
 	"github.com/aos-ref/substrate/eventstore"
+	otelgenai "github.com/aos-ref/substrate/otel-genai"
 )
 
 // O texto que o modelo de visão falso devolve: um marcador único, que se procura em claro em tudo
@@ -70,13 +71,34 @@ type aos530Upstream struct {
 	ocrServido string
 	// ocrFim é o finish_reason da transcrição (vazio ⇒ stop).
 	ocrFim string
+	// ocrEntrada, quando > 0, substitui os prompt_tokens da transcrição (900).
+	ocrEntrada int64
+	// titularServido, quando preenchido, é o modelo que o proxy declara ter servido aos turnos do
+	// titular (a governação da rota em `enforce` exige-o).
+	titularServido string
+	// apiBase, quando preenchido, é o endpoint que o proxy declara em todas as respostas.
+	apiBase string
+	// ocrSemUsage faz a transcrição responder 200 sem `usage`; ocrCorpo, quando preenchido, é o
+	// corpo cru da resposta 200 da transcrição; ocrFalhas é quantos pedidos da tool (os primeiros)
+	// recebem um 500 sem resposta.
+	ocrSemUsage bool
+	ocrCorpo    string
+	ocrFalhas   int
 }
 
 func (u *aos530Upstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	corpo, _ := io.ReadAll(r.Body)
 	u.mu.Lock()
 	u.corpos = append(u.corpos, corpo)
-	guiao, servido, fim := u.guiao, u.ocrServido, u.ocrFim
+	guiao, servido, fim, entrada, titularServido := u.guiao, u.ocrServido, u.ocrFim, u.ocrEntrada, u.titularServido
+	if u.apiBase != "" {
+		w.Header().Set("x-litellm-model-api-base", u.apiBase)
+	}
+	semUsage, corpoCru, falha := u.ocrSemUsage, u.ocrCorpo, false
+	if u.ocrFalhas > 0 && strings.Contains(string(corpo), `"model":"`+aos530AliasTool+`"`) {
+		u.ocrFalhas--
+		falha = true
+	}
 	u.mu.Unlock()
 	var cab struct {
 		Model string `json:"model"`
@@ -90,13 +112,32 @@ func (u *aos530Upstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if fim == "" {
 			fim = "stop"
 		}
+		if entrada == 0 {
+			entrada = 900
+		}
+		if falha {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"falha"}`))
+			return
+		}
 		w.Header().Set(port.HeaderServedModel, servido)
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		if corpoCru != "" {
+			_, _ = w.Write([]byte(corpoCru))
+			return
+		}
+		r := map[string]any{
 			"id": "cmpl-ocr", "object": "chat.completion", "model": servido,
 			"choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": aos530TextoMarcador + "\nTotal: 12,34 EUR"}, "finish_reason": fim}},
-			"usage":   map[string]any{"prompt_tokens": 900, "completion_tokens": 30, "total_tokens": 930},
-		})
+			"usage":   map[string]any{"prompt_tokens": entrada, "completion_tokens": 30, "total_tokens": entrada + 30},
+		}
+		if semUsage {
+			delete(r, "usage")
+		}
+		_ = json.NewEncoder(w).Encode(r)
 		return
+	}
+	if titularServido != "" {
+		w.Header().Set(port.HeaderServedModel, titularServido)
 	}
 	// O delimitador do segmento na forma do wire (o encoding/json escapa `<`), escrito por partes.
 	feitos := strings.Count(string(corpo), `\`+`u003ctool_result`)
@@ -148,6 +189,13 @@ type aos530Opcoes struct {
 	alias        string // alias do bloco `modelo` (vazio ⇒ o do registo tool)
 	semRegisto   bool   // a pasta de perfis sem o registo de uso tool
 	preco        string // conteúdo de AOS_MODEL_PRICING_PATH (vazio ⇒ sem a variável)
+	// ambiente são variáveis a mais (o orçamento, a governação da rota), postas depois das outras.
+	ambiente map[string]string
+	// exportador recebe os spans do nó (cfg.OTLPExporter).
+	exportador otelgenai.Exporter
+	// nats, quando preenchido, é o cluster JetStream onde o nó guarda o Event Store (em vez do WAL),
+	// com o stream natsStream.
+	nats, natsStream string
 }
 
 // aos530No é o nó composto com a `ocr_read`.
@@ -211,6 +259,9 @@ func aos530AmbienteOCR(t *testing.T, o aos530Opcoes) (*aos530Upstream, []byte) {
 		`{"name":"doc_read","description":"le um documento","capability":"`+durCap+`","resource_type":"file","resource_value":"doc://{doc_id}","resource_region":"eu"},`+
 		`{"name":"ocr_read","description":"transcreve o texto de uma imagem","parameters":{"type":"object","properties":{"doc_id":{"type":"string"}},"required":["doc_id"]},`+
 		`"capability":"`+durCap+`","resource_type":"file","resource_value":"doc://{doc_id}","resource_region":"eu","modelo":{"alias":"`+alias+`"}}]`))
+	for k, v := range o.ambiente {
+		t.Setenv(k, v)
+	}
 	return up, imagem
 }
 
@@ -229,6 +280,14 @@ func aos530Compor(t *testing.T, o aos530Opcoes) *aos530No {
 	cfg := tnBaseConfig()
 	cfg.DurableExecution = !o.directo
 	cfg.EventStorePath = filepath.Join(dir, "events.wal")
+	if o.nats != "" {
+		cfg.EventStorePath = ""
+		cfg.EventStoreNATS = o.nats
+		cfg.EventStoreNATSStream = o.natsStream
+		cfg.EventStoreNATSReplicas = 3
+		cfg.EventStoreNATSNKeyFile = os.Getenv("AOS_NATS_NKEY_FILE")
+	}
+	cfg.OTLPExporter = o.exportador
 	cfg.WORMPath = filepath.Join(dir, "worm.wal")
 	cfg.IssuerKeyPath = filepath.Join(dir, "issuer.seed")
 	cfg.DSARVault = audit.NewInMemoryKeyVault(nil)
@@ -483,6 +542,9 @@ func TestAOS530_No_ReplaySemNovaChamada(t *testing.T) {
 	}
 	antesPedidos, antesEventos := len(n.upstream.pedidos()), len(evs)
 	transcritos := n.node.ocr.lido(ocrResultadoTranscrito)
+	if c := aos530Custos(t, evs); len(c) != 1 {
+		t.Fatalf("o run original grava 1 evento de custo da ocr_read; vieram %d", len(c))
+	}
 
 	eng, err := replay.NewEngine(n.node.EventStore, replay.WithContentOpener(n.node.contentOpener, replay.Accessor{
 		Principal: "nhi:leitor-aos530", Scopes: []string{replay.DefaultSovereignContentScope},
@@ -508,6 +570,9 @@ func TestAOS530_No_ReplaySemNovaChamada(t *testing.T) {
 	}
 	if len(depois) != antesEventos {
 		t.Fatalf("o replay gravou %d eventos no run", len(depois)-antesEventos)
+	}
+	if c := aos530Custos(t, depois); len(c) != 1 {
+		t.Fatalf("o replay nao grava custo: o run continua com 1 evento de custo; vieram %d", len(c))
 	}
 	if n.node.ocr.lido(ocrResultadoTranscrito) != transcritos {
 		t.Fatal("o replay executou a tool")
@@ -634,6 +699,17 @@ func TestAOS530_No_SemAToolNadaMuda(t *testing.T) {
 	n.h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if strings.Contains(rec.Body.String(), "aos_ocr_read_total") {
 		t.Fatal("sem a tool a familia nao existe")
+	}
+	// O arranque: sem a linha da tool (nem a postura do custo dela). O log não é vazio — o resto do
+	// banner do nó está lá —, para que a ausência meça alguma coisa.
+	arranque := n.log.String()
+	if !strings.Contains(arranque, "[aos]") {
+		t.Fatalf("o arranque tinha de ter escrito o banner do no: %s", arranque)
+	}
+	for _, linha := range []string{"tool " + ocrToolName + " LIGADA", "CUSTO: ", EventTypeToolModelCost, ocrToolName} {
+		if strings.Contains(arranque, linha) {
+			t.Fatalf("sem a tool o arranque nao fala dela (%q): %s", linha, arranque)
+		}
 	}
 }
 

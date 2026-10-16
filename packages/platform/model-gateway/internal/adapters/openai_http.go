@@ -140,7 +140,9 @@ func (a *OpenAIHTTPAdapter) Chat(ctx context.Context, req port.ChatRequest, cred
 	}
 	resp, err := port.UnmarshalChatResponse(respBody)
 	if err != nil {
-		return port.ChatResponse{}, err
+		// O provider respondeu 200 e a resposta não se interpreta: a chamada foi feita (e paga).
+		// O gateway lê a marca e devolve o erro de dentro, tal-qual (AOS-530).
+		return port.ChatResponse{}, &UndecodedResponseError{Err: err}
 	}
 	// AOS-505 — a rota que o proxy declarou, lida dos cabeçalhos da resposta: o modelo e o host
 	// do endpoint do deployment que serviu. Só estes dois ([port.ServedRouteFromHeaders]); o
@@ -247,6 +249,19 @@ func (a *OpenAIHTTPAdapter) doWithHeader(ctx context.Context, path string, body 
 	}
 	return respBody, resp.Header, nil
 }
+
+// UndecodedResponseError marca o erro de uma resposta 200 do provider que o adaptador não
+// interpreta (corpo ilegível, uma parte que não é texto): o pedido saiu e foi respondido, logo foi
+// pago (AOS-530, ADR-042 §2.6). É só uma marca para o gateway, que a retira SEMPRE e devolve
+// [UndecodedResponseError.Err] — um turno vê o erro de antes, o mesmo valor; a uma tool, o gateway
+// devolve-o dentro de um `PaidRejectionError`.
+type UndecodedResponseError struct{ Err error }
+
+// Error devolve o texto do erro de dentro.
+func (e *UndecodedResponseError) Error() string { return e.Err.Error() }
+
+// Unwrap liga ao erro de dentro.
+func (e *UndecodedResponseError) Unwrap() error { return e.Err }
 
 // StatusError é o erro de uma resposta do provider com um status diferente de 200 no caminho
 // síncrono (AOS-513). A mensagem é a de sempre — `adapters: provider <p> devolveu status <n>:
