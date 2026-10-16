@@ -2486,13 +2486,17 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	if err != nil {
 		return nil, nil, err
 	}
+	// ocrPorEntregar é a ligação composta e ainda não entregue no cliente: qualquer falha de
+	// arranque daqui para baixo fecha-lhe a pasta (o os.Root aberto). Nil depois da entrega.
+	var ocrPorEntregar *ligacaoOCR
+	defer func() { ocrPorEntregar.fechar() }()
 	if spec := specDoOCR(specs); spec != nil {
 		ligacao, oerr := comporLigacaoOCR(spec, assinados, pol, region, board, costRec != nil)
 		if oerr != nil {
 			return nil, nil, oerr
 		}
 		// O registo `tool` existe (conferido acima), pelo que a pasta de perfis também.
-		assinados.ocr = ligacao
+		assinados.ocr, ocrPorEntregar = ligacao, ligacao
 	}
 	// CUTOVER DURO (AOS-278): o gateway compõe-se com um verifier LIGADO TARDIAMENTE. Nasce a
 	// negar fail-closed; o Bootstrap liga-o (via o binder devolvido) ao verifier REAL do nó —
@@ -2519,9 +2523,6 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	client, err := newGatewayModelClientComPerfis(modelVerifier, endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit, costRec, production, egressHosts, egressTimeout,
 		rota, forma, estado, assinados, append(estadoOpcoes, modelProjectionOption(projection), modelProjectionVersionOption(projectionVersion), formaOpcao, rejeicaoOpcao)...)
 	if err != nil {
-		if assinados != nil {
-			assinados.ocr.fechar()
-		}
 		return nil, nil, err
 	}
 	// AOS-505: com a governação da rota ligada, o cliente leva os contadores para o Bootstrap os
@@ -2561,6 +2562,7 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	// replay-then-continue valha para QUALQUER modelo — incluindo um cfg.Model injectado,
 	// que por este caminho a perdia em silêncio. O decorador continua a ser o outermost:
 	// Bootstrap envolve o que quer que saia daqui, incluindo o enriquecedor de tools.
+	ocrPorEntregar = nil // entregue no cliente: quem a fecha passa a ser o nó (Node.Close)
 	return client, modelVerifier.bind, nil
 }
 

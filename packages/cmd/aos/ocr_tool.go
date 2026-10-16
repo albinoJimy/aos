@@ -143,15 +143,19 @@ const (
 	// Windows, um `.` ou um espaço no fim): o ficheiro lido não seria o que o RM decidiu e o WORM
 	// selou.
 	ocrCausaNomeNaoCanonico = "nome_nao_canonico"
-	ocrCausaFormato         = "formato_nao_aceite"
-	ocrCausaTempo           = "tempo_esgotado"
-	ocrCausaCancelado       = "cancelado"
-	ocrCausaGateway         = "erro_do_gateway"
-	ocrCausaModeloServido   = "modelo_servido_diferente"
-	ocrCausaCortado         = "ocr_cortado"
-	ocrCausaVazio           = "ocr_vazio"
-	ocrCausaRespostaForma   = "resposta_invalida"
-	ocrResultadoTranscrito  = "transcrito"
+	// ocrCausaTrocado — o ficheiro aberto não é o que o Lstat do nome viu: o nome foi trocado entre
+	// os dois (por exemplo por uma ligação simbólica para OUTRO ficheiro da raiz, que o [os.Root]
+	// segue). Causa própria: o ficheiro aberto pode ser regular, e o que falhou foi a identidade.
+	ocrCausaTrocado        = "ficheiro_trocado"
+	ocrCausaFormato        = "formato_nao_aceite"
+	ocrCausaTempo          = "tempo_esgotado"
+	ocrCausaCancelado      = "cancelado"
+	ocrCausaGateway        = "erro_do_gateway"
+	ocrCausaModeloServido  = "modelo_servido_diferente"
+	ocrCausaCortado        = "ocr_cortado"
+	ocrCausaVazio          = "ocr_vazio"
+	ocrCausaRespostaForma  = "resposta_invalida"
+	ocrResultadoTranscrito = "transcrito"
 )
 
 // ocrCausas são todos os resultados, pela ordem da métrica: o de sucesso e as causas de falha.
@@ -160,7 +164,7 @@ func ocrCausas() []string {
 		ocrResultadoTranscrito,
 		ocrCausaEntrada, ocrCausaSemNHI,
 		ocrCausaForaDaRaiz, ocrCausaNomeNaoCanonico, ocrCausaEmFalta, ocrCausaIlegivel, ocrCausaNaoRegular,
-		ocrCausaVariasLigacoes, ocrCausaGrande, ocrCausaFormato,
+		ocrCausaVariasLigacoes, ocrCausaTrocado, ocrCausaGrande, ocrCausaFormato,
 		ocrCausaTempo, ocrCausaCancelado, ocrCausaGateway, ocrCausaModeloServido,
 		ocrCausaCortado, ocrCausaVazio, ocrCausaRespostaForma,
 	}
@@ -455,6 +459,8 @@ func comporReescritas(sandboxRw, ocrRw func(referencemonitor.Call) (referencemon
 type raizDoOCR interface {
 	Lstat(nome string) (fs.FileInfo, error)
 	abrir(nome string) (ficheiroDoOCR, error)
+	// mesmoFicheiro diz se dois FileInfo são o mesmo ficheiro ([os.SameFile] na raiz real).
+	mesmoFicheiro(a, b fs.FileInfo) bool
 }
 
 // ficheiroDoOCR é o ficheiro aberto: lê-se, e o Stat é sobre o DESCRITOR, não sobre o caminho.
@@ -473,6 +479,14 @@ func (r raizOS) abrir(nome string) (ficheiroDoOCR, error) {
 	return r.OpenFile(nome, os.O_RDONLY|ocrFlagsDeAbertura, 0)
 }
 
+// mesmoFicheiro é [os.SameFile]: o mesmo dispositivo e o mesmo inode (no Windows, o mesmo volume e
+// o mesmo índice de ficheiro).
+func (raizOS) mesmoFicheiro(a, b fs.FileInfo) bool { return os.SameFile(a, b) }
+
+// ocrMaxNome é o tecto, em bytes, do nome de uma imagem: o de um componente de caminho na maioria
+// dos sistemas. Um nome maior nunca existe na pasta, e é um erro de entrada, não um escape.
+const ocrMaxNome = 255
+
 // causaDoErroDeFicheiro classifica um erro do Lstat ou da abertura: em falta, sem permissão, ou —
 // o resto, que é o que o [os.Root] recusa por escape — fora da raiz.
 func causaDoErroDeFicheiro(err error) string {
@@ -481,6 +495,11 @@ func causaDoErroDeFicheiro(err error) string {
 		return ocrCausaEmFalta
 	case errors.Is(err, fs.ErrPermission):
 		return ocrCausaIlegivel
+	case errors.Is(err, os.ErrClosed):
+		// A pasta foi fechada: o nó está a encerrar.
+		return ocrCausaCancelado
+	case nomeDemasiadoLongo(err):
+		return ocrCausaEntrada
 	default:
 		return ocrCausaForaDaRaiz
 	}
@@ -518,6 +537,9 @@ func (l *ligacaoOCR) lerImagem(doc string) (port.ImagePart, string, string) {
 	// `fatura.png ` abrem `fatura.png`. Recusados em todos os sistemas (nenhum nome legítimo da pasta
 	// acaba assim). A diferença de maiúsculas num sistema que não as distingue fica declarada no
 	// README do nó.
+	if len(doc) > ocrMaxNome {
+		return port.ImagePart{}, "", ocrCausaEntrada
+	}
 	if strings.HasSuffix(doc, ".") || strings.HasSuffix(doc, " ") {
 		return port.ImagePart{}, "", ocrCausaNomeNaoCanonico
 	}
@@ -539,6 +561,12 @@ func (l *ligacaoOCR) lerImagem(doc string) (port.ImagePart, string, string) {
 	}
 	if causa := conferirFicheiro(noDescritor); causa != "" {
 		return port.ImagePart{}, "", causa
+	}
+	// O MESMO FICHEIRO que o Lstat viu. O [os.Root] segue ligações simbólicas que fiquem dentro da
+	// raiz, e o O_NOFOLLOW não o impede: trocar o nome por uma ligação para OUTRO ficheiro da raiz
+	// entre o Lstat e a abertura faria transcrever outra imagem que não a selada.
+	if !l.raiz.mesmoFicheiro(info, noDescritor) {
+		return port.ImagePart{}, "", ocrCausaTrocado
 	}
 	// O tamanho volta a ser limitado na LEITURA: o ficheiro pode crescer depois do Stat.
 	dados, err := io.ReadAll(io.LimitReader(f, port.MaxImageBytes+1))

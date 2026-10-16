@@ -12,3 +12,6 @@ const ocrFlagsDeAbertura = 0
 
 // ligacoesMultiplas não sabe contar as ligações físicas fora de unix: nunca recusa por elas.
 func ligacoesMultiplas(fs.FileInfo) bool { return false }
+
+// nomeDemasiadoLongo não reconhece o erro fora de unix; o tecto [ocrMaxNome] recusa antes.
+func nomeDemasiadoLongo(error) bool { return false }

@@ -148,10 +148,18 @@ func readModelToolSpecs() ([]modelToolSpec, error) {
 	if len(specs) == 0 {
 		return nil, fmt.Errorf("%w: lista vazia", ErrBadModelTools)
 	}
+	vistos := make(map[string]bool, len(specs))
 	for i, s := range specs {
 		if strings.TrimSpace(s.Name) == "" || strings.TrimSpace(s.Capability) == "" {
 			return nil, fmt.Errorf("%w: tool #%d sem name/capability", ErrBadModelTools, i)
 		}
+		// UM NOME, UMA ENTRADA (AOS-530). Com nomes repetidos cada leitor escolhia uma entrada
+		// diferente — a primeira aqui, a última ali —, e o binding que o RM avalia podia não ser o
+		// que o arranque conferiu. Recusa, em vez de «um deles ganha».
+		if vistos[strings.TrimSpace(s.Name)] {
+			return nil, fmt.Errorf("%w: a tool %q aparece mais de uma vez", ErrBadModelTools, strings.TrimSpace(s.Name))
+		}
+		vistos[strings.TrimSpace(s.Name)] = true
 		// NOME RESERVADO (AOS-490). A projecção nativa do pedido usa este nome para uma tool call
 		// cujo nome, tal como o modelo o escreveu, não cabe no wire. Se fosse também o nome de uma
 		// tool do nó, o `assistant` projectado afirmaria ao modelo que ele a chamou.

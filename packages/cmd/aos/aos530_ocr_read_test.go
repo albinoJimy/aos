@@ -368,6 +368,11 @@ func TestAOS530_OCR_OBlocoModeloNoRegisto(t *testing.T) {
 		"sem alias":        strings.Replace(boa, `"alias":"ocr-visao"`, `"alias":" "`, 1),
 		"outra capability": strings.Replace(boa, `"cap:fs.read"`, `"cap:net.connect"`, 1),
 		"recurso fixo":     strings.Replace(boa, `doc://{doc_id}`, `doc://tudo`, 1),
+		// UM NOME REPETIDO: a segunda entrada, sem o bloco e com outra capability e outro recurso,
+		// seria a que o enriquecedor do modelo lia (a última), enquanto o arranque conferia a
+		// primeira. Recusado.
+		"nome repetido":             boa + `,{"name":"ocr_read","capability":"cap:net.connect","resource_type":"file","resource_value":"doc://tudo","resource_region":"eu"}`,
+		"nome repetido sem o bloco": `{"name":"doc_read","capability":"cap:fs.read"},{"name":" doc_read","capability":"cap:fs.read"}`,
 	}
 	for nome, mau := range casos {
 		t.Run(nome, func(t *testing.T) {

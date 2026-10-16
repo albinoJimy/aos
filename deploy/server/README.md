@@ -2039,7 +2039,7 @@ digest do perfil, digest da instrução, motor `modelo`), `untrusted` como o de 
 replay usa o resultado capturado e **não** volta a chamar o modelo.
 
 **Sem a entrada `ocr_read` no `tools.json`, o nó é o de antes** — o arranque, o pedido ao titular
-byte a byte e o `/metrics`. O deploy **não** põe a entrada: é um acto do dono.
+byte a byte e o `/metrics`. Pôr a entrada é um acto do dono, **por PR ao repositório** (passo 7).
 
 **O que esta versão AINDA NÃO faz — o custo no run (AOS-530, peça 3b).** O custo que o gateway
 mede pela tabela de preços vai só ao span `aos.activity`: **não** há evento durável do custo, ele
@@ -2080,7 +2080,11 @@ todos estão feitos (as recusas estão abaixo).
    `cap:http.post,cap:fs.read`). Sem ela a regra «uma leitura por run» NÃO vale: um run pode ler
    várias imagens (e pagar uma chamada por cada). Lê antes o aviso no `docker-compose.prod.yml`,
    junto de `AOS_PRIVILEGED_CAPS`: armar `cap:fs.read` muda também a `doc_read` de todos os runs.
-7. **A entrada no `tools.json`** (`/opt/aos/model-tools/tools.json`), por exemplo:
+7. **A entrada no `tools.json` — por PR ao repositório e uma release, NUNCA editando o servidor.**
+   O `deploy/server/model-tools/tools.json` do repositório é a fonte: o deploy copia a pasta
+   `model-tools/` para `/opt/aos/model-tools/` por `rsync` **sem** `--ignore-existing`
+   (`.github/workflows/deploy.yml`), pelo que uma edição feita à mão no servidor é desfeita no
+   deploy seguinte. A entrada, por exemplo:
 
    ```json
    {
@@ -2097,16 +2101,24 @@ todos estão feitos (as recusas estão abaixo).
      "resource_type": "file",
      "resource_value": "doc://{doc_id}",
      "resource_region": "eu-west",
-     "egress": "internal",
+     "egress": "external",
      "modelo": { "alias": "ocr-visao" }
    }
    ```
 
    O bloco `modelo` é **exclusivo** do `sandbox` (os dois recusam o arranque), só a `ocr_read` o
-   pode ter, e a `capability` e o `resource_value` têm de ser **exactamente** os de cima. O
-   `egress` declarado é `internal`: a tool só fala com o gateway do nó, e daí com o proxy na rede
-   interna — a imagem sai do servidor para o fornecedor como o prompt de cada turno (ADR-042 §4).
-   A `resource_region` alinha-se ao board, como a da `doc_read`.
+   pode ter, e a `capability` e o `resource_value` têm de ser **exactamente** os de cima; um nome
+   repetido no registo recusa o arranque. O `egress` declarado é `external`: a imagem **sai do
+   servidor** para o fornecedor do modelo (pelo gateway do nó e pelo proxy — ADR-042 §4). O que o
+   declarado decide: **no RM** do nó o egress vem da capability (`cap:fs.*` ⇒ sem egress), e o
+   campo só entra no contrato do catálogo assinado (`AOS_MODEL_TOOLS_REGISTER`) e no `GET /tools`;
+   **no `aos-orq`** o egress declarado conta para a classe de risco do nó do plano, e portanto
+   para a aprovação automática. A `resource_region` alinha-se ao board, como a da `doc_read`.
+   **Para um plano do `aos-orq` usar a tool**, o `orq/snapshot.json` precisa também da entrada
+   `ocr_read`: o mesmo nome, o `digest` do contrato que o nó serve em `GET /tools`, e `egress`,
+   `reversibility` e `mutation` não menos arriscados do que os do nó (o `aos-orq` confere-os
+   contra o catálogo do nó e recusa o snapshot com a divergência — `cmd/aos-orq/snapshot.go`,
+   `compararSnapshotComCatalogo`).
 8. **Recriar o nó** e confirmar: a linha de arranque `tool ocr_read LIGADA (EPIC-07/AOS-530,
    ADR-042)` (com o alias, o digest do perfil e a postura do custo), e no `/metrics`
    `aos_ocr_read_total{resultado="..."}`.
@@ -2129,7 +2141,7 @@ com `sandbox` e `modelo` (`ErrModelToolBindingConflict`).
 `aos_ocr_read_total`: `sem_credencial`, `ficheiro_fora_da_raiz` (só o que a raiz recusa por
 escape, ou um separador no nome), `nome_nao_canonico` (acaba em `.` ou espaço),
 `ficheiro_em_falta`, `ficheiro_ilegivel` (sem permissão, ou erro de leitura),
-`ficheiro_nao_regular`, `ficheiro_com_varias_ligacoes` (unix), `ficheiro_grande` (> 4 MiB),
+`ficheiro_nao_regular`, `ficheiro_com_varias_ligacoes` (unix), `ficheiro_trocado` (o ficheiro aberto não é o que o nome era), `ficheiro_grande` (> 4 MiB),
 `formato_nao_aceite` (todas antes de chamar o modelo, sem custo), `tempo_esgotado`, `cancelado`, `erro_do_gateway` (sem o corpo do
 provider), `modelo_servido_diferente` (em `enforce`), `ocr_cortado` (`finish_reason` `length`;
 `max_tokens` 4096), `ocr_vazio`, `resposta_invalida`. Sem nova tentativa e sem failover.

@@ -14,16 +14,19 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/aos-ref/platform/model-gateway/port"
 )
 
-// aos530Info é um fs.FileInfo com o modo e o tamanho dados.
+// aos530Info é um fs.FileInfo com o modo, o tamanho e a IDENTIDADE dados: dois FileInfo com o
+// mesmo `id` são o mesmo ficheiro para a raiz falsa (o que o os.SameFile diz na raiz real).
 type aos530Info struct {
 	modo fs.FileMode
 	tam  int64
+	id   string
 }
 
 func (i aos530Info) Name() string       { return "x" }
@@ -61,6 +64,11 @@ type aos530RaizFalsa struct {
 }
 
 func (r *aos530RaizFalsa) Lstat(string) (fs.FileInfo, error) { return r.lstatInfo, r.lstatErr }
+func (r *aos530RaizFalsa) mesmoFicheiro(a, b fs.FileInfo) bool {
+	x, okx := a.(aos530Info)
+	y, oky := b.(aos530Info)
+	return okx && oky && x.id != "" && x.id == y.id
+}
 func (r *aos530RaizFalsa) abrir(string) (ficheiroDoOCR, error) {
 	r.aberturas++
 	if r.abrirErr != nil {
@@ -73,7 +81,7 @@ func (r *aos530RaizFalsa) abrir(string) (ficheiroDoOCR, error) {
 // cedesse, a tool transcrevia.
 func aos530Regular(t *testing.T) (fs.FileInfo, []byte) {
 	png := aos530PNG(t)
-	return aos530Info{tam: int64(len(png))}, png
+	return aos530Info{tam: int64(len(png)), id: "fatura.png"}, png
 }
 
 func TestAOS530_OCR_LeituraComARaizFalsa(t *testing.T) {
@@ -114,8 +122,18 @@ func TestAOS530_OCR_LeituraComARaizFalsa(t *testing.T) {
 			return &aos530RaizFalsa{lstatInfo: info, ficheiro: &aos530Ficheiro{r: bytes.NewReader(png), info: aos530Info{modo: fs.ModeNamedPipe}}}
 		}, ocrCausaNaoRegular, 1},
 		{"descritor grande", func(info fs.FileInfo, png []byte) *aos530RaizFalsa {
-			return &aos530RaizFalsa{lstatInfo: info, ficheiro: &aos530Ficheiro{r: bytes.NewReader(png), info: aos530Info{tam: port.MaxImageBytes + 1}}}
+			return &aos530RaizFalsa{lstatInfo: info, ficheiro: &aos530Ficheiro{r: bytes.NewReader(png), info: aos530Info{tam: port.MaxImageBytes + 1, id: "fatura.png"}}}
 		}, ocrCausaGrande, 1},
+		// TROCADO POR UMA LIGAÇÃO SIMBÓLICA PARA OUTRO FICHEIRO DA RAIZ entre o Lstat e a abertura: o
+		// os.Root segue-a, e o descritor é de um ficheiro regular, pequeno e PNG — mas não é o que o
+		// Lstat viu. Recusado pela identidade.
+		{"trocado por outro ficheiro da raiz", func(info fs.FileInfo, png []byte) *aos530RaizFalsa {
+			return &aos530RaizFalsa{lstatInfo: info, ficheiro: &aos530Ficheiro{r: bytes.NewReader(png), info: aos530Info{tam: int64(len(png)), id: "outra.png"}}}
+		}, ocrCausaTrocado, 1},
+		// A PASTA FECHADA (o nó a encerrar) e um nome que o sistema recusa por ser longo.
+		{"pasta fechada", func(fs.FileInfo, []byte) *aos530RaizFalsa {
+			return &aos530RaizFalsa{lstatErr: &fs.PathError{Op: "lstat", Path: "x", Err: os.ErrClosed}}
+		}, ocrCausaCancelado, 0},
 	}
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
@@ -162,5 +180,17 @@ func TestAOS530_OCR_NomeQueOSistemaNormaliza(t *testing.T) {
 	gw := &aos530GwFalso{resp: aos530Resposta("texto", port.FinishStop, 1)}
 	if _, _, err := aos530LigacaoFalsa(t, pasta, gw).executar(aos530ComCredencial(), aos530Entrada("fatura.png")); err != nil {
 		t.Fatalf("o nome exacto tinha de ler: %v", err)
+	}
+}
+
+// UM NOME LONGO DEMAIS é um erro de entrada, não um escape: recusado antes de tocar no disco.
+func TestAOS530_OCR_NomeLongoDemais(t *testing.T) {
+	gw := &aos530GwFalso{resp: aos530Resposta("texto", port.FinishStop, 1)}
+	l := aos530LigacaoFalsa(t, t.TempDir(), gw)
+	raiz := &aos530RaizFalsa{}
+	l.raiz = raiz
+	nome := strings.Repeat("a", ocrMaxNome) + ".png"
+	if _, _, err := l.executar(aos530ComCredencial(), aos530Entrada(nome)); causaDaFalhaOCR(err) != ocrCausaEntrada || gw.contagem() != 0 || raiz.aberturas != 0 {
+		t.Fatalf("quer %s sem pedido; veio %v", ocrCausaEntrada, err)
 	}
 }

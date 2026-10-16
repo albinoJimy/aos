@@ -2396,6 +2396,14 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// e sem ligação (sem AOS_MODEL_ENDPOINT, ou com um cliente de modelo injectado) ⇒ o nó não
 	// arranca: o efeito dela é uma chamada a ESSE gateway e não há outro caminho.
 	ocrLigada := ocrDoCliente(cfg.Model)
+	// Uma falha de arranque daqui para baixo fecha a pasta da tool (o os.Root aberto); com o nó
+	// devolvido, quem a fecha é o Node.Close.
+	ocrEntregue := false
+	defer func() {
+		if !ocrEntregue {
+			ocrLigada.fechar()
+		}
+	}()
 	ocrDeclarada, err := ocrDeclaradaNoRegisto()
 	if err != nil {
 		return nil, err
@@ -3304,6 +3312,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 
 	success = true    // o bootstrap concluiu: a guarda de limpeza não fecha os stores.
 	arranqueOK = true // ... nem larga a posse dos ficheiros (AOS-285/284): passa a ser do Node.Close.
+	ocrEntregue = true
 	return &Node{
 		BackupExporter: backupExporter, // AOS-101: nil ⇒ o nó não exporta backups (por omissão)
 		Runtime:        sec,
