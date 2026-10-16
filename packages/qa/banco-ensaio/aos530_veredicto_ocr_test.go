@@ -28,6 +28,10 @@ func aos530Perfil(t *testing.T, perfil string) string {
 	return caminho
 }
 
+// aos530PerfilKimi é o perfil do alias da tool COERENTE com a rota que os testes do motor visao
+// medem: o fornecedor kimi do ficheiro de chaves de teste, servido pelo proxy como `openai/<modelo>`.
+var aos530PerfilKimi = strings.Replace(rt.ToolProfileJSON, `"openrouter/anthropic/modelo-de-visao"`, `"openai/`+modeloKimiDeTeste+`"`, 1)
+
 // aos530Veredicto corre o motor falso dado e calcula o veredicto com o limiar do dono.
 func aos530Veredicto(t *testing.T, perfil string) (*RelatorioOCR, *VeredictoDoOCR) {
 	t.Helper()
@@ -194,6 +198,7 @@ func TestAOS530_OCR_OpcoesDoVeredicto(t *testing.T) {
 	imagem := aos530Perfil(t, rt.ToolProfileJSON)
 	comTools := aos530Perfil(t, strings.Replace(rt.ToolProfileJSON, `["imagem"]`, `["imagem","tools"]`, 1))
 	semImagem := aos530Perfil(t, rt.ProfileJSON)
+	semCapacidades := aos530Perfil(t, strings.Replace(rt.ToolProfileJSON, `["imagem"]`, `[]`, 1))
 	for _, c := range []struct {
 		nome string
 		args []string
@@ -203,6 +208,7 @@ func TestAOS530_OCR_OpcoesDoVeredicto(t *testing.T) {
 		{"limiar NaN", []string{"--limiar-de-factos", "NaN"}},
 		{"perfil com tools", []string{"--perfil", comTools}},
 		{"perfil sem imagem", []string{"--perfil", semImagem}},
+		{"perfil sem imagem nem tools", []string{"--perfil", semCapacidades}},
 	} {
 		args := append([]string{"ocr", "--motor", "falso", "--saida", saida}, c.args...)
 		if e := executar(t, Ambiente{}, args...); e.codigo != SaidaUso {
@@ -234,7 +240,7 @@ func aos530QualificarOCR(t *testing.T, lanc *lancadorDeTeste, perfil, saida stri
 func TestAOS530_QualificarOCR_PreparaORegistoTool(t *testing.T) {
 	lanc := &lancadorDeTeste{t: t, devolver: NovaVisaoFalsa(aos529Bateria(t))}
 	saida := filepath.Join(t.TempDir(), "entrada")
-	e := aos530QualificarOCR(t, lanc, aos530Perfil(t, rt.ToolProfileJSON), saida)
+	e := aos530QualificarOCR(t, lanc, aos530Perfil(t, aos530PerfilKimi), saida)
 	if e.codigo != SaidaOK || lanc.lancamentos != 1 {
 		t.Fatalf("qualificar-ocr: %d, %d lancamentos\n%s\n%s", e.codigo, lanc.lancamentos, e.stdout, e.stderr)
 	}
@@ -278,7 +284,7 @@ func TestAOS530_QualificarOCR_PreparaORegistoTool(t *testing.T) {
 // o modelo de visão com respostas cortadas saem 7; um perfil que o nó recusaria sai 11 antes de
 // enviar. Em nenhum fica `pacote/`.
 func TestAOS530_QualificarOCR_SoComQualificadoReal(t *testing.T) {
-	perfil := aos530Perfil(t, rt.ToolProfileJSON)
+	perfil := aos530Perfil(t, aos530PerfilKimi)
 	semPacote := func(nome, saida string, e execucao, quer int) {
 		t.Helper()
 		if e.codigo != quer {
@@ -313,6 +319,16 @@ func TestAOS530_QualificarOCR_SoComQualificadoReal(t *testing.T) {
 	semPacote("fora da allowlist", saida, e, SaidaPacoteRecusado)
 	if lanc.lancamentos != 0 || !strings.Contains(e.stderr, routeentry.CauseNameNotAllowlisted) {
 		t.Errorf("fora da allowlist: %d lancamentos\n%s", lanc.lancamentos, e.stderr)
+	}
+	// O PERFIL DE OUTRO MODELO: com o motor visao, um expected_model que não é a rota desta corrida
+	// (`openai/<modelo medido>`) recusa com 3 — antes de abrir o contador e o proxy, sem pedido
+	// nenhum e sem pacote.
+	lanc = &lancadorDeTeste{t: t, devolver: NovaVisaoFalsa(aos529Bateria(t))}
+	saida = filepath.Join(t.TempDir(), "outro-modelo")
+	e = aos530QualificarOCR(t, lanc, aos530Perfil(t, rt.ToolProfileJSON), saida)
+	semPacote("expected_model de outro modelo", saida, e, SaidaRecusada)
+	if lanc.lancamentos != 0 || !strings.Contains(e.stderr, "expected_model do perfil nao e a rota desta corrida (openai/"+modeloKimiDeTeste+")") {
+		t.Errorf("expected_model de outro modelo: %d lancamentos\n%s", lanc.lancamentos, e.stderr)
 	}
 	// O perfil com tools nem chega ao registo.
 	saida = filepath.Join(t.TempDir(), "tools")

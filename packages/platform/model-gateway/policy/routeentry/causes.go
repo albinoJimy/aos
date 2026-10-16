@@ -58,6 +58,9 @@ const (
 	// CauseProfileReturnsState — o perfil devolve estado opaco ao provider. Por esta via só entram
 	// perfis que não devolvem estado (decisão D8 do dono, 2026-10-11).
 	CauseProfileReturnsState = "perfil_devolve_estado"
+	// CauseToolProfileCapabilities — o perfil de um registo de uso `tool` não declara a capacidade
+	// `imagem`, ou declara `tools` (AOS-530, ADR-042 §2.3 e §2.4).
+	CauseToolProfileCapabilities = "perfil_de_tool_com_capacidades_erradas"
 	// CauseOtherEnvironment — o registo foi assinado para outro board ou outra região.
 	CauseOtherEnvironment = "registo_de_outro_ambiente"
 	// CauseProxyImageNotDeclared — a imagem do proxy que o registo cita não é a declarada para
@@ -110,7 +113,7 @@ func Causes() []string {
 		CauseNoTrustAnchor, CauseBadTrustAnchor, CauseSharedTrustAnchor, CauseDirUnreadable, CauseUnknownFile, CauseTooManyEntries,
 		CauseSignatureMissing, CauseSignatureInvalid,
 		CauseEntryUnreadable, CauseUnknownFormat, CauseShareOutOfRange, CauseBadUse, CauseToolWithShare, CauseBadProfile, CauseBadRouteName,
-		CauseProfileDigestMismatch, CauseProfileReturnsState, CauseOtherEnvironment, CauseProxyImageNotDeclared,
+		CauseProfileDigestMismatch, CauseProfileReturnsState, CauseToolProfileCapabilities, CauseOtherEnvironment, CauseProxyImageNotDeclared,
 		CauseReportMissing, CauseReportUnreadable, CauseReportInvalid, CauseReportNotCited, CauseReportOfOtherExperiment, CauseReportUnknownShape,
 		CauseReportWithoutVerdict, CauseVerdictNotForProduction, CauseNotQualified, CauseVerdictOfOtherProfile, CauseVerdictOfOtherProxyImage,
 		CauseNameNotAllowlisted, CauseDuplicateName,

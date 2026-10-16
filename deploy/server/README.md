@@ -1519,6 +1519,13 @@ de ser escrita por ele. Os passos no servidor, por ordem, estão em «Ligar a fa
 
 Qualquer outro ficheiro na pasta faz o nó recusar arrancar.
 
+**Recuo de versão com um registo `uso` na pasta (AOS-530).** Um binário do nó anterior ao AOS-530
+não conhece o membro `uso` e **recusa arrancar** com um registo que o tenha (`registo_ilegivel`),
+mesmo `uso: run`. Antes de voltar a uma imagem anterior, **retira da pasta os três ficheiros do
+registo `tool`** (e de qualquer registo com `uso`). Os registos sem `uso` carregam nas duas versões.
+O perfil de um registo `tool` declara a capacidade `imagem` e não declara `tools`; senão o nó
+recusa arrancar (`perfil_de_tool_com_capacidades_erradas`).
+
 **Passos do dono — carregar um perfil.** No posto, em PowerShell.
 
 ```powershell

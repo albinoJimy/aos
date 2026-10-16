@@ -862,7 +862,9 @@ go run ./cmd/aos-ensaio qualificar-ocr --motor visao --chaves F --visao-forneced
 corrida completa do motor `visao`** (o modo real), deixa em `PASTA/pacote/` o registo de entrada
 de **uso `tool`** — `"uso": "tool"`, fatia `0` — e o relatório que ele cita. As mesmas barreiras:
 o registo provisório passa pela leitura do nó antes de qualquer pedido (um alias fora da
-allowlist sai 11 sem enviar nada); a pasta de saída é nova; o relatório relido do disco tem de ser
+allowlist sai 11 sem enviar nada); com o motor `visao`, o `expected_model` do perfil tem de ser a
+rota desta corrida (`<prefixo do proxy>/<modelo medido>`, como no `qualificar`), senão sai 3 antes
+de abrir o contador e o proxy; a pasta de saída é nova; o relatório relido do disco tem de ser
 o da corrida; e o pacote escrito volta a passar nas conferências do nó. **Não assina**: assina o
 dono, com a mesma linha do `aos-issuer route-profile-sign` que o comando imprime, e confere com o
 `aos-ensaio conferir`.
@@ -873,7 +875,8 @@ assinar); **11** o nó recusaria o registo; 4 parou a meio; 3 recusada antes de 
 
 O que o nó faz com o registo de uso `tool` (pacote `routeentry`, `cmd/aos/modelo_candidato.go`):
 aceita-o só com um relatório `ocr` com veredicto `qualificado` do modo real, para o perfil e a
-imagem do proxy que o registo cita; recusa-o com fatia maior que zero (`uso_tool_com_fatia`), com
+imagem do proxy que o registo cita; recusa-o com um perfil sem `imagem` ou com `tools`
+(`perfil_de_tool_com_capacidades_erradas`), com fatia maior que zero (`uso_tool_com_fatia`), com
 um relatório de outra experiência (`relatorio_de_outra_experiencia`) ou para o alias do titular;
 e **nunca o trata como candidato** — não conta como não-titular, não ganha adaptador de run, não
 entra no canary nem no disjuntor, e um run fixado nele é recusado.

@@ -196,7 +196,7 @@ func executarOCRCom(ctx context.Context, args []string, stdout, stderr io.Writer
 		m = t
 	case NomeMotorVisao:
 		var codigo int
-		visao, codigo = prepararVisao(ctx, o, bateria, amb, red, stderr)
+		visao, codigo = prepararVisao(ctx, o, bateria, perfilEsperado(perfil), amb, red, stderr)
 		if visao == nil {
 			return codigo
 		}
@@ -341,7 +341,9 @@ func PiorCasoDaVisao(b *BateriaOCR) int64 {
 
 // prepararVisao lê as chaves, abre o contador, confere o pior caso e levanta o proxy. Devolve nil e
 // o código de saída quando recusa; com `--so-plano` não levanta o proxy.
-func prepararVisao(ctx context.Context, o opcoesDoOCR, b *BateriaOCR, amb Ambiente, red *Redactor, stderr io.Writer) (*execucaoDaVisao, int) {
+// `esperado` é o `expected_model` do perfil de `--perfil` (vazio sem perfil): com ele, a rota desta
+// corrida tem de ser a que o perfil espera, e a recusa vem ANTES de abrir o contador ou o proxy.
+func prepararVisao(ctx context.Context, o opcoesDoOCR, b *BateriaOCR, esperado string, amb Ambiente, red *Redactor, stderr io.Writer) (*execucaoDaVisao, int) {
 	caminho := o.chaves
 	if caminho == "" {
 		caminho = amb.Getenv(EnvDasChaves)
@@ -367,6 +369,13 @@ func prepararVisao(ctx context.Context, o opcoesDoOCR, b *BateriaOCR, amb Ambien
 		return nil, SaidaRecusada
 	}
 	red.Acrescentar(rota.Segredos()...)
+	// O PERFIL MEDIDO É O DESTA ROTA (AOS-530), como no `qualificar` (cli.go): o proxy declara ter
+	// servido `<prefixo>/<modelo>`, e o gateway do nó compara-o com o `expected_model` do perfil em
+	// cada chamada da tool. Um relatório que mediu outro modelo não pode qualificar este perfil.
+	if esperado != "" && esperado != prefixoDoProxy(fornecedor)+"/"+rota.Modelo {
+		fmt.Fprintf(stderr, "aos-ensaio ocr: RECUSADO — o expected_model do perfil nao e a rota desta corrida (%s/%s): o veredicto e da rota medida, e o modelo servido tem de ser o que o perfil espera. Nenhum pedido foi enviado\n", prefixoDoProxy(fornecedor), rota.Modelo)
+		return nil, SaidaRecusada
+	}
 	var precos *TabelaDePrecos
 	if o.precos != "" {
 		if precos, err = LerTabelaDePrecos(o.precos); err != nil {

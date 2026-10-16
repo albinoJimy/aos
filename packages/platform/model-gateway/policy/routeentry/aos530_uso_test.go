@@ -142,12 +142,17 @@ type casoTool struct {
 	registo   func(doc map[string]any)
 	// semRelatorioOCR cita um relatório de qualificação (o dos candidatos) em vez de um `ocr`.
 	semRelatorioOCR bool
+	// perfil, quando não vazio, troca o perfil do registo tool.
+	perfil string
 }
 
 func (c casoTool) correr(t *testing.T) {
 	t.Helper()
 	a := novoAmbiente(t)
 	perfil := rt.ToolProfileJSON
+	if c.perfil != "" {
+		perfil = c.perfil
+	}
 	rdoc := rt.OCRReportDoc(rt.ProfileDigest(t, perfil))
 	if c.semRelatorioOCR {
 		rdoc = rt.ReportDoc(rt.ProfileDigest(t, perfil))
@@ -174,6 +179,12 @@ func TestAOS530_RecusasDoUso(t *testing.T) {
 		{nome: "uso que nao e texto", causa: routeentry.CauseEntryUnreadable, registo: func(d map[string]any) { d["uso"] = true }},
 		{nome: "uso com o nome em caixa diferente", causa: routeentry.CauseEntryUnreadable, registo: func(d map[string]any) { delete(d, "uso"); d["Uso"] = "tool" }},
 		{nome: "tool com fatia maior que zero", causa: routeentry.CauseToolWithShare, registo: func(d map[string]any) { d["fatia_inicial_percentagem"] = 1 }},
+		{nome: "tool com perfil de tools", causa: routeentry.CauseToolProfileCapabilities, perfil: rt.ProfileJSON},
+		{nome: "tool com perfil de imagem e tools", causa: routeentry.CauseToolProfileCapabilities,
+			perfil: strings.Replace(rt.ToolProfileJSON, `["imagem"]`, `["imagem","tools"]`, 1)},
+		{nome: "tool com perfil sem capacidades", causa: routeentry.CauseToolProfileCapabilities,
+			perfil: strings.Replace(rt.ToolProfileJSON, `["imagem"]`, `[]`, 1)},
+		{nome: "registo sem perfil", causa: routeentry.CauseEntryUnreadable, registo: func(d map[string]any) { delete(d, "perfil") }},
 		{nome: "tool a citar um relatorio de qualificacao", causa: routeentry.CauseReportOfOtherExperiment, semRelatorioOCR: true},
 		{nome: "relatorio ocr sem veredicto (o do AOS-529)", causa: routeentry.CauseReportWithoutVerdict, relatorio: func(d map[string]any) { delete(d, "veredicto_do_ocr") }},
 		{nome: "relatorio ocr de outra versao", causa: routeentry.CauseReportUnknownShape, relatorio: func(d map[string]any) { d["versao_do_relatorio"] = "2" }},

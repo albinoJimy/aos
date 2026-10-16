@@ -243,6 +243,8 @@ func TestAOS530_No_RegistoToolQueRecusaOArranque(t *testing.T) {
 			tool: aos530Tool{perfil: aos530PerfilTool, relatorio: func(d map[string]any) { rt.OCRVerdict(d)["veredicto"] = "recusado" }}},
 		{nome: "relatorio ocr do modo falso", causa: routeentry.CauseVerdictNotForProduction,
 			tool: aos530Tool{perfil: aos530PerfilTool, relatorio: func(d map[string]any) { d["modo"] = "falso" }}},
+		{nome: "perfil com tools", causa: routeentry.CauseToolProfileCapabilities,
+			tool: aos530Tool{perfil: strings.Replace(aos530PerfilTool, `["imagem"]`, `["imagem","tools"]`, 1)}},
 		{nome: "uso fora do vocabulario", causa: routeentry.CauseBadUse,
 			tool: aos530Tool{perfil: aos530PerfilTool, registo: func(d map[string]any) { d["uso"] = "ferramenta" }}},
 		{nome: "alias do titular", erro: ErrModelToolEntryForTitular,

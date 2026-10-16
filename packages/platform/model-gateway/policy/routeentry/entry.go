@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
+	"slices"
 	"strings"
 
 	modelgateway "github.com/aos-ref/platform/model-gateway"
@@ -201,6 +202,11 @@ func ParseEntry(raw []byte) (Entry, error) {
 	}
 	if ReturnsState(profile) {
 		return Entry{}, refuse(CauseProfileReturnsState, "")
+	}
+	// O PERFIL DE UM REGISTO DE USO TOOL LÊ IMAGENS E NÃO PEDE EFEITOS (ADR-042 §2.3 e §2.4): declara
+	// a capacidade `imagem` e não declara `tools` — o modelo que lê a imagem não pode pedir tools.
+	if e.ForTool() && (!slices.Contains(profile.Capabilities, modelgateway.CapabilityImage) || slices.Contains(profile.Capabilities, modelgateway.CapabilityTools)) {
+		return Entry{}, refuse(CauseToolProfileCapabilities, "")
 	}
 	e.Profile = profile
 	return e, nil
