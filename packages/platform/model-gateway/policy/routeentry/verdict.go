@@ -173,8 +173,10 @@ func ReadVerdict(raw []byte) (Verdict, error) {
 
 // ReadOCRVerdict confere o digest de um relatório da experiência `ocr` e lê dele o veredicto, pela
 // leitura fechada (AOS-530). As causas são as de [ReadVerdict], mais
-// [CauseReportOfOtherExperiment] quando o relatório não é da experiência `ocr`. Um relatório `ocr`
-// sem o bloco do veredicto (os do AOS-529) é [CauseReportWithoutVerdict]; um sem `modo` (os motores
+// [CauseReportOfOtherExperiment] quando o relatório não é da experiência `ocr`. Um relatório com a
+// forma do AOS-529 (anterior ao veredicto) é [CauseReportInvalid] — não traz o digest de si
+// próprio — ou, se alguém lho acrescentar, [CauseReportUnknownShape] — não traz a versão. Um
+// relatório `ocr` com a versão e sem o bloco do veredicto é [CauseReportWithoutVerdict]; um sem `modo` (os motores
 // que não são um modelo pago) lê-se com o modo vazio, que não vale para produção; um sem
 // `rota_medida` lê-se sem perfil, que não é o de registo nenhum.
 //

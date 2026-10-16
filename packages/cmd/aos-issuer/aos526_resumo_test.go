@@ -34,3 +34,17 @@ func TestAOS526_RouteProfileSign_OResumoMostraARegra(t *testing.T) {
 		}
 	}
 }
+
+// AOS-530 — O RESUMO DO QUE SE VAI ASSINAR MOSTRA O USO: `tool` di-lo, e um registo sem o membro
+// (uso run) também o diz.
+func TestAOS530_RouteProfileSign_OResumoMostraOUso(t *testing.T) {
+	perfil := modelgateway.RouteProfile{Requested: "gpt-4o-mini", ExpectedModel: "openai/visao", WireClass: modelgateway.WireOpenAIChat,
+		Capabilities: []string{modelgateway.CapabilityImage}}
+	for uso, quero := range map[string]string{routeentry.UseTool: "uso: tool — ", routeentry.UseRun: "uso: run — ", "": "uso: run — "} {
+		var out bytes.Buffer
+		resumoDoRegisto(&out, routeentry.Entry{Profile: perfil, Use: uso})
+		if !strings.Contains(out.String(), quero) {
+			t.Errorf("uso %q: o resumo nao diz %q:\n%s", uso, quero, out.String())
+		}
+	}
+}

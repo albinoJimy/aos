@@ -68,6 +68,12 @@ plano do PR 1):
 - O candidato não é um nome novo: pede-se pelo alias que a allowlist assinada já autoriza para
   o board e a região do nó (D1, D9), conferido no arranque pelo AOS-519.
 
+> **Emenda (ADR-042 §2.3, ratificado a 2026-10-15; AOS-530).** Um registo de entrada pode
+> declarar o seu `uso`: `run` (a omissão — todos os registos acima) ou `tool`. «Um candidato é um
+> registo assinado cujo nome pedido não é o do titular» passa a ler-se «… **e cujo uso é `run`**».
+> Um registo de uso `tool` nunca é candidato: não conta para o máximo de um, não serve runs, não
+> entra no canary nem no disjuntor, e um run não se fixa nele. O texto acima fica como foi decidido.
+
 ### 2.2 A chave do plano
 
 A unidade do canary é o **plano**. A chave é:

@@ -864,7 +864,10 @@ de **uso `tool`** — `"uso": "tool"`, fatia `0` — e o relatório que ele cita
 o registo provisório passa pela leitura do nó antes de qualquer pedido (um alias fora da
 allowlist sai 11 sem enviar nada); com o motor `visao`, o `expected_model` do perfil tem de ser a
 rota desta corrida (`<prefixo do proxy>/<modelo medido>`, como no `qualificar`), senão sai 3 antes
-de abrir o contador e o proxy; a pasta de saída é nova; o relatório relido do disco tem de ser
+de abrir o contador e o proxy; e conta nas **qualificações do dia** (D7: duas por perfil e quatro por rota,
+por dia UTC), no MESMO registo das qualificações dos candidatos (`qualificacoes.json`) — o tecto
+é sobre a rota, e medir o mesmo modelo noutra experiência não é uma tentativa nova; conferido
+antes do proxy, contado quando a sonda passa, e a 3.ª do mesmo perfil sai 3 sem pedido nenhum; a pasta de saída é nova; o relatório relido do disco tem de ser
 o da corrida; e o pacote escrito volta a passar nas conferências do nó. **Não assina**: assina o
 dono, com a mesma linha do `aos-issuer route-profile-sign` que o comando imprime, e confere com o
 `aos-ensaio conferir`.

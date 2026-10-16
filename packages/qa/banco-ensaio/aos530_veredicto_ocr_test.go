@@ -275,8 +275,13 @@ func TestAOS530_QualificarOCR_PreparaORegistoTool(t *testing.T) {
 	if err != nil || len(entradas) != 1 || !entradas[0].ForTool() || entradas[0].InitialSharePercent != 0 {
 		t.Fatalf("o no nao carrega o pacote preparado: %v %+v", err, entradas)
 	}
-	if c := executar(t, Ambiente{}, "conferir", "--pacote", pacote, "--ancora", key.Anchor(), "--board", rt.Board, "--regiao", rt.Region); c.codigo != SaidaOK {
+	c := executar(t, Ambiente{}, "conferir", "--pacote", pacote, "--ancora", key.Anchor(), "--board", rt.Board, "--regiao", rt.Region)
+	if c.codigo != SaidaOK {
 		t.Fatalf("conferir: %d\n%s", c.codigo, c.stderr)
+	}
+	// O `conferir` diz o uso, e que o alias do titular fica por conferir no servidor.
+	if !strings.Contains(c.stdout, "uso: tool") || !strings.Contains(c.stdout, "nenhum registo de uso tool e o do titular do no") {
+		t.Fatalf("o conferir nao diz o uso nem o que fica por conferir:\n%s", c.stdout)
 	}
 }
 
@@ -348,5 +353,39 @@ func TestAOS530_QualificarOCR_SoComQualificadoReal(t *testing.T) {
 		return ""
 	}}, "qualificar-ocr", "--motor", "visao", "--perfil", perfil); e.codigo != SaidaEmCI {
 		t.Errorf("em CI: %d", e.codigo)
+	}
+}
+
+// AS QUALIFICAÇÕES DO DIA (D7) valem para a corrida `ocr` que qualifica um perfil: com o mesmo
+// ficheiro de chaves (e por isso o mesmo registo), a 3.ª corrida do mesmo perfil no mesmo dia é
+// recusada com 3 antes de levantar o proxy e de enviar qualquer pedido. Sem `--perfil` a corrida
+// não qualifica nada e não conta.
+func TestAOS530_QualificarOCR_TectoDoDia(t *testing.T) {
+	chaves := escreverChaves(t, chavesDeTeste())
+	perfil := aos530Perfil(t, aos530PerfilKimi)
+	correr := func(n int) (execucao, *lancadorDeTeste) {
+		lanc := &lancadorDeTeste{t: t, devolver: NovaVisaoFalsa(aos529Bateria(t))}
+		saida := filepath.Join(t.TempDir(), "entrada")
+		return executar(t, Ambiente{Lancador: lanc}, "qualificar-ocr", "--motor", "visao", "--chaves", chaves, "--visao-fornecedor", "kimi",
+			"--perfil", perfil, "--board", rt.Board, "--regiao", rt.Region, "--saida", saida), lanc
+	}
+	// Uma corrida `ocr` sem perfil, antes: não conta.
+	semPerfil := &lancadorDeTeste{t: t, devolver: NovaVisaoFalsa(aos529Bateria(t))}
+	if e := executar(t, Ambiente{Lancador: semPerfil}, "ocr", "--motor", "visao", "--chaves", chaves, "--visao-fornecedor", "kimi", "--saida", t.TempDir()); e.codigo != SaidaOK {
+		t.Fatalf("ocr sem perfil: %d\n%s", e.codigo, e.stderr)
+	}
+	for n := 1; n <= 2; n++ {
+		if e, _ := correr(n); e.codigo != SaidaOK || !strings.Contains(e.stderr, "ja foi qualificado "+string(rune('0'+n-1))+" vez(es) hoje, de um maximo de 2") {
+			t.Fatalf("corrida %d: %d\n%s", n, e.codigo, e.stderr)
+		}
+	}
+	e, lanc := correr(3)
+	if e.codigo != SaidaRecusada || lanc.lancamentos != 0 || !strings.Contains(e.stderr, "qualificacoes_do_dia_esgotadas") {
+		t.Fatalf("3.a corrida do mesmo perfil: %d, %d lancamentos\n%s", e.codigo, lanc.lancamentos, e.stderr)
+	}
+	// O registo é o das qualificações dos candidatos: o mesmo ficheiro, ao lado das chaves.
+	cru, err := os.ReadFile(filepath.Join(filepath.Dir(chaves), NomeDoRegistoDeQualificacoes))
+	if err != nil || !strings.Contains(string(cru), `"kimi/`+modeloKimiDeTeste+`": 2`) {
+		t.Fatalf("registo das qualificacoes: %v\n%s", err, cru)
 	}
 }

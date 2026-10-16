@@ -196,7 +196,7 @@ func executarOCRCom(ctx context.Context, args []string, stdout, stderr io.Writer
 		m = t
 	case NomeMotorVisao:
 		var codigo int
-		visao, codigo = prepararVisao(ctx, o, bateria, perfilEsperado(perfil), amb, red, stderr)
+		visao, codigo = prepararVisao(ctx, o, bateria, perfil, amb, red, stderr)
 		if visao == nil {
 			return codigo
 		}
@@ -310,6 +310,9 @@ func mostrarBateriaOCR(args []string, stdout, stderr io.Writer) int {
 
 // execucaoDaVisao é o que a corrida de visão preparou: o motor, o contador e o proxy.
 type execucaoDaVisao struct {
+	// registar conta a corrida entre as qualificações do dia, quando ela qualifica um perfil; nil
+	// sem `--perfil`.
+	registar   func() (OrdemDaQualificacao, error)
 	motor      *MotorOCRVisao
 	contador   *Contador
 	fornecedor Fornecedor
@@ -341,9 +344,12 @@ func PiorCasoDaVisao(b *BateriaOCR) int64 {
 
 // prepararVisao lê as chaves, abre o contador, confere o pior caso e levanta o proxy. Devolve nil e
 // o código de saída quando recusa; com `--so-plano` não levanta o proxy.
-// `esperado` é o `expected_model` do perfil de `--perfil` (vazio sem perfil): com ele, a rota desta
-// corrida tem de ser a que o perfil espera, e a recusa vem ANTES de abrir o contador ou o proxy.
-func prepararVisao(ctx context.Context, o opcoesDoOCR, b *BateriaOCR, esperado string, amb Ambiente, red *Redactor, stderr io.Writer) (*execucaoDaVisao, int) {
+//
+// `perfil` é o de `--perfil` (nil sem ele). Com ele a corrida QUALIFICA um perfil (AOS-530): a rota
+// desta corrida tem de ser a que o perfil espera, recusado ANTES de abrir o contador ou o proxy; e
+// conta nas qualificações do dia (D7), conferidas antes do proxy e escritas quando a sonda passa.
+func prepararVisao(ctx context.Context, o opcoesDoOCR, b *BateriaOCR, perfil *modelgateway.RouteProfile, amb Ambiente, red *Redactor, stderr io.Writer) (*execucaoDaVisao, int) {
+	esperado := perfilEsperado(perfil)
 	caminho := o.chaves
 	if caminho == "" {
 		caminho = amb.Getenv(EnvDasChaves)
@@ -403,6 +409,31 @@ func prepararVisao(ctx context.Context, o opcoesDoOCR, b *BateriaOCR, esperado s
 		return nil, SaidaRecusada
 	}
 	v := &execucaoDaVisao{contador: contador, fornecedor: fornecedor, modelo: rota.Modelo, piorCaso: PiorCasoDaVisao(b), pasta: pastaDaSaida}
+	// AS QUALIFICAÇÕES DO DIA (AOS-518, decisão D7), também para a corrida `ocr` que qualifica um
+	// perfil: repetir até passar é escolher o resultado. É o MESMO mecanismo e o MESMO registo das
+	// qualificações dos candidatos (`qualificacoes.json`, ao lado do contador e sob a trava dele):
+	// duas por perfil e quatro por rota — fornecedor e modelo — por dia UTC, contadas juntas com as
+	// da experiência `qualificacao`. Juntas porque o tecto é sobre a ROTA: medir o mesmo modelo
+	// noutra experiência não é uma tentativa nova. Confere-se aqui, antes do proxy e de qualquer
+	// pedido; escreve-se quando a sonda passa ([execucaoDaVisao.sondar]).
+	if perfil != nil {
+		caminhoDasQualificacoes := filepath.Join(pastaDoEstado, NomeDoRegistoDeQualificacoes)
+		chave := ChaveDaQualificacao{Dia: amb.Relogio().UTC().Format("2006-01-02"), PerfilDigest: perfil.Digest(), Fornecedor: string(fornecedor), Modelo: rota.Modelo}
+		feitas, qerr := QualificacoesDeHoje(caminhoDasQualificacoes, pastas, chave)
+		if qerr == nil && feitas.esgotada() {
+			qerr = ErrQualificacoesDoDia
+		}
+		if qerr != nil {
+			contador.Fechar()
+			fmt.Fprintf(stderr, "aos-ensaio ocr: RECUSADO — %v. Nenhum pedido foi enviado\n", qerr)
+			return nil, SaidaRecusada
+		}
+		fmt.Fprintf(stderr, "aos-ensaio ocr: QUALIFICACAO de um perfil (AOS-530): este perfil ja foi qualificado %d vez(es) hoje, de um maximo de %d; esta rota, %d de %d (contadas com as da experiencia qualificacao)\n",
+			feitas.DoPerfil, QualificacoesPorPerfilPorDia, feitas.DaRota, QualificacoesPorRotaPorDia)
+		v.registar = func() (OrdemDaQualificacao, error) {
+			return RegistarQualificacao(caminhoDasQualificacoes, pastas, chave)
+		}
+	}
 	if err := contador.Cabe(v.piorCaso); err != nil {
 		contador.Fechar()
 		fmt.Fprintf(stderr, "aos-ensaio ocr: RECUSADO — o pior caso (%d pedidos: %d imagens e 1 sonda) nao cabe: %v\n", v.piorCaso, v.piorCaso-1, err)
@@ -456,6 +487,13 @@ func prepararVisao(ctx context.Context, o opcoesDoOCR, b *BateriaOCR, esperado s
 func (v *execucaoDaVisao) sondar(ctx context.Context, stderr io.Writer) int {
 	s := v.motor.Sondar(ctx)
 	if s.Resultado == SondaOK {
+		// A sonda passou: a corrida conta entre as qualificações do dia, antes da primeira imagem.
+		if v.registar != nil {
+			if _, err := v.registar(); err != nil {
+				fmt.Fprintf(stderr, "aos-ensaio ocr: RECUSADO — %v\n", err)
+				return SaidaRecusada
+			}
+		}
 		return SaidaOK
 	}
 	fmt.Fprintf(stderr, "aos-ensaio ocr: a SONDA nao teve 200 (HTTP %d, %s): a corrida NAO COMECOU; gastou-se no maximo 1 pedido do tecto\n", s.HTTP, s.Resultado)

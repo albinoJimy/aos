@@ -186,7 +186,11 @@ func TestAOS530_RecusasDoUso(t *testing.T) {
 			perfil: strings.Replace(rt.ToolProfileJSON, `["imagem"]`, `[]`, 1)},
 		{nome: "registo sem perfil", causa: routeentry.CauseEntryUnreadable, registo: func(d map[string]any) { delete(d, "perfil") }},
 		{nome: "tool a citar um relatorio de qualificacao", causa: routeentry.CauseReportOfOtherExperiment, semRelatorioOCR: true},
-		{nome: "relatorio ocr sem veredicto (o do AOS-529)", causa: routeentry.CauseReportWithoutVerdict, relatorio: func(d map[string]any) { delete(d, "veredicto_do_ocr") }},
+		{nome: "relatorio ocr com versao e digest mas sem o bloco do veredicto", causa: routeentry.CauseReportWithoutVerdict, relatorio: func(d map[string]any) { delete(d, "veredicto_do_ocr") }},
+		{nome: "relatorio ocr com digest mas sem versao nem veredicto (o AOS-529 com digest)", causa: routeentry.CauseReportUnknownShape, relatorio: func(d map[string]any) {
+			delete(d, "versao_do_relatorio")
+			delete(d, "veredicto_do_ocr")
+		}},
 		{nome: "relatorio ocr de outra versao", causa: routeentry.CauseReportUnknownShape, relatorio: func(d map[string]any) { d["versao_do_relatorio"] = "2" }},
 		{nome: "relatorio ocr com membro desconhecido", causa: routeentry.CauseReportUnknownShape, relatorio: func(d map[string]any) { d["modo_extra"] = "real" }},
 		{nome: "veredicto com membro desconhecido", causa: routeentry.CauseReportUnknownShape, relatorio: func(d map[string]any) { rt.OCRVerdict(d)["veredicto_extra"] = "qualificado" }},
@@ -234,4 +238,21 @@ func TestAOS530_ListasFechadasDoOCRCobremOQueSeLe(t *testing.T) {
 			t.Errorf("rota medida: %q fora da lista", nome)
 		}
 	}
+}
+
+// UM RELATÓRIO COM A FORMA REAL DO AOS-529 — sem versão, sem veredicto e sem o digest de si
+// próprio, como o banco os escrevia antes do AOS-530 — é recusado por não conferir o digest
+// (`relatorio_invalido`), antes de se ler seja o que for dele.
+func TestAOS530_RelatorioComAFormaDoAOS529(t *testing.T) {
+	a := novoAmbiente(t)
+	doc := rt.OCRReportDoc(rt.ProfileDigest(t, rt.ToolProfileJSON))
+	delete(doc, "versao_do_relatorio")
+	delete(doc, "veredicto_do_ocr")
+	report := rt.Marshal(t, doc)
+	if _, err := routeentry.ReadOCRVerdict(report); routeentry.CauseOf(err) != routeentry.CauseReportInvalid {
+		t.Fatalf("leitura do relatorio do AOS-529: %v", err)
+	}
+	entry := rt.Marshal(t, rt.ToolEntryDoc(t, rt.ToolProfileJSON, rt.Board, rt.Region, "sha256:"+strings.Repeat("e", 64)))
+	rt.Write(t, a.dir, "r", entry, routeentry.Sign(entry, a.key.Priv), report)
+	exigirCausa(t, a.cfg, routeentry.CauseReportInvalid, "r")
 }

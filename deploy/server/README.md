@@ -1589,7 +1589,11 @@ ficheiros. As causas (vocabulário fechado): `pasta_sem_ancora`, `ancora_invalid
 `imagem_do_proxy_nao_declarada`, `relatorio_em_falta`, `relatorio_ilegivel`, `relatorio_invalido`,
 `relatorio_nao_e_o_citado`, `relatorio_de_forma_desconhecida`, `relatorio_sem_veredicto`,
 `veredicto_nao_vale_para_producao`, `veredicto_nao_qualificado`, `veredicto_de_outro_perfil`,
-`veredicto_de_outra_imagem_do_proxy`, `nome_fora_da_allowlist`, `nome_pedido_repetido`.
+`veredicto_de_outra_imagem_do_proxy`, `nome_fora_da_allowlist`, `nome_pedido_repetido`. Do registo
+de uso `tool` (AOS-530): `uso_invalido` (o `uso` não é `run` nem `tool`), `uso_tool_com_fatia`,
+`perfil_de_tool_com_capacidades_erradas` (sem `imagem`, ou com `tools`) e
+`relatorio_de_outra_experiencia` (o relatório citado não é da experiência `ocr`); e um registo
+`tool` para o alias do titular (`AOS_MODEL_NAME`) recusa o arranque com um erro próprio do nó.
 
 **Trocar ou retirar um perfil** é o mesmo procedimento: drenar, pôr na pasta os ficheiros novos
 (ou tirar os três do perfil que sai), recriar o nó, verificar o banner. Nunca a quente: a pasta só

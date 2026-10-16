@@ -678,8 +678,23 @@ func conferir(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "conferir:   digest do registo %s\n", e.EntryDigest)
 		fmt.Fprintf(stdout, "conferir:   digest do perfil  %s\n", e.ProfileDigest)
 		fmt.Fprintf(stdout, "conferir:   digest do relatorio %s\n", e.ReportDigest)
+		// O USO (AOS-530): um registo sem o membro é de uso run.
+		if e.ForTool() {
+			fmt.Fprintf(stdout, "conferir:   uso: tool — o perfil de um alias que so uma tool chama; nunca e candidato a servir runs\n")
+		} else {
+			fmt.Fprintf(stdout, "conferir:   uso: run\n")
+		}
 	}
 	fmt.Fprintf(stdout, "conferir: board %q, regiao %q; allowlist conferida: %s\n", o.board, o.regiao, qual)
-	fmt.Fprintln(stdout, "conferir: o no aceitaria este pacote no arranque. Compare o digest do registo com o que o route-profile-sign imprimiu. Fica por conferir o que so o servidor sabe: que a ancora, o board e a regiao dados aqui sao os do no")
+	porConferir := "que a ancora, o board e a regiao dados aqui sao os do no"
+	for _, e := range entradas {
+		if e.ForTool() {
+			// O titular é do nó (AOS_MODEL_NAME), e o posto não o sabe: o nó recusa arrancar com um
+			// registo de uso tool para o alias do titular (AOS-530).
+			porConferir += ", e que o alias de nenhum registo de uso tool e o do titular do no (AOS_MODEL_NAME): com ele o no recusa arrancar"
+			break
+		}
+	}
+	fmt.Fprintln(stdout, "conferir: o no aceitaria este pacote no arranque. Compare o digest do registo com o que o route-profile-sign imprimiu. Fica por conferir o que so o servidor sabe: "+porConferir)
 	return SaidaOK
 }

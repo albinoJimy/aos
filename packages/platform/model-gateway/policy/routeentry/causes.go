@@ -86,7 +86,10 @@ const (
 	// ou um valor de tipo errado num dos campos que se lêem.
 	CauseReportUnknownShape = "relatorio_de_forma_desconhecida"
 	// CauseReportWithoutVerdict — o relatório não é de uma qualificação: não traz veredicto. Para um
-	// registo de uso `tool`: o relatório `ocr` não traz o bloco do veredicto (os do AOS-529).
+	// registo de uso `tool`: um relatório `ocr` com a versão e o digest de si próprio, mas sem o bloco
+	// do veredicto. (Um relatório com a forma do AOS-529, anterior ao veredicto, não chega aqui: sem
+	// o digest de si próprio é [CauseReportInvalid]; com digest e sem versão,
+	// [CauseReportUnknownShape].)
 	CauseReportWithoutVerdict = "relatorio_sem_veredicto"
 	// CauseVerdictNotForProduction — o veredicto não vale para produção: a corrida não foi no
 	// modo `real`, ou o relatório diz ele próprio que não vale.
