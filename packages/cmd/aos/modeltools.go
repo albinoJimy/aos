@@ -77,6 +77,11 @@ type modelToolSpec struct {
 	// nomeados). É config TRUSTED — o modelo nunca escolhe o Command. Ausente ⇒ a tool é
 	// mediada mas não tem executor de sandbox ligado (só exercita a decisão). Ver sandboxwiring.go.
 	Sandbox *sandboxMapping `json:"sandbox,omitempty"`
+	// Modelo, quando presente, LIGA a tool a uma chamada ao Model Gateway do nó (AOS-530,
+	// ADR-042 §2.1): o alias que a tool chama. É config TRUSTED e exclusiva de `sandbox` (as duas
+	// recusam o arranque); só a tool `ocr_read` a pode ter — o efeito é código do nó. Ver
+	// ocr_tool.go.
+	Modelo *modeloMapping `json:"modelo,omitempty"`
 }
 
 // sandboxMapping é a face JSON do [sandbox.SandboxBinding] no registry: como os args do
@@ -158,6 +163,11 @@ func readModelToolSpecs() ([]modelToolSpec, error) {
 		}
 		if _, err := validateMutation(s); err != nil {
 			return nil, fmt.Errorf("tool %q: %w", strings.TrimSpace(s.Name), err)
+		}
+		// AOS-530: o bloco `modelo` — exclusivo de `sandbox`, só na `ocr_read`, com a capability e
+		// o recurso da tool.
+		if err := validarLigacaoModelo(s); err != nil {
+			return nil, err
 		}
 	}
 	return specs, nil

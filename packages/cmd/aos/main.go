@@ -2478,6 +2478,22 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	}); err != nil {
 		return nil, nil, err
 	}
+	// A TOOL `ocr_read` (AOS-530, ADR-042): com o bloco `modelo` no registo de tools, o nó só
+	// arranca com o alias na allowlist em vigor, um registo assinado de uso `tool` para ele, o
+	// preço do par (com a contabilidade composta) e a pasta semeada montada. Sem o bloco não lê
+	// nada mais e não compõe nada: o arranque é o de antes.
+	specs, err := readModelToolSpecs()
+	if err != nil {
+		return nil, nil, err
+	}
+	if spec := specDoOCR(specs); spec != nil {
+		ligacao, oerr := comporLigacaoOCR(spec, assinados, pol, region, board, costRec != nil)
+		if oerr != nil {
+			return nil, nil, oerr
+		}
+		// O registo `tool` existe (conferido acima), pelo que a pasta de perfis também.
+		assinados.ocr = ligacao
+	}
 	// CUTOVER DURO (AOS-278): o gateway compõe-se com um verifier LIGADO TARDIAMENTE. Nasce a
 	// negar fail-closed; o Bootstrap liga-o (via o binder devolvido) ao verifier REAL do nó —
 	// o MESMO que verifica as tool calls. NÃO há stub allow-all no caminho.
@@ -2503,6 +2519,9 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	client, err := newGatewayModelClientComPerfis(modelVerifier, endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit, costRec, production, egressHosts, egressTimeout,
 		rota, forma, estado, assinados, append(estadoOpcoes, modelProjectionOption(projection), modelProjectionVersionOption(projectionVersion), formaOpcao, rejeicaoOpcao)...)
 	if err != nil {
+		if assinados != nil {
+			assinados.ocr.fechar()
+		}
 		return nil, nil, err
 	}
 	// AOS-505: com a governação da rota ligada, o cliente leva os contadores para o Bootstrap os

@@ -235,7 +235,9 @@ func toolsSemExecutor(specs []modelToolSpec, bindings map[string]sandbox.Sandbox
 	var out []string
 	for _, s := range specs {
 		nome := strings.TrimSpace(s.Name)
-		if nome == "" {
+		if nome == "" || s.Modelo != nil {
+			// AOS-530: uma tool com o bloco `modelo` tem executor — a chamada ao gateway do nó,
+			// registada no RM pela raiz de composição (ocr_tool.go).
 			continue
 		}
 		if _, tem := bindings[nome]; !tem {

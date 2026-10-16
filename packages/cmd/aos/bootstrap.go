@@ -1072,6 +1072,10 @@ type Node struct {
 	// (AOS-509), para o `/metrics`. nil sem gateway de modelo composto. Ver model_rejected.go.
 	respostasRecusadas *contadoresDeRejeicao
 
+	// ocr é a tool `ocr_read` composta (AOS-530), para o `/metrics` (`aos_ocr_read_total`). nil
+	// sem a tool no registo — e a família não é publicada. Ver ocr_tool.go.
+	ocr *ligacaoOCR
+
 	// estadoDoProvider conta os turnos ao vivo cuja resposta trouxe estado opaco do provider, pelo
 	// resultado da captura (AOS-514), para o `/metrics`. nil com a captura desligada — a família
 	// não é publicada, e os runs novos ficam no layout de sempre. Ver model_state_env.go.
@@ -2387,6 +2391,22 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A TOOL `ocr_read` (AOS-530, ADR-042): composta na fronteira de ambiente com o gateway do nó
+	// e encontrada no cliente de modelo, como os perfis assinados. Declarada no registo de tools
+	// e sem ligação (sem AOS_MODEL_ENDPOINT, ou com um cliente de modelo injectado) ⇒ o nó não
+	// arranca: o efeito dela é uma chamada a ESSE gateway e não há outro caminho.
+	ocrLigada := ocrDoCliente(cfg.Model)
+	ocrDeclarada, err := ocrDeclaradaNoRegisto()
+	if err != nil {
+		return nil, err
+	}
+	if ocrDeclarada && ocrLigada == nil {
+		return nil, ErrOCRSemGateway
+	}
+	var ocrRewriter func(referencemonitor.Call) (referencemonitor.Call, error)
+	if ocrLigada != nil {
+		ocrRewriter = newOCREffectRewriter()
+	}
 	// (7-ante) ORÇAMENTO POR-RUN (AOS-008, ligado em AOS-256/AOS-257). nil ⇒ AOS_BUDGET_MAX_TOKENS
 	// não está definida ⇒ o ponto de injecção "budget" da cadeia fica com o stub neutro. É ESTE
 	// valor — o que foi REALMENTE composto, não a intenção da config — que alimenta a linha do
@@ -2484,7 +2504,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	runtimeOpts = append(runtimeOpts, agentruntime.WithModelAdmission(modelAdmission.port()))
 
 	sec, err := integration.NewSecuredRuntime(integration.SecuredConfig{
-		EffectRewriter: newSandboxEffectRewriter(sandboxBindings), // AOS-005: args→ExecRequest; nil ⇒ sem reescrita
+		EffectRewriter: comporReescritas(newSandboxEffectRewriter(sandboxBindings), ocrRewriter), // AOS-005: args→ExecRequest; AOS-530: args→entrada da ocr_read; nil ⇒ sem reescrita
 		Model:          model,
 		Recorder:       agentruntime.NewTurnRecorder(es),
 		Catalog:        catalog,
@@ -2537,6 +2557,11 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// em produção o driver de referência in-process deixa de ser eleito
 	// ([ErrProductionNeedsSandboxDriver]).
 	if err := registerSandboxLaunchers(sec, es, sandboxBindings, sandboxSemExecutor, cfg.ProductionMode, log); err != nil {
+		return nil, err
+	}
+	// (7-ter) A TOOL `ocr_read` (AOS-530, ADR-042 §2.1) — uma CostingToolFunc no RM do nó, cujo
+	// efeito é UMA chamada ao gateway do nó. Só com ela composta; sem ela, nada.
+	if err := registarOCR(sec, ocrLigada, log); err != nil {
 		return nil, err
 	}
 
@@ -3339,6 +3364,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		canary:                  canaryDoModelo,                // AOS-520: o candidato e o livro do canary (nil ⇒ sem pasta de perfis)
 		formaDaResposta:         formaDoCliente(cfg.Model),     // AOS-507: turnos pela forma da resposta, para o /metrics (nil ⇒ desligada)
 		respostasRecusadas:      rejeicoesDoCliente(cfg.Model), // AOS-509: respostas recusadas por causa, para o /metrics
+		ocr:                     ocrLigada,                     // AOS-530: a tool ocr_read, para o /metrics (nil ⇒ sem a tool)
 		estadoDoProvider:        estadoDoCliente(cfg.Model),    // AOS-514: estado opaco do provider por resultado, para o /metrics (nil ⇒ desligada)
 		completionVerdict:       completionVerdict,             // AOS-493: modo do veredicto de conclusão dos runs novos
 		stateGates:              stateGates,                    // AOS-218: fonte do StateGate durável por-run para o steer
@@ -3387,6 +3413,8 @@ func (n *Node) Close() error {
 	if err := n.posseWAL.Largar(); err != nil && firstErr == nil {
 		firstErr = err
 	}
+	// AOS-530: a pasta semeada da `ocr_read`, aberta com os.Root no arranque. Nil-safe sem a tool.
+	n.ocr.fechar()
 	return firstErr
 }
 
