@@ -15,6 +15,7 @@ import (
 	"time"
 
 	budget "github.com/aos-ref/control-plane/budget"
+	integration "github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 	"github.com/aos-ref/substrate/eventstore"
@@ -178,5 +179,101 @@ func TestAOS532_No_OCRSemDuplaContagem(t *testing.T) {
 	}
 	if pico := aos532Pico(t, n); pico != consumo.Tokens {
 		t.Fatalf("o no do run debitou %d tokens e o consumo duravel soma %d — contagem a dobrar ou fuga", pico, consumo.Tokens)
+	}
+}
+
+// A REINCARNAÇÃO REAL LÊ O FACTO. O ciclo de aprovação do nó composto (autonomia L4, four-eyes)
+// com o orçamento por-run: o `passo_um` escala na incarnação 1 e corre na 2 (onde confirma a sua
+// estimativa); o `passo_dois` escala na 2 e corre na 3. Dentro do efeito do `passo_dois`, na
+// incarnação 3, o que resta ao run tem de ser `tecto − turnos − estimativa do passo_um −
+// estimativa do passo_dois` (esta última reservada pelo hook antes do efeito). As estimativas
+// calculam-se aqui pelo estimador composto sobre a call, e não do stream — é o stream que está
+// sob prova.
+//
+// Falha-antes: com a chave nua, o facto do `passo_um` é engolido pela mediação, a incarnação 3
+// nasce sem ele e sobra-lhe a estimativa do `passo_um` a mais.
+func TestAOS532_No_ReincarnacaoNasceComTectoMenosTurnosMenosTools(t *testing.T) {
+	const tecto = 1_000_000
+	t.Setenv("AOS_BUDGET_MAX_TOKENS", "1000000")
+	h := newACNHarness(t)
+	if h.node.orcamento == nil {
+		t.Fatal("o orcamento por-run tinha de ficar composto com AOS_BUDGET_MAX_TOKENS")
+	}
+	h.model.guiao = func(v agentruntime.PromptView) agentruntime.ModelResponse {
+		var r agentruntime.ModelResponse
+		switch v.Turn {
+		case 1:
+			r = acnCall("passo_um", "doc-a")
+		case 2:
+			r = acnCall("passo_dois", "doc-b")
+		default:
+			r = agentruntime.ModelResponse{Text: "concluido", Final: true}
+		}
+		r.Usage = agentruntime.Usage{InputTokens: 100, OutputTokens: 7}
+		return r
+	}
+	var restaNoPassoDois int64 = -1
+	h.noEfeito = func(tool string) {
+		if tool == "passo_dois" {
+			restaNoPassoDois, _ = h.node.orcamento.AvailableTokens(acnRunID)
+		}
+	}
+
+	ctx := context.Background()
+	h.submete(t)
+	for i, req := range []string{"req-532-1", "req-532-2"} {
+		h.esperaFim(t, acnRunID)
+		if _, susp := h.svc.Suspended(ctx, acnRunID); !susp {
+			t.Fatalf("a tool %d tinha de escalar e o run ficar suspenso", i+1)
+		}
+		h.aprovaPendente(t, req)
+		if err := h.svc.Resume(ctx, acnRunID, h.token(t)); err != nil {
+			t.Fatalf("Resume %d: %v", i+1, err)
+		}
+	}
+	h.esperaFim(t, acnRunID)
+	if h.execucoes("passo_um") != 1 || h.execucoes("passo_dois") != 1 || restaNoPassoDois < 0 {
+		t.Fatalf("as duas tools corriam uma vez, a segunda na incarnacao 3 (um=%d dois=%d resta=%d)",
+			h.execucoes("passo_um"), h.execucoes("passo_dois"), restaNoPassoDois)
+	}
+
+	evs, err := h.node.EventStore.Read(ctx, acnRunID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Os turnos ANTES do efeito do passo_dois: o 1 e o 2 (o 3 é a resposta final, depois dele).
+	var turnosAntes int64
+	for _, e := range evs {
+		if e.Type != agentruntime.EventTypeTurnRecorded {
+			continue
+		}
+		var p turnLedgerPayload
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			t.Fatal(err)
+		}
+		if p.Turn <= 2 {
+			turnosAntes += p.InputTokens + p.OutputTokens
+		}
+	}
+	estimativa := func(tool, res string) int64 {
+		c := acnCall(tool, res).ToolCalls[0]
+		return integration.TokenOnlyEstimator(&referencemonitor.Call{
+			ToolID: c.ToolID, Capability: c.Capability, Input: c.Input,
+			Resource: referencemonitor.Resource{Type: c.ResourceType, Value: c.ResourceValue, Region: c.ResourceRegion},
+		}).Tokens
+	}
+	um, dois := estimativa("passo_um", "doc-a"), estimativa("passo_dois", "doc-b")
+	t.Logf("turnos 1-2: %d tokens; estimativas: passo_um %d, passo_dois %d; resta no passo_dois: %d", turnosAntes, um, dois, restaNoPassoDois)
+	if turnosAntes <= 0 || um <= 0 {
+		t.Fatalf("turnos (%d) e estimativa (%d) tinham de ser positivos", turnosAntes, um)
+	}
+	if quer := tecto - turnosAntes - um - dois; restaNoPassoDois != quer {
+		t.Fatalf("a incarnacao 3 resta %d tokens no efeito do passo_dois; quer %d = tecto %d - turnos %d - passo_um %d - passo_dois %d (sobram %d: a estimativa do passo_um esquecida?)",
+			restaNoPassoDois, quer, tecto, turnosAntes, um, dois, restaNoPassoDois-quer)
+	}
+	// E as estimativas que o teste calculou são as que o nó gravou.
+	c := aos532Consumos(t, evs)
+	if len(c) != 2 || c[0].p.Tokens != um || c[1].p.Tokens != dois {
+		t.Fatalf("os factos de consumo no stream (quer %d e %d): %+v", um, dois, c)
 	}
 }

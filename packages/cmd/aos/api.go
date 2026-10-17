@@ -1452,8 +1452,9 @@ type pendingExhaustionWire struct {
 	StepID string `json:"step_id"`
 	Turn   int    `json:"turn"`
 	// Threshold/ConsumedTokens/LimitTokens são o PORQUÊ da pergunta, nos termos em que o
-	// burn-down a produziu. Os tokens são um LIMITE INFERIOR do consumo do run: o ledger de
-	// turnos conta os TURNOS DE MODELO e não pesa tool calls (AOS-261).
+	// burn-down a produziu. Os tokens são os do ledger do run: os turnos de modelo medidos, a
+	// estimativa de cada tool call confirmada (AOS-287/AOS-532) e as chamadas a modelo feitas
+	// por tools (AOS-530); não contam os sub-runs delegados (outro `run_id`).
 	Threshold      float64 `json:"threshold"`
 	ConsumedTokens int64   `json:"consumed_tokens"`
 	LimitTokens    int64   `json:"limit_tokens"`

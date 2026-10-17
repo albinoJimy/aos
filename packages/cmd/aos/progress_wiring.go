@@ -398,7 +398,7 @@ func (p *runProgress) avisar(runID string, ev progresssurface.RunEvaluation) {
 	if ev.Warning == nil || !ev.Warning.SpanEmitted {
 		return
 	}
-	p.logf("AVISO DE BURN-DOWN (AOS-262) — run %q, turno %d: %.0f%% do tecto por-run consumido (%s, limiar %.2f). Contagem dos TURNOS DE MODELO e so deles (limite INFERIOR: o ledger nao pesa tool calls). Este aviso NAO para o run nem pede escolha — quem para e o disjuntor ou o steer do operador",
+	p.logf("AVISO DE BURN-DOWN (AOS-262) — run %q, turno %d: %.0f%% do tecto por-run consumido (%s, limiar %.2f). Contagem do ledger do run: turnos de modelo medidos, a estimativa de cada tool call confirmada (tokens, 0 USD) e as chamadas a modelo feitas por tools; sem os sub-runs delegados. Este aviso NAO para o run nem pede escolha — quem para e o disjuntor ou o steer do operador",
 		runID, ev.Warning.Turn, ev.Warning.Fraction*100, burndownDimensoes(ev), ev.Warning.Threshold)
 }
 

@@ -165,10 +165,12 @@ func newTurnLedgerBurndown(store turnLedgerStore) *turnLedgerBurndown {
 
 // ConsumedByRun implementa [progresssurface.BurndownSource].
 //
-// A soma é dos TURNOS DE MODELO — a linha de custo dominante — e só deles: o ledger de
-// turnos não pesa tool calls, pelo que o valor é um LIMITE INFERIOR do consumo do run (o
-// alcance está declarado em [progresssurface.RunConsumption] e no banner do nó). Um limite
-// inferior faz o aviso disparar TARDE, nunca cedo por engano.
+// A soma é a do que o nó do run DEBITOU, lida do stream do run: os TURNOS DE MODELO medidos
+// (`turn.recorded`, a linha de custo dominante), a ESTIMATIVA de cada tool call confirmada
+// ([EventTypeToolCallBudget], em tokens e sem dólares; AOS-287, no stream desde o AOS-532) e o
+// custo MEDIDO das chamadas a modelo feitas por tools ([EventTypeToolModelCost], AOS-530). Não é
+// o total do run: os sub-runs delegados têm outro `run_id` (o alcance está declarado em
+// [progresssurface.RunConsumption] e no banner do nó).
 func (s *turnLedgerBurndown) ConsumedByRun(ctx context.Context, runID string) (progresssurface.RunConsumption, error) {
 	if s == nil {
 		// Não pode acontecer pela via composta (a fonte nil não é ligada), mas um nil aqui

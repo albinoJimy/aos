@@ -1516,6 +1516,19 @@ emissor.
 - [x] **A retoma lê-o.** Uma fonte nova do burn-down (a que a incarnação seguinte usa, sem cursor)
       soma turnos e tool calls, e a soma é igual ao que o nó do run debitou nessa incarnação (o pico
       de consumo do `RunBudget`).
+- [x] **Reincarnação real.** No ciclo de aprovação do nó composto (duas tools que escalam e
+      correm em incarnações seguintes), a incarnação 3 tem, no efeito da segunda tool,
+      `tecto − turnos − estimativa da primeira − estimativa da segunda` (1 000 000 − 214 − 25 − 25
+      = 999 736), com as estimativas calculadas pelo estimador sobre a call e não lidas do stream
+      (`TestAOS532_No_ReincarnacaoNasceComTectoMenosTurnosMenosTools`). Com a chave nua sobram 25
+      tokens: a estimativa da primeira tool esquecida.
+- [x] **O que se declara sobre o consumo durável deixa de dizer «só turnos».** O banner de
+      arranque do burn-down, a linha do aviso de burn-down, a doc de `pending_exhaustion`, o
+      `ConsumedByRun`, o `RunConsumption` e a fonte do burn-down (`progress-surface`), e o
+      `deploy/node/README.md` (o aviso e a quota mensal) dizem o que é agora: turnos medidos + a
+      estimativa de cada tool call confirmada (tokens, 0 USD) + as chamadas a modelo feitas por
+      tools. O marcador «LIMITE INFERIOR» do `TestAOS262_BannerNaoPrometeDecisaoNemTotal` passa a
+      «NAO e o TOTAL do run» (os sub-runs delegados continuam de fora).
 - [x] **A `ocr_read` sem dupla contagem.** O facto de consumo (a reserva do hook do Reference
       Monitor, em tokens e sem dólares) e o `budget.toolcall.model_cost` (a chamada ao modelo,
       medida) somam-se, e a soma é igual ao que o nó debitou: são duas reservas do mesmo nó, não a
