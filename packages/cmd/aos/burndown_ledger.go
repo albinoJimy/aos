@@ -223,11 +223,13 @@ func (s *turnLedgerBurndown) ConsumedByRun(ctx context.Context, runID string) (p
 		// tokens e o custo MEDIDOS pelo gateway para essa chamada. Soma ao mesmo acumulado, pela
 		// mesma razão das tool calls, e não conta como turno. Não há dupla contagem: o
 		// `turn.recorded` não vê a chamada da tool, e o `budget.toolcall.committed` da mesma call
-		// levaria só a estimativa do hook, sem dólares — e hoje nem chega ao stream num nó com o
-		// canal de mediação durável (AOS-379): grava com a chave `run_id:<step_id>`, que é a do
-		// `tool.call.mediated` da mesma call, e o Event Store devolve-o como duplicado (defeito do
-		// AOS-287, medido no AOS-530, por corrigir em ticket próprio). Uma chamada NÃO MEDIDA chega
-		// com `usage_ausente` e a reserva inteira nos valores, que se somam como os medidos.
+		// leva outra quantia — a reserva do hook do Reference Monitor, a pegada dos argumentos na
+		// transcrição, em tokens e sem dólares —, que o nó do run TAMBÉM debitou nesta
+		// incarnação, ao lado da reserva da chamada ao modelo. São duas reservas do mesmo nó e
+		// dois factos; somá-los é o que o nó debitou, não uma contagem a dobrar (AOS-532, selado
+		// por TestAOS532_No_OCRSemDuplaContagem). Desde o AOS-532 o `committed` chega ao stream:
+		// tem a chave própria `run_id:consumo-<step_id>`. Uma chamada NÃO MEDIDA chega com
+		// `usage_ausente` e a reserva inteira nos valores, que se somam como os medidos.
 		if ev.Type == EventTypeToolModelCost {
 			var mc custoDeToolPayload
 			if err := json.Unmarshal(ev.Payload, &mc); err != nil {
