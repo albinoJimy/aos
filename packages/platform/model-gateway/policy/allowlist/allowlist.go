@@ -78,7 +78,7 @@ const wildcard = "*"
 // ([ErrTrustAnchorMismatch]), pois não bate com o anchor revisto aqui. Rodar a chave
 // exige uma alteração auditável desta constante (code-review) + a nova assinatura
 // produzida offline (ver gen_signature.go).
-const trustAnchorFingerprint = "6be7ec9e530ee0b0fb6400e2dbc19b6187a8ef13cf0d309f2c0a1503d20c1698"
+const trustAnchorFingerprint = "e25632b41060fd906ab20288c68b36ee8be438dd29df68b286eae9182df9466c"
 
 // Effect é o veredicto da allowlist.
 type Effect string
