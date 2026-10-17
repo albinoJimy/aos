@@ -77,8 +77,9 @@ func TestAOS287_ConsumoDeToolCallSobreviveAReincarnacao(t *testing.T) {
 // ---------------------------------------------------------------------------
 // TESTE — IDEMPOTENTE: a mesma tool call re-tentada não conta duas vezes.
 //
-// A chave é `run_id:step_id`, a mesma que o RM usa para correlacionar a mediação. Sem
-// isto, um retry inflaria o consumo e o run seria estrangulado por trabalho que não fez.
+// A chave é `run_id:consumo-<step_id>` (AOS-532: com `run_id:<step_id>`, a da mediação da
+// mesma call, o facto era engolido). Sem a idempotência, um retry inflaria o consumo e o run
+// seria estrangulado por trabalho que não fez.
 // ---------------------------------------------------------------------------
 
 func TestAOS287_RetryDaMesmaToolCallNaoContaDuasVezes(t *testing.T) {

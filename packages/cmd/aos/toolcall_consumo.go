@@ -44,16 +44,45 @@ const EventTypeToolCallBudget = "budget.toolcall.committed"
 type toolCallBudgetPayload struct {
 	Tokens       int64 `json:"tokens"`
 	CostMicroUSD int64 `json:"cost_micro_usd"`
+	// StepID é o `step_id` da tool call (AOS-532): o do envelope leva o prefixo
+	// [toolCallBudgetStepPrefix], e é por este que o facto se correlaciona com o
+	// `tool.call.mediated` da mesma call. Omitido nos testes que gravam o payload à mão.
+	StepID string `json:"step_id,omitempty"`
 }
+
+// toolCallBudgetStepPrefix é o prefixo do `step_id` do ENVELOPE do facto (AOS-532).
+//
+// # Porque uma chave própria
+//
+// O Event Store deduplica pela chave `run_id:step_id` DENTRO do stream, QUALQUER que seja o tipo
+// do evento, e devolve `StatusDuplicate` SEM erro. No stream do run, `run_id:<step_id>` é já a
+// chave do `tool.call.mediated` da mesma call (o canal de mediação durável do AOS-379, sempre
+// composto no nó). Com a chave nua, este facto chegava DEPOIS da mediação, era engolido como
+// duplicado e o registo devolvia sucesso: medido no AOS-530, 0 de 19 eventos no stream — o
+// consumo durável das tool calls que o AOS-287 prometia não existia, e a retoma esquecia-o.
+//
+// `consumo-` não colide com nenhum domínio de dedup do stream do run: os `step_id` do runtime
+// (`step-NNNNNN-tool-N`), o step-ledger (`ledger-`), o checkpoint (`ckpt-`), a captura de replay
+// (`cap-`), o custo de uma tool que chama um modelo (`custo-modelo-`, AOS-530), o controlo
+// (`ctrl-`), as transições (`state-`), as compensações (`comp-`) e as leases (`lease-`). O nome
+// é o do vocabulário do ficheiro (o consumo da tool call), e não `committed-`, que descreve o
+// ciclo da reserva e não o facto.
+//
+// COMPATIBILIDADE: nenhum leitor procura este facto pela chave — o [turnLedgerBurndown] filtra
+// pelo TIPO ao ler o stream —, e nenhum run antigo tem o facto com a chave nua, porque nunca
+// chegou ao stream num nó composto. A idempotência por (`run_id`, `step_id`) mantém-se: o
+// prefixo é uma função fixa do `step_id`.
+const toolCallBudgetStepPrefix = "consumo-"
 
 // registoDeConsumoDeToolCall constrói o registo durável sobre o Event Store.
 //
 // ESCREVE NO STREAM DO RUN (`stream_id == run_id`), que é onde o ledger de turnos já lê —
 // é isso que torna a soma possível sem uma segunda leitura noutro store.
 //
-// IDEMPOTENTE por `run_id:step_id`: é a mesma chave que o Reference Monitor usa para
-// correlacionar a mediação, e é o que garante que uma tool call re-tentada não conta duas
-// vezes. Um `StatusDuplicate` do Event Store é sucesso, não erro — o facto já lá está.
+// IDEMPOTENTE por (`run_id`, `step_id`) da tool call, com a chave de envelope
+// `run_id:consumo-<step_id>` ([toolCallBudgetStepPrefix], AOS-532): uma tool call re-tentada
+// não conta duas vezes, e o facto não colide com o `tool.call.mediated` da mesma call. Um
+// `StatusDuplicate` do Event Store é sucesso, não erro — o facto já lá está.
 func registoDeConsumoDeToolCall(es eventstore.EventStore, producer eventstore.Producer) func(context.Context, string, string, budget.Amount) error {
 	if es == nil {
 		return nil
@@ -67,7 +96,7 @@ func registoDeConsumoDeToolCall(es eventstore.EventStore, producer eventstore.Pr
 		if amt.Tokens == 0 && amt.CostMicroUSD == 0 {
 			return nil
 		}
-		raw, err := json.Marshal(toolCallBudgetPayload{Tokens: amt.Tokens, CostMicroUSD: amt.CostMicroUSD})
+		raw, err := json.Marshal(toolCallBudgetPayload{Tokens: amt.Tokens, CostMicroUSD: amt.CostMicroUSD, StepID: stepID})
 		if err != nil {
 			return err
 		}
@@ -75,7 +104,7 @@ func registoDeConsumoDeToolCall(es eventstore.EventStore, producer eventstore.Pr
 			Type:     EventTypeToolCallBudget,
 			Payload:  raw,
 			RunID:    runID,
-			StepID:   stepID,
+			StepID:   toolCallBudgetStepPrefix + stepID,
 			Producer: producer,
 		})
 		return err

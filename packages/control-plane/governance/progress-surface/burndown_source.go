@@ -45,11 +45,12 @@ package progresssurface
 //     modelo devolveu (`resp.Usage`), gravado na mesma transacção que torna o turno
 //     durável. Não há uma segunda contabilidade a divergir da primeira.
 //
-// O que se PERDE com (b), declarado: o ledger só tem o TURNO DE MODELO. O custo de uma
-// tool call não está lá (nenhum evento de mediação carrega tokens), e por isso o
-// [Burndown] desta fonte é um LIMITE INFERIOR do consumo do run — ver [RunConsumption].
-// Um limite inferior faz o aviso disparar TARDE, nunca cedo por engano; a alternativa (a)
-// não estava melhor servida (os spans `chat` são exactamente a mesma dimensão).
+// O que (b) não tinha à partida, declarado: o ledger só tinha o TURNO DE MODELO, porque nenhum
+// evento de mediação carrega tokens. O produtor do nó passou a gravar no mesmo stream a
+// estimativa de cada tool call confirmada (AOS-287, que só chega ao stream desde o AOS-532) e o
+// custo medido das chamadas a modelo feitas por tools (AOS-530), e a fonte soma-os — ver
+// [RunConsumption]. A alternativa (a) não estava melhor servida (os spans `chat` são
+// exactamente a dimensão do turno).
 
 import (
 	"context"
@@ -59,10 +60,12 @@ import (
 
 // RunConsumption é o consumo ACUMULADO de um run, lido do LEDGER DE TURNOS.
 //
-// ALCANCE, declarado para não ser confundido com «tudo o que o run gastou»: conta os
-// TURNOS DE MODELO (a linha de custo dominante) e SÓ eles. Não conta tool calls (o ledger
-// de turnos não as pesa) nem sub-runs delegados (outro `run_id`, outro stream). É por isso
-// um LIMITE INFERIOR do consumo — quem o lê não pode apresentá-lo como total.
+// ALCANCE, declarado para não ser confundido com «tudo o que o run gastou»: conta o que o
+// produtor do ledger grava no stream do run. No nó (`cmd/aos`): os TURNOS DE MODELO medidos (a
+// linha de custo dominante), a ESTIMATIVA de cada tool call confirmada (em tokens e sem
+// dólares) e o custo MEDIDO das chamadas a modelo feitas por tools. Não conta sub-runs
+// delegados (outro `run_id`, outro stream) — quem o lê não pode apresentá-lo como total da
+// árvore.
 type RunConsumption struct {
 	// Consumed é o acumulado nas duas dimensões de [budget.Amount]. A dimensão
 	// CostMicroUSD vale o que o produtor do ledger lá pôs: enquanto o canal de custo não

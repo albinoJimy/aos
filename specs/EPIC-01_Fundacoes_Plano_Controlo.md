@@ -1448,6 +1448,118 @@ atravessa-a dentro do orçamento, e o perdedor da corrida sai pela posse.
 
 ---
 
+## AOS-532 — O `budget.toolcall.committed` nunca chega ao stream do run: colide com a chave do `tool.call.mediated` da mesma call
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-01 — Fundações do Plano de Controlo |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | fix |
+| Prioridade | P2: o tecto por-run continua a morder dentro de cada incarnação; o que falha é o consumo de tool calls numa retoma, na quota mensal e no aviso de burn-down, em silêncio |
+| Estimativa | S |
+| Dependências | AOS-287 (o facto de consumo, ENTREGUE), AOS-379 (o canal de mediação durável que ocupa a chave), AOS-530 (onde o defeito foi medido e o precedente da chave própria) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos/toolcall_consumo.go`, `packages/cmd/aos/burndown_ledger.go` (`ConsumedByRun`), `packages/integration/budget.go` (`ConsumoDuravel`, `LigarRegistoDeConsumo`), `packages/substrate/eventstore/event.go` (a chave de idempotência), `packages/cmd/aos/ocr_custo.go` (o precedente `custo-modelo-`), `tecnica/13_Modelo_Dados_Eventos.md` |
+
+### Contexto
+
+O AOS-287 fechou a fuga do consumo de tool calls numa retoma com um facto próprio,
+`budget.toolcall.committed`, gravado no stream do run por cada tool call confirmada e somado pelo
+`ConsumedByRun` do burn-down ao lado dos turnos. Gravava-se com a chave de envelope
+`run_id:<step_id>`.
+
+No stream do run essa chave já é a do `tool.call.mediated` da mesma call: o canal de mediação
+durável do AOS-379 (`MediationEvents: es`) está sempre composto no nó, e o selo é gravado antes do
+efeito. O Event Store deduplica pela chave `run_id:step_id` dentro do stream, **qualquer que seja o
+tipo** (`event.go`), e um `Append` com uma chave já gravada devolve `StatusDuplicate` **sem erro**.
+O registo de consumo trata o duplicado como sucesso. Resultado: o facto é engolido e ninguém o
+vê.
+
+**Medido duas vezes, de forma independente.** Durante o AOS-530, num nó composto com o orçamento
+por-run ligado: 0 de 19 factos `budget.toolcall.committed` chegaram ao stream; com o `step_id` do
+envelope mudado para um prefixo próprio, chegaram. E por este ticket, com o teste novo
+`TestAOS532_No_CommittedChegaAoStream` corrido sobre o código anterior: 2 mediações, 2 execuções
+e 0 factos de consumo (e 0 também no caso da `ocr_read`). Os testes do AOS-287 não o apanhavam
+porque escreviam o facto num stream sem a mediação.
+
+**Consequência.** O consumo durável das estimativas das tool calls que o AOS-287 promete não
+existia num nó composto: dentro de uma incarnação o nó de orçamento debita-as, mas a incarnação
+seguinte de um run retomado nasce com `tecto − turnos` e esquece-as; a liquidação da quota mensal
+por principal (AOS-457) e o aviso de burn-down lêem a mesma soma e também não as viam. É a mesma
+forma do defeito do AOS-481 (o `tool.call.outcome` engolido pelo selo do mesmo passo), noutro
+emissor.
+
+### Âmbito
+
+- A chave de envelope do facto passa a `run_id:consumo-<step_id>`. O prefixo `consumo-` não colide
+  com nenhum domínio de dedup do stream do run: os `step_id` do runtime (`step-NNNNNN-tool-N`),
+  `ledger-`, `ckpt-`, `cap-`, `custo-modelo-`, `ctrl-`, `state-`, `comp-`, `lease-`. Escolhe-se o
+  nome do facto (o consumo da tool call) e não `committed-`, que nomeia o ciclo da reserva.
+- O `step_id` da tool call passa a ir no payload (`step_id`), para correlacionar o facto com o
+  `tool.call.mediated` da mesma call, como no `budget.toolcall.model_cost`.
+- Compatibilidade: nenhum leitor procura o facto pela chave (o `ConsumedByRun` filtra pelo tipo),
+  e nenhum stream antigo de um nó composto tem o facto com a chave nua, porque nunca lá chegou. A
+  idempotência por (`run_id`, `step_id`) mantém-se: o prefixo é uma função fixa do `step_id`.
+- Fora de âmbito: o `tool.call.outcome` (AOS-481, aberto) e reconstituir o consumo que ficou por
+  gravar em runs antigos.
+
+### Critérios de Aceitação
+
+- [x] **Reprodução antes da correcção.** `TestAOS532_ChaveNaoColideComAMediacao`,
+      `TestAOS532_No_CommittedChegaAoStream` e `TestAOS532_No_OCRSemDuplaContagem` correm vermelhos
+      com a chave nua (verificado: 0 factos de consumo no stream nos três).
+- [x] **No nó composto**, com o orçamento por-run e o canal de mediação durável, o facto aparece
+      no stream do run, um por tool call, com a chave própria e o `step_id` da call no payload.
+- [x] **Idempotente.** Duas escritas do mesmo passo deixam um facto, também com o
+      `tool.call.mediated` do passo já gravado.
+- [x] **A retoma lê-o.** Uma fonte nova do burn-down (a que a incarnação seguinte usa, sem cursor)
+      soma turnos e tool calls, e a soma é igual ao que o nó do run debitou nessa incarnação (o pico
+      de consumo do `RunBudget`).
+- [x] **Reincarnação real.** No ciclo de aprovação do nó composto (duas tools que escalam e
+      correm em incarnações seguintes), a incarnação 3 tem, no efeito da segunda tool,
+      `tecto − turnos − estimativa da primeira − estimativa da segunda` (1 000 000 − 214 − 25 − 25
+      = 999 736), com as estimativas calculadas pelo estimador sobre a call e não lidas do stream
+      (`TestAOS532_No_ReincarnacaoNasceComTectoMenosTurnosMenosTools`). Com a chave nua sobram 25
+      tokens: a estimativa da primeira tool esquecida.
+- [x] **O que se declara sobre o consumo durável deixa de dizer «só turnos».** O banner de
+      arranque do burn-down, a linha do aviso de burn-down, a doc de `pending_exhaustion`, o
+      `ConsumedByRun`, o `RunConsumption` e a fonte do burn-down (`progress-surface`), e o
+      `deploy/node/README.md` (o aviso e a quota mensal) dizem o que é agora: turnos medidos + a
+      estimativa de cada tool call confirmada (tokens, 0 USD) + as chamadas a modelo feitas por
+      tools. O marcador «LIMITE INFERIOR» do `TestAOS262_BannerNaoPrometeDecisaoNemTotal` passa a
+      «NAO e o TOTAL do run» (os sub-runs delegados continuam de fora).
+- [x] **A `ocr_read` sem dupla contagem.** O facto de consumo (a reserva do hook do Reference
+      Monitor, em tokens e sem dólares) e o `budget.toolcall.model_cost` (a chamada ao modelo,
+      medida) somam-se, e a soma é igual ao que o nó debitou: são duas reservas do mesmo nó, não a
+      mesma contada duas vezes. Os dólares do run são só os do modelo.
+- [x] O comentário do `ConsumedByRun` que dizia que o facto não chega ao stream, e o `tecnica/13`
+      (domínios de dedup, correlação e catálogo), descrevem a chave nova.
+- [x] Os gates locais verdes, com a RTM regenerada.
+
+### Notas
+
+- **Efeito em produção.** O comportamento dentro de uma incarnação não muda: o nó já debitava a
+  reserva de cada tool call. Muda o que se lê do stream: uma retoma, a liquidação da quota mensal e
+  o aviso de burn-down passam a contar a estimativa de cada tool call confirmada. A estimativa é a
+  pegada dos argumentos e do envelope na transcrição (`TokenOnlyEstimator`, AOS-258): 26 tokens
+  por uma `doc_read` com `{"doc_id":"a"}` e 83 por uma `ocr_read`, nos testes; dezenas a poucas
+  centenas de tokens por tool call com argumentos realistas, e zero dólares. Com
+  `AOS_BUDGET_MAX_TOKENS=200000` e ~1 750 tokens medidos por run, um run com dez tool calls passa
+  a mostrar mais umas centenas de tokens: uma retoma pode negar mais cedo, mas só um run que já
+  estivesse a essa distância do tecto. Não nega runs de produção nesta configuração.
+- **Porque a soma com o `model_cost` não é dupla contagem.** A `ocr_read` reserva duas vezes do
+  nó do run: o hook do Reference Monitor reserva a estimativa da tool call antes do efeito, e a tool
+  reserva o máximo da chamada ao modelo e salda-o pelo medido. O consumo durável regista as duas,
+  como o nó as debitou. O que seria dupla contagem é somar o `model_cost` a um turno, e isso não
+  acontece: o `turn.recorded` não vê a chamada da tool.
+
+### Estado
+
+**Em PR, 2026-10-17.** Correcção e testes feitos offline.
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |

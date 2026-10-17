@@ -1063,8 +1063,11 @@ quem não liga a tool.
       dela; o banner inteiro não é comparado byte a byte com o de antes.)*
 - [x] **O Tesseract descrito como alternativa local NÃO implementada**, no runbook e neste ticket,
       com o que falta para a ter.
-- [ ] **Sobre JetStream.** O smoke de um run com a `ocr_read` corre sobre o Event Store JetStream,
-      não só sobre ficheiro.
+- [x] **Sobre JetStream.** O smoke de um run com a `ocr_read` corre sobre o Event Store JetStream,
+      não só sobre ficheiro. *(Provado pelo `TestAOS530_No_SobreJetStream`, que correu e passou no
+      gate `nats` do CI no PR #507 — run do ramo `feature/AOS-530-custo-ocr`, `packages/cmd/aos`
+      PASS=1680 FAIL=0 SKIP=0: a mediação, o step-ledger e o evento de custo no stream do run no
+      JetStream, e o consumo durável lido de lá.)*
 - [ ] **Em produção**, depois dos actos do dono: uma série pequena de planos com imagens sintéticas
       lidas pela `ocr_read`, com os factos entregues ao nó seguinte, o custo no run e o replay de
       todos — o critério da A5.1 (D7).

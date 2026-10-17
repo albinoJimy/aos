@@ -90,6 +90,9 @@ type acnHarness struct {
 	model *acnModel
 	execs map[string]*int64
 	keys  [2]ed25519.PrivateKey
+	// noEfeito, quando definido ANTES do Submit, é chamado dentro do efeito de cada tool, com o
+	// seu nome — para um teste observar o estado do nó a meio de uma incarnação (AOS-532).
+	noEfeito func(tool string)
 }
 
 // newACNHarness arranca um nó REAL: execução durável, PDP com bundle assinado + oráculo de
@@ -149,10 +152,13 @@ func newACNHarness(t *testing.T) *acnHarness {
 	h := &acnHarness{node: node, model: model, keys: [2]ed25519.PrivateKey{privA, privB},
 		execs: map[string]*int64{"passo_um": new(int64), "passo_dois": new(int64)}}
 	for tool, n := range h.execs {
-		contador := n
+		contador, nome := n, tool
 		conteudo := []byte(`{"content":"` + tool + `"}`)
 		if err := node.Runtime.Register(tool, func(context.Context, []byte) ([]byte, error) {
 			atomic.AddInt64(contador, 1)
+			if h.noEfeito != nil {
+				h.noEfeito(nome)
+			}
 			return conteudo, nil
 		}); err != nil {
 			t.Fatalf("Register %s: %v", tool, err)

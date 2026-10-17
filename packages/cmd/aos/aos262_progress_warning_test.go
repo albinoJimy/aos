@@ -591,7 +591,7 @@ func TestAOS262_BannerNaoPrometeDecisaoNemTotal(t *testing.T) {
 	for _, marcador := range []string{
 		"COMPOSTO",
 		"LEDGER DE TURNOS",      // a fonte, nomeada
-		"LIMITE INFERIOR",       // o alcance: nao e o total
+		"NAO e o TOTAL do run",  // o alcance: nao e o total (AOS-532: ja nao e so turnos)
 		"NAO DECIDE NADA",       // a abstinencia
 		"AOS_BUDGET_MAX_TOKENS", // o tecto de que depende
 	} {
