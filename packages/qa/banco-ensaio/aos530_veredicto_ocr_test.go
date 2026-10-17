@@ -316,9 +316,10 @@ func TestAOS530_QualificarOCR_SoComQualificadoReal(t *testing.T) {
 	saida = filepath.Join(t.TempDir(), "limiar")
 	semPacote("sem acentos com limiar 1", saida, aos530QualificarOCR(t, nil, perfil, saida, "--motor", "falso", "--falso", FalsoOCRSemAcentos, "--limiar-de-factos", "1"), SaidaQualificadoEmEnsaio)
 
-	// O alias fora da allowlist: o nó recusaria o registo, antes de qualquer pedido.
+	// O alias fora da allowlist: o nó recusaria o registo, antes de qualquer pedido. Um nome que a
+	// allowlist embebida nunca autorizou — o `ocr-visao` passou a estar nela.
 	lanc := &lancadorDeTeste{t: t, devolver: NovaVisaoFalsa(aos529Bateria(t))}
-	fora := aos530Perfil(t, strings.Replace(rt.ToolProfileJSON, `"gpt-4o-mini"`, `"ocr-visao"`, 1))
+	fora := aos530Perfil(t, strings.Replace(rt.ToolProfileJSON, `"gpt-4o-mini"`, `"ocr-fora-da-allowlist"`, 1))
 	saida = filepath.Join(t.TempDir(), "fora")
 	e := aos530QualificarOCR(t, lanc, fora, saida)
 	semPacote("fora da allowlist", saida, e, SaidaPacoteRecusado)
