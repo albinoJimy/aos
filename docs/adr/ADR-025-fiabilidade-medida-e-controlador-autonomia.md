@@ -79,3 +79,15 @@ Assim uma demoção sobrevive a reinício sem assinatura (só desce), e uma prom
 - ADR-014 (taxonomia L0–L5; §2 semântica, §5 `DEF-908`, §63 promoção manual), ADR-013 (SA-ROC), ADR-010 (audit WORM), ADR-023 (escritor único / lease).
 - AOS-090 (o controlador e a sua composição), AOS-080 (disjuntor multi-sinal), AOS-095 (override-rate / hitl), AOS-305/AOS-377 (dual-control), AOS-307 (rehidratação selada).
 - `DEF-908` — `docs/governance/REGISTO-Deferimentos.md`.
+
+## Emenda (AOS-481, 2026-10-18) — decisão do dono (opção b): o override conta calls, e a promoção só sobe um degrau por janela, em classes configuradas
+
+**O que mudou para isto ser preciso.** Até ao AOS-481 o `tool.call.outcome` nunca chegava ao Event Store (colidia com a chave do selo do mesmo passo), a janela nunca ficava julgável e a promoção do §3 nunca disparava. O AOS-481 corrigiu a chave, e a promoção ficou viva com o oráculo e a promoção ligados em produção (`AOS_AUTONOMY_LEVELS` definido, janela por omissão de 30 dias). A revisão independente provou que a fonte do §2, como estava implementada, promovia indevidamente. O dono decidiu a 2026-10-18 corrigi-la assim (opção b). O texto acima fica como estava; isto acrescenta-lhe:
+
+1. **Definição do override-rate.** É a fracção das CALLS que precisou de um humano. Cada call (stream do run + `step_id` da call) conta UMA vez no denominador: a escalada conta uma vez, e o permit ou a recusa que a seguem no mesmo passo não são decisão nova; um permit directo conta como call sem humano; as recusas (`tool.call.denied`, incluindo as da lista-branca do run) não entram no denominador. Contar eventos de decisão pesava cada escalada a metade (60 % das calls escaladas liam-se 37,5 %), e as recusas garantidas baixavam a taxa sem dizerem nada da fiabilidade.
+2. **A janela recomeça a cada promoção** (vai além do texto do §3). As amostras de antes de uma promoção não servem para o degrau seguinte: o próximo exige uma janela inteira observada no nível novo. Sem isto, o `Evaluate` periódico subia um degrau por avaliação sobre a mesma história.
+3. **Só classes configuradas** (vai além do texto do §2). A promoção só julga as (classe, domínio) provisionadas em `AOS_AUTONOMY_LEVELS` (entradas `class:<classe>:<domínio>=Ln`); uma classe observada e não registada nunca é promovida e fica no piso.
+4. **Janela com buracos ⇒ `WindowOK=false`** — implementa o §1/§2, que já o exigia. Um permit (`tool.call.mediated`) cujo desfecho não chega em 1 h torna a janela dessa (classe, domínio) inválida enquanto o permit estiver dentro dela. Uma hora porque o RM grava o desfecho logo a seguir ao despacho, na mesma goroutine: o único atraso legítimo é a execução da tool.
+5. Uma re-entrega do transporte (mesmo stream, seq já visto) não conta a dobrar.
+
+**Onde está.** `packages/cmd/aos/autonomy_fiabilidade.go` (a fonte e o `avaliarPromocoes`), `packages/cmd/aos/bootstrap.go` (os pares configurados), o banner de arranque da promoção em `packages/cmd/aos/service.go`; testes em `packages/cmd/aos/aos481_fiabilidade_real_test.go` (RM real, Event Store real e a subscrição de produção) e `aos090_promocao_test.go`.

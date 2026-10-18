@@ -1136,8 +1136,9 @@ A chave do envelope passa a ser f(`step_id` da call, tipo) — `referencemonitor
       Store). No nó o seq devolvido é o do WORM (primário do `TeeSink`), que já era distinto.
 - [x] `autonomy_fiabilidade.go` recebe desfechos reais num teste que passa pelo RM e pelo Event
       Store (`packages/cmd/aos/aos481_fiabilidade_real_test.go`): 60 permits (1 com erro de
-      execução) e 2 escaladas aprovadas chegam à subscrição como 60 desfechos e 62 decisões, a
-      janela fica julgável, e o controlador promove L1 → L2. Antes: 0 desfechos, `WindowOK=false`.
+      execução) e 2 escaladas aprovadas chegam pela subscrição de produção (`correr`) como 60
+      desfechos e 60 decisões (uma por call, emenda de 2026-10-18 ao ADR-025), a janela fica
+      julgável, e o controlador promove L1 → L2. Antes: 0 desfechos, `WindowOK=false`.
 - [x] Mutação: com qualquer dos três prefixos vazio, o teste do caso correspondente e o
       `TestAOS481_ChavesNaoColidem` avermelham (verificado um a um; com o de `outcome-` vazio caem
       cinco dos seis testes do RM).
@@ -1159,30 +1160,43 @@ Reconstituir os desfechos que ficaram por gravar em logs antigos (estão no WORM
 
 ### Notas
 
-- **Efeito em produção na promoção de autonomia — a ligar/confirmar pelo dono.** Com o desfecho a
+- **Efeito em produção na promoção de autonomia.** Com o desfecho a
   chegar ao stream, a promoção automática do ADR-025 (abaixo de L4, sem ratificação humana, um
   nível de cada vez, selada no WORM com `actor=controller`, em memória e revertida no arranque)
   deixa de estar morta. Só existe quando o oráculo de autonomia está composto:
   `AOS_POLICY_BUNDLE_DIR` + `AOS_AUTONOMY_LEVELS` não-vazio, com o Event Store do nó. O compose de
   produção passa `${AOS_AUTONOMY_LEVELS:-}` (vazio por omissão), e o registo de 2026-08-19
   (`docs/plano-autonomia-operavel.md`) diz o oráculo desligado em produção por decisão do
-  operador, coerente com zero escaladas no E2E de 2026-10-01. Não foi verificado o `.env` do
-  servidor. Se estiver desligado, nada muda na autonomia; se estiver ligado, a promoção dispara
+  operador, coerente com zero escaladas no E2E de 2026-10-01 — mas a revisão independente
+  confirmou-o LIGADO (ver a nota seguinte). Ligado, a promoção dispara
   quando, por (classe, domínio): o PROCESSO observou pelo menos a janela inteira desde o arranque
   (`AOS_AUTONOMY_CONTROL` vazio ⇒ 30 dias; cada reinício recomeça a contagem), há ≥ 20 desfechos e
-  ≥ 20 decisões na janela (`minAmostrasFiabilidade`), a taxa de erro ≤ 2 % e o override ≤ 40 %, e o
+  ≥ 20 decisões na janela (`minAmostrasFiabilidade`), a taxa de erro ≤ 2 % e o override ≤ 40 %, a
+  classe está provisionada, não há permit sem desfecho, e o
   `Evaluate` corre (`AOS_AUTONOMY_EVAL_INTERVAL`, 1 h). Tecto L3 (`capPromocaoAbaixoDeDualControl`).
   Com a janela por omissão e a cadência de releases actual, a condição da janela não se cumpre;
   com uma janela curta em `AOS_AUTONOMY_CONTROL`, cumpre-se. Não se acrescentou interruptor: a
-  promoção automática é a decisão ratificada do ADR-025, o banner do nó já a declara «LIGADA»
-  sempre que composta, e o que este ticket muda é que o sinal deixa de ser zero.
-- **Duas decisões que ficam com o dono, e que este ticket torna reais.** (1) A da revisão do
-  AOS-485 (EPIC-02): as recusas contam como decisões, e um run com a lista vazia produz recusas
-  certas que baixam o override sem dizerem nada da fiabilidade. (2) A decisão pós-aprovação passa
-  a contar como decisão, ao lado da escalada — é o que o ticket pede e é a definição do SLI de
-  override (fracção de decisões, `otel-genai/slo.go`), mas pesa a escalada por chamada a metade:
-  com X de N calls escaladas e aprovadas a taxa lida é X/(N+X), e 60 % de calls escaladas lêem-se
-  como 37,5 %, abaixo do limiar de 40 %.
+  promoção automática é a decisão ratificada do ADR-025 e o banner do nó declara-a «LIGADA»;
+  o que se corrigiu foi a fonte, que promovia indevidamente (nota seguinte).
+- **As duas decisões que tinham ficado com o dono estão tomadas (2026-10-18, opção b).** A
+  revisão independente confirmou que o oráculo e a promoção estão LIGADOS em produção
+  (`AOS_AUTONOMY_LEVELS` com 2 pares, banner «promocao automatica por fiabilidade: LIGADA»,
+  `AOS_AUTONOMY_CONTROL` ausente ⇒ janela de 30 dias) e provou que a fonte promovia
+  indevidamente. Corrigido no mesmo ramo, e escrito como emenda ao ADR-025:
+  (1) o override-rate é a fracção das CALLS que precisou de humano — uma vez por call, o permit
+  ou a recusa que seguem uma escalada não são decisão nova, e as recusas (incluindo as da
+  lista-branca do run, a decisão pendente do AOS-485) não entram no denominador;
+  (2) a janela de uma (classe, domínio) recomeça a cada promoção — um degrau por janela inteira,
+  não por avaliação de hora a hora;
+  (3) só as classes provisionadas em `AOS_AUTONOMY_LEVELS` são promovidas;
+  (4) um permit sem desfecho em 1 h invalida a janela (o §1 do ADR, agora implementado);
+  (5) uma re-entrega do transporte não conta a dobrar.
+  Provas da revisão reproduzidas como testes que agora não promovem
+  (`packages/cmd/aos/aos481_fiabilidade_real_test.go`, pela subscrição de produção `correr`):
+  P1 — 20 calls, 12 escaladas e aprovadas, em L2 → fica L2 (antes lia-se 37,5 % e promovia);
+  P2 — L0, 20 calls escaladas e aprovadas + 10 recusas → fica L0; e o caso legítimo (2 de 60
+  escaladas) continua a promover L1 → L2. Mutação: desligar cada uma das cinco regras, e tirar o
+  `tool.call.outcome` do filtro de `correr`, avermelha pelo menos um teste.
 - **Streams que atravessam a actualização.** Uma escalada ou uma recusa gravada antes, na chave
   nua, continua a engolir o `mediated` de um permit posterior no mesmo passo; e a re-execução,
   depois da actualização, de uma recusa gravada antes deixa um segundo `denied` (na chave nova).

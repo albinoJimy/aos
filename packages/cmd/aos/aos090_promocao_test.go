@@ -35,6 +35,10 @@ func eventoDecisao(tipo, classe, capability string) eventstore.Event {
 	return eventstore.Event{Type: tipo, Payload: raw}
 }
 
+// workerFsConfigurado é a entrada de AOS_AUTONOMY_LEVELS que torna (worker, fs) julgável pela
+// promoção: desde a emenda de 2026-10-18 ao ADR-025 só classes provisionadas promovem.
+var workerFsConfigurado = []autonomyLevelSpec{{agent: autonomy.ClassPrefix + "worker", domain: "fs", level: autonomy.L1}}
+
 // aggComHistoria constrói um agregador cuja observação JÁ cobre a janela, alimentado com
 // `ok` desfechos ok, `erro` desfechos com erro e `dec` decisões (todas mediated, zero escalada).
 func aggComHistoria(t *testing.T, janela time.Duration, ok, erro, dec int) *fiabilidadeAgregada {
@@ -43,6 +47,7 @@ func aggComHistoria(t *testing.T, janela time.Duration, ok, erro, dec int) *fiab
 	agora := base
 	relogio := func() time.Time { return agora }
 	agg := novaFiabilidade(&esFake{}, relogio, janela, time.Hour)
+	agg.comParesConfigurados(workerFsConfigurado)
 	// Avança para além da janela para a observação a cobrir (WindowOK honesto).
 	agora = base.Add(janela + time.Minute)
 	for i := 0; i < ok; i++ {
@@ -76,20 +81,57 @@ func controladorComFonte(t *testing.T, src autonomy.ReliabilitySource, janela ti
 }
 
 // TestAOS090_Promocao_FiabilidadeSustentadaPromoveAbaixoDeL4 — com erro 0% e override 0%
-// sustentados, a classe sobe L1→L2→L3 e PÁRA em L3 (nunca L4, o limiar de dual-control).
+// sustentados, a classe sobe UM degrau por janela inteira observada e PÁRA em L3 (nunca L4, o
+// limiar de dual-control).
+//
+// Até à emenda de 2026-10-18 ao ADR-025 este teste subia L1→L2→L3 em três avaliações seguidas
+// sobre a MESMA história: o Evaluate de hora a hora fazia uma escada por tick. Agora a janela da
+// (classe, domínio) recomeça a cada promoção: a segunda avaliação, logo a seguir, não promove; só
+// depois de outra janela inteira no nível novo, com amostras novas, sobe a L3. Vai pelo
+// [fiabilidadeAgregada.avaliarPromocoes], que é o que o nó corre (e o que recomeça a janela).
 func TestAOS090_Promocao_FiabilidadeSustentadaPromoveAbaixoDeL4(t *testing.T) {
 	janela := time.Hour
-	agg := aggComHistoria(t, janela, 50, 0, 50) // 0% erro, 0% override, amostras suficientes
-	ctrl, reg := controladorComFonte(t, agg, janela, autonomy.L1)
-	ctx := context.Background()
-
-	// Três avaliações: L1→L2, L2→L3, depois mantém L3 (tecto).
-	niveisEsperados := []autonomy.Level{autonomy.L2, autonomy.L3, autonomy.L3}
-	for i, quer := range niveisEsperados {
-		ctrl.Evaluate(ctx, autonomy.ClassPrefix+"worker", "fs")
-		if got := reg.LevelFor(autonomy.ClassPrefix+"worker", "fs"); got != quer {
-			t.Fatalf("apos avaliacao %d: nivel=%s, quer %s", i+1, got, quer)
+	base := time.Date(2026, 9, 12, 0, 0, 0, 0, time.UTC)
+	agora := base
+	agg := novaFiabilidade(&esFake{}, func() time.Time { return agora }, janela, time.Hour)
+	agg.comParesConfigurados(workerFsConfigurado)
+	historia := func() {
+		for i := 0; i < 50; i++ {
+			agg.observar(eventoDesfecho("worker", "cap:fs.write", referencemonitor.OutcomeOK))
+			agg.observar(eventoDecisao(referencemonitor.EventTypeMediated, "worker", "cap:fs.write"))
 		}
+	}
+	agora = base.Add(janela + time.Minute)
+	historia() // 0% erro, 0% override, amostras suficientes
+	ctrl, reg := controladorComFonte(t, agg, janela, autonomy.L1)
+	agg.comControlador(ctrl)
+	ctx := context.Background()
+	nivel := func() autonomy.Level { return reg.LevelFor(autonomy.ClassPrefix+"worker", "fs") }
+
+	agg.avaliarPromocoes(ctx)
+	if got := nivel(); got != autonomy.L2 {
+		t.Fatalf("1.ª avaliacao: nivel=%s, quer L2", got)
+	}
+	// Logo a seguir, sobre a mesma história: a janela recomeçou, não há degrau.
+	agg.avaliarPromocoes(ctx)
+	if got := nivel(); got != autonomy.L2 {
+		t.Fatalf("2.ª avaliacao sobre a mesma historia: nivel=%s, quer L2 (a janela recomeca a cada promocao)", got)
+	}
+	// Uma janela inteira depois, mas SEM amostras novas no nível novo: continua sem degrau.
+	agora = agora.Add(janela + time.Minute)
+	agg.avaliarPromocoes(ctx)
+	if got := nivel(); got != autonomy.L2 {
+		t.Fatalf("janela coberta sem amostras novas: nivel=%s, quer L2", got)
+	}
+	// Com uma história nova, observada no nível novo, sobe a L3; e pára aí (tecto).
+	historia()
+	for i := 0; i < 2; i++ {
+		agg.avaliarPromocoes(ctx)
+		if got := nivel(); got != autonomy.L3 {
+			t.Fatalf("depois de uma janela inteira em L2 (avaliacao %d): nivel=%s, quer L3", i+1, got)
+		}
+		agora = agora.Add(janela + time.Minute)
+		historia()
 	}
 	// Nunca cruzou para L4.
 	if got := reg.LevelFor(autonomy.ClassPrefix+"worker", "fs"); got >= autonomy.L4 {
@@ -116,6 +158,7 @@ func TestAOS090_Promocao_ObservacaoInsuficienteNaoPromove(t *testing.T) {
 	base := time.Date(2026, 9, 12, 0, 0, 0, 0, time.UTC)
 	agora := base
 	agg := novaFiabilidade(&esFake{}, func() time.Time { return agora }, janela, time.Hour)
+	agg.comParesConfigurados(workerFsConfigurado)
 	// Só 10 minutos de observação (< janela de 1h): muitos eventos bons, mas cedo demais.
 	agora = base.Add(10 * time.Minute)
 	for i := 0; i < 100; i++ {
@@ -139,6 +182,7 @@ func TestAOS090_Promocao_OverrideProxyDaEscalada(t *testing.T) {
 	base := time.Date(2026, 9, 12, 0, 0, 0, 0, time.UTC)
 	agora := base
 	agg := novaFiabilidade(&esFake{}, func() time.Time { return agora }, janela, time.Hour)
+	agg.comParesConfigurados(workerFsConfigurado)
 	agora = base.Add(janela + time.Minute)
 	for i := 0; i < 50; i++ {
 		agg.observar(eventoDesfecho("worker", "cap:fs.write", referencemonitor.OutcomeOK)) // 0% erro
