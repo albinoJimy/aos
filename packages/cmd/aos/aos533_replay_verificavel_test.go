@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -20,7 +21,9 @@ import (
 	pdp "github.com/aos-ref/control-plane/pdp"
 	integration "github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	"github.com/aos-ref/kernel/agent-runtime/durable"
 	"github.com/aos-ref/kernel/agent-runtime/replay"
+	"github.com/aos-ref/kernel/agent-runtime/state"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 	"github.com/aos-ref/kernel/reference-monitor/authz"
 	"github.com/aos-ref/kernel/reference-monitor/risk"
@@ -43,6 +46,8 @@ const (
 	aos533Texto     = "TEXTO-DO-MODELO-533"
 	aos533Saida     = "SAIDA-DA-TOOL-533"
 	aos533Entrada   = "ENTRADA-DO-PLANO-533"
+	aos533System    = "SYSTEM-533-SECRETO"
+	aos533Memoria   = "MEMORIA-533-SECRETA"
 )
 
 // aos533Aprovadores são dois aprovadores pinados: compor o four-eyes é o que compõe o registo de
@@ -200,7 +205,7 @@ func (n *aos533No) replay(t *testing.T, runID string, headers map[string]string)
 // aos533SemConteudo falha se o corpo levar algum marcador de conteúdo.
 func aos533SemConteudo(t *testing.T, corpo string) {
 	t.Helper()
-	for _, m := range []string{aos533Objectivo, "OBJECTIVO-533", aos533Texto, aos533Saida, aos533Entrada} {
+	for _, m := range []string{aos533Objectivo, "OBJECTIVO-533", aos533Texto, aos533Saida, aos533Entrada, aos533System, aos533Memoria} {
 		if strings.Contains(corpo, m) {
 			t.Fatalf("a resposta do /replay leva conteudo do run (%q): %s", m, corpo)
 		}
@@ -224,7 +229,7 @@ func aos533Fiel(t *testing.T, resp replayResponse, turnos int) {
 	if resp.SpecOrigin != specOriginResumeRecord || resp.FinalStateHash == "" {
 		t.Fatalf("spec_origin/final_state_hash: %+v", resp)
 	}
-	if len(resp.AnchorsVerified) != 0 || len(resp.AnchorsNotVerified) != len(anchorsDoReplay) {
+	if len(resp.AnchorsVerified) != 0 || len(resp.AnchorsNotVerified) != len(anchorsDoReplay)+len(anchorsSemFonteIndependente) {
 		t.Fatalf("as ancoras nao-prompt nao correm e tem de ser declaradas: verified=%v not=%v", resp.AnchorsVerified, resp.AnchorsNotVerified)
 	}
 }
@@ -350,17 +355,11 @@ func aos533ReplayInProcess(t *testing.T, n *aos533No, runID string, muda func(*r
 	return res
 }
 
-// TestAOS533_CapturaAdulterada: uma captura do turno 1 escrita CRUA no stream (inline, com outro
-// resultado de tool) muda o tail; o turno 2 diverge por `prompt_hash`, e o run não é retomado.
-func TestAOS533_CapturaAdulterada(t *testing.T) {
+// aos533ForjarCaptura escreve CRUA no stream uma captura inline do turno 1 com outro resultado de
+// tool: o tail muda e o turno 2 deixa de bater.
+func aos533ForjarCaptura(t *testing.T, n *aos533No, runID string) {
+	t.Helper()
 	ctx := context.Background()
-	n := aos533Compor(t, aos533Opcoes{}, aos533Guiao)
-	const runID = "run-533-adulterado"
-	n.correr(t, agentruntime.Goal{RunID: runID})
-	if code, resp, corpo := n.replay(t, runID, govHeaders()); code != http.StatusOK || resp.Diverged {
-		t.Fatalf("PRECONDICAO: antes da adulteracao o replay e fiel: %d %s", code, corpo)
-	}
-
 	forjada, err := json.Marshal(map[string]any{
 		"schema_version": "1.0", "turn": 1, "observed_at_unix_nano": 1,
 		"response": map[string]any{"final": false, "input_tokens": 1, "output_tokens": 1, "cost_micro_usd": 0,
@@ -377,6 +376,19 @@ func TestAOS533_CapturaAdulterada(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestAOS533_CapturaAdulterada: uma captura do turno 1 escrita CRUA no stream (inline, com outro
+// resultado de tool) muda o tail; o turno 2 diverge por `prompt_hash`, e o run não é retomado.
+func TestAOS533_CapturaAdulterada(t *testing.T) {
+	n := aos533Compor(t, aos533Opcoes{}, aos533Guiao)
+	const runID = "run-533-adulterado"
+	n.correr(t, agentruntime.Goal{RunID: runID})
+	if code, resp, corpo := n.replay(t, runID, govHeaders()); code != http.StatusOK || resp.Diverged {
+		t.Fatalf("PRECONDICAO: antes da adulteracao o replay e fiel: %d %s", code, corpo)
+	}
+
+	aos533ForjarCaptura(t, n, runID)
 	code, resp, corpo := n.replay(t, runID, govHeaders())
 	if code != http.StatusOK {
 		t.Fatalf("a divergencia nao e erro: 200 esperado, veio %d (%s)", code, corpo)
@@ -632,19 +644,208 @@ type aos533Embrulho struct{ err error }
 func (e *aos533Embrulho) Error() string { return "replay: turno 1 (step-000001): " + e.err.Error() }
 func (e *aos533Embrulho) Unwrap() error { return e.err }
 
-// TestAOS533_RunRetomado_PorTokens: o detector lê também a re-hospedagem por crash (fencing token novo).
-func TestAOS533_RunRetomado_PorTokens(t *testing.T) {
-	ev := func(from, to string, tok uint64) eventstore.Event {
-		p, _ := json.Marshal(map[string]any{"from": from, "to": to, "token_value": tok})
-		return eventstore.Event{Type: "run.state.transition", Payload: p}
+// aos533Transicao é uma transição como a [state.Machine] a escreve (produtor, step `state-N`).
+func aos533Transicao(n int, from, to string, tok uint64, ts string) eventstore.Event {
+	p, _ := json.Marshal(map[string]any{"from": from, "to": to, "token_value": tok})
+	return eventstore.Event{Type: state.EventTypeTransition, Payload: p, StepID: fmt.Sprintf("state-%d", n), Ts: ts,
+		Producer: eventstore.Producer{NHIID: state.DefaultProducerNHI}}
+}
+
+func aos533Turno(turn int, ts string) eventstore.Event {
+	p, _ := json.Marshal(map[string]any{"turn": turn})
+	return eventstore.Event{Type: agentruntime.EventTypeTurnRecorded, Payload: p, Ts: ts}
+}
+
+func aos533Claim(tok uint64, ts string) eventstore.Event {
+	p, _ := json.Marshal(map[string]any{"token": tok})
+	return eventstore.Event{Type: durable.EventTypeLeaseClaimed, Payload: p, Ts: ts,
+		Producer: eventstore.Producer{NHIID: durable.DefaultLeaseProducerNHI}}
+}
+
+// TestAOS533_AnalisarVidas: a forma medida de uma retoma por aprovação (o stream de um run do nó
+// composto) desculpa o turno 2, e só ele; cada forjamento de uma linha deixa de desculpar.
+func TestAOS533_AnalisarVidas(t *testing.T) {
+	const t0, t1, t2, t3, t4, t5 = "2026-10-18T10:00:00.1Z", "2026-10-18T10:00:00.2Z", "2026-10-18T10:00:00.3Z",
+		"2026-10-18T10:00:00.4Z", "2026-10-18T10:00:00.5Z", "2026-10-18T10:00:00.6Z"
+	legitimo := func() []eventstore.Event {
+		return []eventstore.Event{
+			aos533Transicao(1, "ready", "running", 1, t0), aos533Turno(1, t1),
+			aos533Transicao(2, "running", "waiting_on_human", 0, t2),
+			aos533Transicao(3, "waiting_on_human", "running", 0, t4), aos533Turno(2, t5),
+			aos533Transicao(4, "running", "complete", 2, t5),
+		}
 	}
-	if runRetomado([]eventstore.Event{ev("ready", "running", 1), ev("running", "complete", 1)}) {
-		t.Fatal("uma vida, um token: nao retomado")
+	lease := []eventstore.Event{aos533Claim(1, t0), aos533Claim(2, t3)}
+	v := analisarVidas(legitimo(), lease)
+	if !v.retomado() || len(v.desculpados) != 1 || !v.desculpados[2] {
+		t.Fatalf("a retoma legitima desculpa o turno 2, e so ele: %v", v.desculpados)
 	}
-	if !runRetomado([]eventstore.Event{ev("ready", "running", 1), ev("running", "complete", 2)}) {
-		t.Fatal("dois tokens: retomado (re-hospedagem por crash)")
+
+	umaVida := []eventstore.Event{aos533Transicao(1, "ready", "running", 1, t0), aos533Turno(1, t1), aos533Turno(2, t2),
+		aos533Transicao(2, "running", "complete", 1, t2)}
+	casos := map[string]struct {
+		run, lease []eventstore.Event
+	}{
+		// A PoC da revisão: uma linha depois do terminal, com o produtor e o step certos.
+		"transicao_depois_do_terminal": {append(append([]eventstore.Event{}, umaVida...),
+			aos533Transicao(3, "waiting_on_human", "running", 0, t5)), []eventstore.Event{aos533Claim(1, t0)}},
+		"sem_corroboracao_no_lease": {legitimo(), []eventstore.Event{aos533Claim(1, t0)}},
+		// Um claim 2 sem nenhuma transicao com o token 2, e um turno gravado depois dele.
+		"claim_que_a_maquina_nao_usou": {[]eventstore.Event{aos533Transicao(1, "ready", "running", 1, t0), aos533Turno(1, t1),
+			aos533Turno(2, t5), aos533Transicao(2, "running", "complete", 1, t5)}, lease},
+		"claim_com_outro_produtor": {legitimo(), []eventstore.Event{aos533Claim(1, t0),
+			{Type: durable.EventTypeLeaseClaimed, Payload: []byte(`{"token":2}`), Ts: t3}}},
+		"claims_fora_de_ordem": {legitimo(), []eventstore.Event{aos533Claim(2, t0), aos533Claim(1, t3)}},
+		"transicao_com_outro_produtor": func() struct{ run, lease []eventstore.Event } {
+			r := legitimo()
+			r[2].Producer.NHIID = "agt-forjado"
+			return struct{ run, lease []eventstore.Event }{r, lease}
+		}(),
+		"cadeia_com_buraco": func() struct{ run, lease []eventstore.Event } {
+			r := legitimo()
+			r[3] = aos533Transicao(4, "waiting_on_human", "running", 0, t4)
+			return struct{ run, lease []eventstore.Event }{r, lease}
+		}(),
+		"from_que_nao_e_o_to_anterior": func() struct{ run, lease []eventstore.Event } {
+			r := legitimo()
+			r[3] = aos533Transicao(3, "paused", "running", 0, t4)
+			return struct{ run, lease []eventstore.Event }{r, lease}
+		}(),
 	}
-	if !runRetomado([]eventstore.Event{ev("waiting_on_human", "running", 0)}) {
-		t.Fatal("waiting_on_human -> running: retomado (aprovacao)")
+	for nome, c := range casos {
+		if v := analisarVidas(c.run, c.lease); v.retomado() {
+			t.Errorf("%s: nao pode ser tratado como retomado (%v)", nome, v.desculpados)
+		}
+	}
+}
+
+// TestAOS533_PoC_RetomaForjada: a PoC da revisão no nó composto. Captura do turno 1 forjada e uma
+// `waiting_on_human → running` acrescentada depois do `complete`, com o produtor e o step que a
+// máquina usaria: o replay tem de dar divergência NORMAL — sem `retomado`, sem nota, com amostra
+// no SLI e o alerta a disparar.
+func TestAOS533_PoC_RetomaForjada(t *testing.T) {
+	ctx := context.Background()
+	n := aos533Compor(t, aos533Opcoes{spans: true}, aos533Guiao)
+	const runID = "run-533-poc"
+	n.correr(t, agentruntime.Goal{RunID: runID})
+	aos533ForjarCaptura(t, n, runID)
+	evs, err := n.node.EventStore.Read(ctx, runID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transicoes := 0
+	for _, e := range evs {
+		if e.Type == state.EventTypeTransition {
+			transicoes++
+		}
+	}
+	p, _ := json.Marshal(map[string]any{"from": "waiting_on_human", "to": "running"})
+	if _, err := n.node.EventStore.Append(ctx, runID, eventstore.EventInput{
+		Type: state.EventTypeTransition, Payload: p, RunID: runID, StepID: fmt.Sprintf("state-%d", transicoes+1),
+		Producer: eventstore.Producer{NHIID: state.DefaultProducerNHI},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	code, resp, corpo := n.replay(t, runID, govHeaders())
+	if code != http.StatusOK {
+		t.Fatalf("200 esperado, veio %d (%s)", code, corpo)
+	}
+	if !resp.Diverged || resp.Retomado || resp.Nota != "" || !resp.SLIAmostrado {
+		t.Fatalf("a retoma forjada nao desculpa nada: divergencia normal, sem nota, com amostra: %+v", resp)
+	}
+	var ev *SLOEvaluation
+	for i := 0; i < 4; i++ {
+		ev = n.svc.EvaluateSLOsNow(ctx)
+	}
+	if v := aos274SLI(t, ev, otelgenai.SLIReplayFidelity); v.Samples != 1 || !v.Breached() {
+		t.Fatalf("a divergencia tem de amostrar o SLI abaixo do alvo: samples=%d valor=%g", v.Samples, v.Value)
+	}
+	if !aos274Alert(t, ev, otelgenai.AlertReplayFidelityLow).Alert.Fired {
+		t.Fatal("o alerta replay_fidelity_low tinha de disparar sobre a captura adulterada")
+	}
+}
+
+// TestAOS533_RunRetomado_DivergenciaNoutroTurno: num run retomado de verdade, uma divergência num
+// turno que NÃO é o primeiro da vida nova (aqui, um `turn.recorded` do turno 1 forjado) é
+// divergência normal: `retomado: true`, mas sem nota e com amostra no SLI.
+func TestAOS533_RunRetomado_DivergenciaNoutroTurno(t *testing.T) {
+	ctx := context.Background()
+	n := aos533Compor(t, aos533Opcoes{l4: true, spans: true}, aos533Guiao)
+	const runID = "run-533-retomado-outro"
+	aos533Retomar(t, n, runID)
+	evs, err := n.node.EventStore.Read(ctx, runID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var forjado []byte
+	for _, e := range evs {
+		var p struct {
+			Turn int `json:"turn"`
+		}
+		if e.Type == agentruntime.EventTypeTurnRecorded && json.Unmarshal(e.Payload, &p) == nil && p.Turn == 1 {
+			forjado = []byte(strings.Replace(string(e.Payload), `"prompt_hash":"sha256:`, `"prompt_hash":"sha256:00`, 1))
+		}
+	}
+	if forjado == nil {
+		t.Fatal("PRECONDICAO: turn.recorded do turno 1")
+	}
+	if _, err := n.node.EventStore.Append(ctx, runID, eventstore.EventInput{
+		Type: agentruntime.EventTypeTurnRecorded, Payload: forjado, RunID: runID, StepID: "step-forjado-533",
+		Producer: eventstore.Producer{NHIID: acnAgent},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	code, resp, corpo := n.replay(t, runID, govHeaders())
+	if code != http.StatusOK {
+		t.Fatalf("200 esperado, veio %d (%s)", code, corpo)
+	}
+	if !resp.Retomado || resp.Divergence == nil || resp.Divergence.Turn != 1 || resp.Nota != "" || !resp.SLIAmostrado {
+		t.Fatalf("divergencia no turno 1 de um run retomado: retomado, sem nota, com amostra: %+v", resp)
+	}
+	if v := aos274SLI(t, n.svc.EvaluateSLOsNow(ctx), otelgenai.SLIReplayFidelity); v.Samples != 1 || !v.Breached() {
+		t.Fatalf("a divergencia nao desculpada amostra o SLI: samples=%d valor=%g", v.Samples, v.Value)
+	}
+}
+
+// aos533Retomar corre o ciclo escalada → four-eyes → retoma até ao fim.
+func aos533Retomar(t *testing.T, n *aos533No, runID string) {
+	t.Helper()
+	ctx := context.Background()
+	n.correr(t, agentruntime.Goal{RunID: runID})
+	if _, susp := n.svc.Suspended(ctx, runID); !susp {
+		t.Fatal("PRECONDICAO: a tool call tinha de escalar e o run ficar suspenso")
+	}
+	aos533Aprova(t, n, runID, "req-"+runID)
+	if err := n.svc.Resume(ctx, runID, n.token(t)); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	n.esperar(t, runID)
+	if fim, done := n.svc.Outcome(runID); !done || !fim.Result.Terminated {
+		t.Fatalf("o run retomado tinha de terminar: %+v", fim)
+	}
+}
+
+// TestAOS533_SystemEMemoria: um run com system e com memory_context reproduz-se com os do registo
+// de retoma; sem cada um deles, diverge no turno 1. O `system` chega ao Goal pelo campo `system`
+// do POST /runs (api.go), 1:1; o memory_context não tem caminho de produção no nó (nenhum handler o
+// escreve no Goal), e entra aqui pelo Goal, como o loop o recebe.
+func TestAOS533_SystemEMemoria(t *testing.T) {
+	n := aos533Compor(t, aos533Opcoes{}, aos533Guiao)
+	const runID = "run-533-system-memoria"
+	n.correr(t, agentruntime.Goal{RunID: runID, System: aos533System, MemoryContext: []byte(aos533Memoria)})
+	code, resp, corpo := n.replay(t, runID, govHeaders())
+	if code != http.StatusOK {
+		t.Fatalf("200 esperado, veio %d (%s)", code, corpo)
+	}
+	aos533Fiel(t, resp, 2)
+	aos533SemConteudo(t, corpo)
+	for nome, muda := range map[string]func(*replay.TrajectorySpec){
+		"sem_system":  func(s *replay.TrajectorySpec) { s.System = "" },
+		"sem_memoria": func(s *replay.TrajectorySpec) { s.MemoryContext = nil },
+	} {
+		if r := aos533ReplayInProcess(t, n, runID, muda); r.Divergence == nil || r.Divergence.Turn != 1 {
+			t.Errorf("%s: o replay tinha de divergir no turno 1: %+v", nome, r.Divergence)
+		}
 	}
 }

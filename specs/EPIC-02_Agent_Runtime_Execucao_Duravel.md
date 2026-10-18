@@ -2410,6 +2410,14 @@ de fidelidade, sem conteúdo decifrado.
 - [x] Um run retomado por aprovação sai `retomado: true`, diverge no turno 2 por `prompt_hash`
       (medido: confirma a inferência do ADR-037 §5 para a retoma por aprovação) e leva a nota de
       que a divergência num run retomado não prova adulteração; não amostra o SLI.
+- [x] «Retomado» não se forja com uma linha (revisão): exige a cadeia de transições coerente da
+      máquina de estados e um claim de lease de token ≥ 2 que a cadeia usou. A PoC da revisão
+      (captura forjada + `waiting_on_human → running` depois do `complete`) dá divergência normal,
+      com amostra no SLI e o alerta `replay_fidelity_low` a disparar. Só o primeiro turno gravado
+      depois de uma retoma corroborada é desculpado; noutro turno é divergência normal, mesmo com
+      `retomado: true`.
+- [x] System e memory_context guardados por teste: fidelidade 1 com eles, divergência no turno 1
+      sem cada um.
 - [x] SLI `replay_fidelity`: com a torneira composta, uma chamada é uma amostra com o valor da
       fidelidade; `produtor="1"`; o banner do avaliador diz que a amostragem é a pedido, por
       chamada e não por run.
@@ -2427,9 +2435,17 @@ de fidelidade, sem conteúdo decifrado.
 
 ### Notas
 
-- O detector de «retomado» lê o stream do run: uma transição `waiting_on_human → running` ou
-  transições com mais de um fencing token. Escrita crua no stream pode forjá-lo; quem a tem pode
-  forjar coisas piores.
+- O detector de «retomado» cruza duas fontes: a cadeia de transições da máquina de estados e o
+  stream de lease (escolhido como evidência independente por cobrir as duas retomas — aprovação e
+  crash; o grant four-eyes só cobriria a primeira). Quem escreve cru nos dois streams com a cadeia
+  inteira certa ainda o forja, mas a desculpa fica presa a um turno por retoma.
+- `anchors_not_verified` declara sempre `tools_from_log` (o tool set vem do `manifest.tools` do
+  próprio log: coerência com o log, não fonte independente) e `projection_version` (a versão da
+  projecção do AOS-513 não tem âncora).
+- Custo: o `ResumeRecords.Get` lê o stream das aprovações inteiro a cada pedido — O(aprovações);
+  a rota está no balde de leituras do AOS-458.
+- O `memory_context` não tem caminho de produção no nó (nenhum handler o escreve no Goal); o
+  `system` chega pelo campo `system` do `POST /runs`.
 - A amostra do SLI é por chamada: o mesmo run verificado duas vezes conta duas.
 
 ### Estado
@@ -2437,9 +2453,10 @@ de fidelidade, sem conteúdo decifrado.
 **IMPLEMENTADO (2026-10-18), por verificar em produção.** `packages/cmd/aos/replay_verificavel.go`
 (a rota), `packages/cmd/aos/sovereign_replay.go` (as portas partilhadas com o `/reconstruct`),
 `packages/cmd/aos/sli_produtor.go` e `slo_evaluator.go` (o SLI e o banner). Testes em
-`packages/cmd/aos/aos533_replay_verificavel_test.go`; mutações (objectivo trocado na spec, selo
-retirado, detector de retoma desligado, tools vazias, tracer retirado, run retomado a amostrar)
-avermelham-nos todas.
+`packages/cmd/aos/aos533_replay_verificavel_test.go`; mutações (objectivo, system ou memória
+tirados da spec, selo retirado, detector de retoma desligado, transição aceite em qualquer posição,
+claim de lease não usado aceite, divergência desculpada em qualquer turno, tools vazias, tracer
+retirado) avermelham-nos todas.
 
 ---
 

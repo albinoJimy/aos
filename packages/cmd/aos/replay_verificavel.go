@@ -37,16 +37,26 @@ package main
 // Nunca o texto do modelo, os resultados das tools, o objectivo ou os inputs — quem quer o
 // conteúdo tem o `/reconstruct`, com o seu selo.
 //
-// # UM RUN RETOMADO DIVERGE POR DESENHO
+// # UM RUN RETOMADO DIVERGE POR DESENHO — MAS SÓ NUM TURNO, E SÓ SE A RETOMA FOR VERDADEIRA
 //
-// ADR-037 §5: a captura do turno re-executado é a da primeira vida, e o turno seguinte foi gravado
-// na segunda. A divergência num run retomado não prova adulteração; a resposta marca-o
-// (`retomado: true` e uma nota) e o span não alimenta o SLI ([replaySpanOptions]).
+// ADR-037 §5: a captura do turno re-executado é a da primeira vida, e o primeiro turno gravado na
+// segunda vida remonta-se de um tail que ela não viu. Essa divergência não prova adulteração.
+//
+// A desculpa é estreita de propósito (revisão do AOS-533): uma linha `run.state.transition`
+// escrita crua no stream bastava para pôr `retomado: true`, calar a nota e tirar a amostra do SLI
+// — e quem tem escrita crua não recalcula um `prompt_hash` sem o claro, pelo que forjar a retoma
+// anulava a detecção. Ver [analisarVidas]: a retoma tem de vir da máquina de estados COERENTE e
+// ser corroborada pelo stream de LEASE; e só o PRIMEIRO turno gravado depois de cada retoma
+// corroborada é desculpado. Uma divergência noutro turno é divergência normal — sem nota e com
+// amostra no SLI, mesmo num run retomado.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"time"
 
 	integration "github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
@@ -82,6 +92,14 @@ const (
 
 // anchorsDoReplay são as comparações não-prompt que o motor sabe fazer ([replay.ReplayResult.AnchorsVerified]).
 var anchorsDoReplay = []string{"model", "assembly_version", "step_id", "authority"}
+
+// anchorsSemFonteIndependente são o que a rota NUNCA verifica contra uma fonte independente, e por
+// isso vai sempre em `anchors_not_verified` (revisão do AOS-533):
+//   - "tools_from_log": o tool set da spec é o `manifest.tools` do próprio log — o replay prova a
+//     coerência do prompt com o log, não que o tool set gravado é o que o nó tinha;
+//   - "projection_version": a versão da projecção nativa (AOS-513) não entra no `prompt_hash` nem
+//     tem âncora no motor.
+var anchorsSemFonteIndependente = []string{"tools_from_log", "projection_version"}
 
 // replayFidelityWire é a fidelidade com os dois contadores de que é a fracção.
 type replayFidelityWire struct {
@@ -175,43 +193,64 @@ func (h *apiHandler) handleReplay(w http.ResponseWriter, r *http.Request) {
 		RetryNotice:   rec.RetryNotice,
 	}
 
-	// (5) O REPLAY, atrás do opener por-titular. Um run retomado não amostra o SLI.
-	retomado := runRetomado(events)
-	extra, amostra := h.replaySpanOptions(retomado)
+	// (5) AS VIDAS DO RUN: retoma só da máquina de estados coerente, corroborada pelo lease.
+	v := h.vidasDoRun(r.Context(), runID, events)
+
+	// (6) O REPLAY, atrás do opener por-titular. Sem turno desculpável, o span vai ao tracer do nó
+	// (amostra do SLI). Com ele, corre-se primeiro SEM tracer — só depois do resultado se sabe se a
+	// divergência cai no turno desculpado — e, se não cair, corre-se outra vez COM tracer. O motor
+	// é determinista e sem efeitos: a segunda corrida dá o mesmo resultado, e só a pagam os runs
+	// retomados.
+	res, ok := h.correrReplay(r.Context(), w, reader, runID, spec, !v.retomado())
+	if !ok {
+		return
+	}
+	desculpada := res.Divergence != nil && v.desculpados[res.Divergence.Turn]
+	amostra := !v.retomado() && h.replayAmostra()
+	if v.retomado() && !desculpada {
+		if res, ok = h.correrReplay(r.Context(), w, reader, runID, spec, true); !ok {
+			return
+		}
+		amostra = h.replayAmostra()
+	}
+	writeJSON(w, http.StatusOK, replayResponseDe(res, v.retomado(), desculpada, amostra))
+}
+
+// correrReplay compõe o motor — com o tracer do nó se `comSpan`, para o span `replay`
+// ([replay.OpReplay], com `aos.replay.fidelity`) alimentar o SLI `replay_fidelity` — e corre o
+// replay. ok=false ⇒ a recusa já foi escrita.
+func (h *apiHandler) correrReplay(ctx context.Context, w http.ResponseWriter, reader readerIdentity, runID string, spec replay.TrajectorySpec, comSpan bool) (replay.ReplayResult, bool) {
+	var extra []replay.EngineOption
+	if comSpan && h.node.Tracer != nil {
+		extra = append(extra, replay.WithTracer(h.node.Tracer))
+	}
 	engine, err := h.newReaderReplayEngine(reader, extra...)
 	if err != nil {
 		writeReplayError(w, http.StatusInternalServerError, causaReplayFalhou)
-		return
+		return replay.ReplayResult{}, false
 	}
-	res, err := engine.Replay(r.Context(), runID, replay.Options{Spec: spec})
+	res, err := engine.Replay(ctx, runID, replay.Options{Spec: spec})
 	if err != nil {
 		if errors.Is(err, replay.ErrNoTrajectory) {
 			writeError(w, http.StatusNotFound, "not found")
-			return
+			return replay.ReplayResult{}, false
 		}
 		status, causa := replayErrorStatus(err)
 		writeReplayError(w, status, causa)
-		return
+		return replay.ReplayResult{}, false
 	}
-	writeJSON(w, http.StatusOK, replayResponseDe(res, retomado, amostra))
+	return res, true
 }
 
-// replaySpanOptions compõe o tracer do nó no motor — o span `replay` ([replay.OpReplay], com
-// `aos.replay.fidelity`) passa pela torneira e alimenta o SLI `replay_fidelity` (AOS-533) — EXCEPTO
-// para um run retomado: a divergência dele é por desenho (ADR-037 §5) e uma amostra abaixo de 1
-// faria disparar o alerta CRITICAL `replay_fidelity_low` sobre um run sem defeito.
-//
-// Devolve também se a chamada AMOSTRA de facto: sem torneira composta (observabilidade desligada)
-// o span vai para o NoopTracer e não chega ao avaliador.
-func (h *apiHandler) replaySpanOptions(retomado bool) ([]replay.EngineOption, bool) {
-	if retomado || h.node.Tracer == nil {
-		return nil, false
-	}
-	return []replay.EngineOption{replay.WithTracer(h.node.Tracer)}, h.node.sloTap != nil
+// replayAmostra diz se um span emitido pelo tracer do nó chega ao avaliador de SLOs: só com a
+// torneira composta (observabilidade ligada). É o produtor A PEDIDO do SLI `replay_fidelity`.
+func (h *apiHandler) replayAmostra() bool {
+	return h.node.Tracer != nil && h.node.sloTap != nil
 }
 
 // replayResponseDe projecta o resultado do motor no wire — só hashes, contagens e vocabulário fechado.
-func replayResponseDe(res replay.ReplayResult, retomado, amostra bool) replayResponse {
+// A nota só sai com uma divergência DESCULPADA (o primeiro turno de uma retoma corroborada).
+func replayResponseDe(res replay.ReplayResult, retomado, desculpada, amostra bool) replayResponse {
 	out := replayResponse{
 		RunID:              res.RunID,
 		Turns:              make([]replayTurnWire, 0, len(res.Steps)),
@@ -243,11 +282,12 @@ func replayResponseDe(res replay.ReplayResult, retomado, amostra bool) replayRes
 			out.AnchorsNotVerified = append(out.AnchorsNotVerified, a)
 		}
 	}
+	out.AnchorsNotVerified = append(out.AnchorsNotVerified, anchorsSemFonteIndependente...)
 	if d := res.Divergence; d != nil {
 		out.Divergence = &replayDivergenceWire{
 			Turn: d.Turn, StepID: d.StepID, Reason: d.Reason, ExpectedHash: d.ExpectedHash, ActualHash: d.ActualHash,
 		}
-		if retomado {
+		if desculpada {
 			out.Nota = notaRetomado
 		}
 	}
@@ -283,31 +323,125 @@ func toolsDoPrimeiroTurno(events []eventstore.Event) []agentruntime.ToolSpec {
 	return tools
 }
 
-// runRetomado diz se o run teve mais de uma vida, pelo que o seu stream regista: uma transição
-// `waiting_on_human → running` (a retoma por aprovação, AOS-021) ou transições com mais de um
-// fencing token (uma re-hospedagem reclama um lease novo — a retoma por crash, AOS-253).
-func runRetomado(events []eventstore.Event) bool {
-	tokens := map[uint64]bool{}
-	for _, ev := range events {
+// vidasDoRun lê o stream de lease do run e analisa as vidas ([analisarVidas]). Um stream de lease
+// ilegível ou ausente é «sem corroboração»: nenhuma retoma é aceite, e uma divergência fica normal
+// — o lado seguro da detecção.
+func (h *apiHandler) vidasDoRun(ctx context.Context, runID string, events []eventstore.Event) vidas {
+	lease, err := h.node.EventStore.Read(ctx, durable.LeaseStreamID(runID), 1)
+	if err != nil {
+		lease = nil
+	}
+	return analisarVidas(events, lease)
+}
+
+// vidas é o que o stream de um run e o seu stream de lease provam, juntos, sobre as suas vidas.
+type vidas struct {
+	// desculpados são os turnos cuja divergência não prova adulteração: o PRIMEIRO turno gravado
+	// depois de cada retoma corroborada. Vazio ⇒ o run não é tratado como retomado.
+	desculpados map[int]bool
+}
+
+func (v vidas) retomado() bool { return len(v.desculpados) > 0 }
+
+// analisarVidas decide se o run foi retomado e qual o turno desculpável de cada retoma.
+//
+//  1. A MÁQUINA DE ESTADOS TEM DE SER COERENTE. As transições, pela ordem do stream, têm de ser a
+//     cadeia que o [state.Machine] escreve: produtor [state.DefaultProducerNHI], `step_id`
+//     `state-1`, `state-2`, … sem buracos, a primeira a sair de `ready`, cada `from` igual ao `to`
+//     anterior, cada aresta válida ([state.IsValidTransition]), nada depois de um terminal e
+//     fencing tokens não decrescentes. Qualquer falha ⇒ nenhuma retoma. A PoC da revisão — uma
+//     `waiting_on_human → running` acrescentada depois do `complete` — cai aqui.
+//  2. A RETOMA TEM DE ESTAR NO STREAM DE LEASE. Cada vida reclama o lease
+//     ([durable.EventTypeLeaseClaimed], produtor [durable.DefaultLeaseProducerNHI], tokens 1, 2, …
+//     estritamente crescentes). É a evidência independente escolhida: está noutro stream, é escrita
+//     por concorrência optimista (expected_seq) e cobre as DUAS retomas — a por aprovação (AOS-021)
+//     e a por crash (AOS-253). O grant four-eyes consumido só cobriria a primeira.
+//  3. O CLAIM TEM DE SER USADO PELA MÁQUINA. Um claim de token k ≥ 2 só conta se alguma transição
+//     da cadeia levar esse token: a máquina escreveu sob a vida nova.
+//  4. O TURNO DESCULPADO é o primeiro `turn.recorded` do stream do run com carimbo ≥ ao do claim —
+//     o primeiro turno que a vida nova gravou (os anteriores reproduzem-se sem re-gravar).
+//
+// O que isto NÃO fecha: quem escreve cru nos DOIS streams, com a cadeia inteira certa, forja também
+// a retoma. Mas deixa de chegar uma linha, e a desculpa fica presa a um só turno por retoma.
+func analisarVidas(runEvents, leaseEvents []eventstore.Event) vidas {
+	// (1) A cadeia.
+	anterior := state.Ready
+	var ultimoToken uint64
+	tokensUsados := map[uint64]bool{}
+	n := 0
+	for _, ev := range runEvents {
 		if ev.Type != state.EventTypeTransition {
 			continue
 		}
+		n++
 		var t struct {
 			From       state.State `json:"from"`
 			To         state.State `json:"to"`
 			TokenValue uint64      `json:"token_value"`
 		}
-		if json.Unmarshal(ev.Payload, &t) != nil {
-			continue
+		if json.Unmarshal(ev.Payload, &t) != nil || ev.Producer.NHIID != state.DefaultProducerNHI ||
+			ev.StepID != fmt.Sprintf("state-%d", n) || state.IsTerminal(anterior) || t.From != anterior ||
+			!state.IsValidTransition(t.From, t.To) || (t.TokenValue != 0 && t.TokenValue < ultimoToken) {
+			return vidas{}
 		}
-		if t.From == state.WaitingOnHuman && t.To == state.Running {
-			return true
-		}
+		anterior = t.To
 		if t.TokenValue != 0 {
-			tokens[t.TokenValue] = true
+			ultimoToken = t.TokenValue
+			tokensUsados[t.TokenValue] = true
 		}
 	}
-	return len(tokens) > 1
+	if n == 0 {
+		return vidas{}
+	}
+
+	// (2) e (3): os claims, e os que a máquina usou.
+	v := vidas{desculpados: map[int]bool{}}
+	var proximo uint64 = 1
+	for _, ev := range leaseEvents {
+		if ev.Type != durable.EventTypeLeaseClaimed {
+			continue
+		}
+		var c struct {
+			Token uint64 `json:"token"`
+		}
+		if json.Unmarshal(ev.Payload, &c) != nil || ev.Producer.NHIID != durable.DefaultLeaseProducerNHI || c.Token != proximo {
+			return vidas{}
+		}
+		proximo++
+		if c.Token < 2 || !tokensUsados[c.Token] {
+			continue
+		}
+		// (4) O primeiro turno gravado pela vida nova.
+		desde, err := time.Parse(time.RFC3339Nano, ev.Ts)
+		if err != nil {
+			return vidas{}
+		}
+		if turno, ok := primeiroTurnoDesde(runEvents, desde); ok {
+			v.desculpados[turno] = true
+		}
+	}
+	return v
+}
+
+// primeiroTurnoDesde devolve o número do primeiro `turn.recorded` do stream com carimbo ≥ desde.
+func primeiroTurnoDesde(runEvents []eventstore.Event, desde time.Time) (int, bool) {
+	for _, ev := range runEvents {
+		if ev.Type != agentruntime.EventTypeTurnRecorded {
+			continue
+		}
+		ts, err := time.Parse(time.RFC3339Nano, ev.Ts)
+		if err != nil || ts.Before(desde) {
+			continue
+		}
+		var p struct {
+			Turn int `json:"turn"`
+		}
+		if json.Unmarshal(ev.Payload, &p) != nil {
+			return 0, false
+		}
+		return p.Turn, true
+	}
+	return 0, false
 }
 
 // registoErrorStatus mapeia a falha de leitura do registo de retoma.
