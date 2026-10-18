@@ -56,8 +56,9 @@ func TestAOS485_RecusaPelaListaDeixaEventoEContador(t *testing.T) {
 		t.Fatalf("queria o turn.recorded do turno 1 e exactamente 1 tool.call.denied; turno1=%q negados=%d", turno1, len(negados))
 	}
 	ev := evs[negados[0]]
-	if ev.ParentStepID != turno1 || ev.StepID != turno1+"-tool-1" {
-		t.Fatalf("step_id=%q parent_step_id=%q, quero %q e %q", ev.StepID, ev.ParentStepID, turno1+"-tool-1", turno1)
+	// AOS-481: o envelope da recusa leva a chave do tipo (`denied-<step_id>` da call).
+	if want := referencemonitor.EventStepID(referencemonitor.EventTypeDenied, turno1+"-tool-1"); ev.ParentStepID != turno1 || ev.StepID != want {
+		t.Fatalf("step_id=%q parent_step_id=%q, quero %q e %q", ev.StepID, ev.ParentStepID, want, turno1)
 	}
 	var p struct {
 		Code     string `json:"code"`

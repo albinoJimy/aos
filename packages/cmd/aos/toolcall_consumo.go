@@ -64,7 +64,9 @@ type toolCallBudgetPayload struct {
 // `consumo-` não colide com nenhum domínio de dedup do stream do run: os `step_id` do runtime
 // (`step-NNNNNN-tool-N`), o step-ledger (`ledger-`), o checkpoint (`ckpt-`), a captura de replay
 // (`cap-`), o custo de uma tool que chama um modelo (`custo-modelo-`, AOS-530), o controlo
-// (`ctrl-`), as transições (`state-`), as compensações (`comp-`) e as leases (`lease-`). O nome
+// (`ctrl-`), as transições (`state-`), as compensações (`comp-`), as leases (`lease-`) e as
+// decisões e o desfecho da própria tool call (AOS-481: o `tool.call.mediated` no `step_id` nu,
+// `denied-`, `escalated-` e `outcome-` nos outros três; [referencemonitor.EventStepID]). O nome
 // é o do vocabulário do ficheiro (o consumo da tool call), e não `committed-`, que descreve o
 // ciclo da reserva e não o facto.
 //

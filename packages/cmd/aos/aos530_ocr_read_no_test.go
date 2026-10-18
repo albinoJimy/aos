@@ -382,7 +382,16 @@ func aos530Mediacoes(t *testing.T, evs []eventstore.Event, tipo string) []aos530
 		if err := json.Unmarshal(e.Payload, &m); err != nil {
 			t.Fatalf("payload de %s: %v", tipo, err)
 		}
+		// O passo da CALL: o envelope de `denied`/`escalated` leva a chave do tipo desde o
+		// AOS-481, e o passo da call vem no payload; o do `mediated` é o próprio envelope.
+		var passo struct {
+			StepID string `json:"step_id"`
+		}
+		_ = json.Unmarshal(e.Payload, &passo)
 		m.step = e.StepID
+		if passo.StepID != "" {
+			m.step = passo.StepID
+		}
 		out = append(out, m)
 	}
 	return out

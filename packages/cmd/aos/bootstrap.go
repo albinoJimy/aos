@@ -2312,6 +2312,9 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		// fonte do controlador — com ela, o Evaluate periódico promove abaixo de L4; a promoção
 		// aplica-se em memória e NÃO sobrevive a reinício (o invariante de releitura reverte-a).
 		fiabilidade = novaFiabilidade(es, nil, ctrlCfg.Window(), autonomyEvalIntervalFromEnv())
+		// Só as classes provisionadas em AOS_AUTONOMY_LEVELS são julgadas para promoção (emenda
+		// de 2026-10-18 ao ADR-025): uma classe observada e não registada fica no piso.
+		fiabilidade.comParesConfigurados(cfg.Autonomy.specs) // nil-safe
 		var src autonomy.ReliabilitySource
 		if fiabilidade != nil {
 			src = fiabilidade // guarda contra o typed-nil: só liga uma fonte REAL
@@ -2320,7 +2323,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		if cerr != nil {
 			return nil, fmt.Errorf("aos: compor o controlador de autonomia (AOS-090): %w", cerr)
 		}
-		fiabilidade.comControlador(ctrl) // nil-safe
+		fiabilidade.comControlador(ctrl, cfg.Autonomy.registry.LevelFor) // nil-safe
 		anomaliaAutonomia = novasAnomaliasDeAutonomia(ctrl, es, nil)
 	}
 

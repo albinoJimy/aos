@@ -1079,33 +1079,159 @@ por isso não o detecta.
 Cada decisão e cada desfecho de uma tool call ficam no log do run como eventos distintos, sem
 perder a idempotência por passo do selo.
 
+### Decisão de chave
+
+A chave do envelope passa a ser f(`step_id` da call, tipo) — `referencemonitor.EventStepID`:
+
+| Tipo | `step_id` do envelope |
+|---|---|
+| `tool.call.mediated` | `<step_id>` (nu, como sempre) |
+| `tool.call.denied` | `denied-<step_id>` |
+| `tool.call.escalated` | `escalated-<step_id>` |
+| `tool.call.outcome` | `outcome-<step_id>` |
+
+- **O `mediated` fica com a chave nua.** É o selo pré-efeito, o tipo dominante em todos os logs
+  gravados (52 de 63 eventos `tool.call.*` no relatório de produção de 2026-10-01), e é o que o
+  `output_source.step_id` (AOS-497), o step-ledger e a sandbox citam como «o selo do passo».
+  Mudar-lhe a chave mudaria o significado de todos os streams antigos sem ganho.
+- **Os outros três ganham o nome do tipo como prefixo**, com hífen como os domínios que já
+  existem (`ledger-`, `ckpt-`, `cap-`, `consumo-`, `custo-modelo-`). Nenhum colide com esses nem
+  com `ctrl-`, `state-`, `comp-`, `lease-` ou com o `step-NNNNNN-tool-N` do runtime
+  (`TestAOS481_ChavesNaoColidem`).
+- **Um passo vazio fica vazio.** Um prefixo sobre o vazio daria a todas as calls sem passo de um
+  run a mesma chave fixa; para essas o comportamento não muda.
+- **O `step_id` da call vai no payload** dos três tipos com prefixo (`step_id`, opcional), como
+  no `budget.toolcall.committed` (AOS-532): a correlação não tem de desfazer o prefixo. No
+  `mediated` fica omitido — o envelope já é o passo — e o payload do selo fica byte-a-byte o de
+  antes, que é o que o guarda do AOS-497 (`TestAOS497_SemDeclaracaoDeOrigem_OsEventosSaoOsDaBase`)
+  compara com a base.
+- **Sem sufixo de tentativa.** A idempotência é por (`run_id`, `step_id`, tipo): a re-execução da
+  mesma decisão no mesmo passo deduplica, que é a propriedade pedida. Um número de tentativa
+  estável sob re-execução teria de vir de fora do RM — o RM não sabe que tentativa é esta, e
+  contá-la no stream não é determinista em replay. Os quatro casos medidos têm, por passo, no
+  máximo uma decisão de cada tipo. O único caso conhecido de duas decisões do MESMO tipo, com
+  significado distinto, no mesmo passo é uma segunda escalada depois de uma aprovação inválida ou
+  expirada: a segunda fica no WORM e no seu `approval.pending`, não num segundo
+  `tool.call.escalated` (residual declarado).
+
 ### Critérios de Aceitação
 
-- [ ] O `tool.call.outcome` e a decisão pós-aprovação (permit ou deny que segue um `escalated` no
-      mesmo passo) têm um `step_id` próprio e determinista (p.ex. `outcome:<step>` e um sufixo de
-      tentativa), de modo que a re-execução do mesmo desfecho continua a deduplicar.
-- [ ] Teste de integração RM + Event Store que conta os tipos no stream do run nos três casos acima
-      (permit directo; escalada → permit; escalada → deny) e falha se algum evento for engolido.
-- [ ] O caso 4 (recusa → permit no mesmo `step_id`, p.ex. uma recusa pela lista-branca do run
-      seguida, numa retoma sem captura, de um permit na mesma posição) fica no log do run como
-      dois eventos: o `tool.call.mediated` não é engolido pelo `tool.call.denied` anterior. Com
-      teste que o conta no stream do run.
-- [ ] O `MediationSeq` devolvido depois de uma aprovação aponta para o evento da decisão, não para o
-      `escalated`.
-- [ ] `autonomy_fiabilidade.go` recebe desfechos reais num teste que passa pelo RM e pelo Event
-      Store, e não por eventos sintetizados.
-- [ ] Replay e retro-compatibilidade: os logs já gravados (sem os eventos engolidos) continuam a
-      reconstruir o mesmo estado; o `replay.sh` não muda.
-- [ ] O contrato do producer (`tecnica/13` §3.1, AOS-478) e o catálogo de eventos ficam coerentes
-      com os `step_id` novos.
+- [x] O `tool.call.outcome` e a decisão pós-aprovação (permit ou deny que segue um `escalated` no
+      mesmo passo) têm um `step_id` próprio e determinista (ver «Decisão de chave»), de modo que a
+      re-execução do mesmo desfecho continua a deduplicar (`TestAOS481_ReexecucaoDeduplica`, por
+      tipo: permit, deny e escalate re-executados deixam um evento de cada).
+- [x] Teste de integração RM + Event Store que conta os tipos no stream do run nos três casos acima
+      e falha se algum evento for engolido (`packages/kernel/reference-monitor/aos481_chave_propria_test.go`,
+      Monitor real e os dois sinks reais sobre o Event Store de referência). Antes → depois:
+      permit directo `mediated` 1 + `outcome` 0 → 1 + 1; escalada → permit `escalated` 1, sem
+      `mediated` nem `outcome` → 1 + `mediated` 1 + `outcome` 1; escalada → deny `escalated` 1,
+      sem `denied` → 1 + `denied` 1. No nó (cenário do `TestAOS478_ProducerPorFamilia`, caso 3):
+      3 `escalated`, 0 `mediated`, 0 `outcome` → 3, 2, 2 (a terceira escalada é decidida `stop` e
+      não corre), e o teste passa a exigi-los na lista de não-vacuidade.
+- [x] O caso 4 fica no log do run como dois eventos: `TestAOS481_RecusaPelaListaDepoisPermit`
+      (recusa pela lista-branca do run, depois um permit na mesma posição) conta `denied` 1 +
+      `mediated` 1 + `outcome` 1; antes, `denied` 1 e nada mais.
+- [x] O `MediationSeq` devolvido depois de uma aprovação aponta para o evento da decisão
+      (`TestAOS481_EscaladaDepoisPermit`, `TestAOS481_EscaladaDepoisDeny`, sobre o sink do Event
+      Store). No nó o seq devolvido é o do WORM (primário do `TeeSink`), que já era distinto.
+- [x] `autonomy_fiabilidade.go` recebe desfechos reais num teste que passa pelo RM e pelo Event
+      Store (`packages/cmd/aos/aos481_fiabilidade_real_test.go`): 60 permits (1 com erro de
+      execução) e 2 escaladas aprovadas chegam pela subscrição de produção (`correr`) como 60
+      desfechos e 60 decisões (uma por call, emenda de 2026-10-18 ao ADR-025), a janela fica
+      julgável, e o controlador promove L1 → L2. Antes: 0 desfechos, `WindowOK=false`.
+- [x] Mutação: com qualquer dos três prefixos vazio, o teste do caso correspondente e o
+      `TestAOS481_ChavesNaoColidem` avermelham (verificado um a um; com o de `outcome-` vazio caem
+      cinco dos seis testes do RM).
+- [x] Replay e retro-compatibilidade: nenhum leitor procura estes eventos pela chave. O replay
+      (`replay/engine.go`) indexa a mediação pelo `parent_step_id`; a fiabilidade e a demoção
+      (`autonomy_anomalia.go`) pelo tipo e pelo payload; a nova tentativa (`nova_tentativa.go`)
+      pela família `tool.call.`; o `ConsumedByRun`, os contadores de turnos e o
+      `aos_runs_finished_by_last_tool_outcome_total` não lêem estes eventos (o último vem da
+      evidência do kernel em memória). Um log antigo não tem os eventos engolidos e reconstrói o
+      mesmo estado; o `replay.sh` não muda e passa.
+- [x] O contrato do producer (`tecnica/13` §3.1, a linha `tool.call.*` e a recusa pela lista), os
+      domínios de dedup e o catálogo (§3.3, `tool.call.*` com os quatro tipos e a chave) ficam
+      coerentes com os `step_id` novos, assim como o README do RM e os comentários do AOS-532
+      (`toolcall_consumo.go`) e do `TeeSink` (`integration/secured.go`).
 
 ### Fora de âmbito
 
 Reconstituir os desfechos que ficaram por gravar em logs antigos (estão no WORM).
 
+### Notas
+
+- **Efeito em produção na promoção de autonomia.** Com o desfecho a
+  chegar ao stream, a promoção automática do ADR-025 (abaixo de L4, sem ratificação humana, um
+  nível de cada vez, selada no WORM com `actor=controller`, em memória e revertida no arranque)
+  deixa de estar morta. Só existe quando o oráculo de autonomia está composto:
+  `AOS_POLICY_BUNDLE_DIR` + `AOS_AUTONOMY_LEVELS` não-vazio, com o Event Store do nó. O compose de
+  produção passa `${AOS_AUTONOMY_LEVELS:-}` (vazio por omissão), e o registo de 2026-08-19
+  (`docs/plano-autonomia-operavel.md`) diz o oráculo desligado em produção por decisão do
+  operador, coerente com zero escaladas no E2E de 2026-10-01 — mas a revisão independente
+  confirmou-o LIGADO (ver a nota seguinte). Ligado, a promoção dispara
+  quando, por (classe, domínio): o PROCESSO observou pelo menos a janela inteira desde o arranque
+  (`AOS_AUTONOMY_CONTROL` vazio ⇒ 30 dias; cada reinício recomeça a contagem), há ≥ 20 desfechos e
+  ≥ 20 decisões na janela (`minAmostrasFiabilidade`), a taxa de erro ≤ 2 % e o override ≤ 40 %, a
+  classe está provisionada, não há permit sem desfecho, e o
+  `Evaluate` corre (`AOS_AUTONOMY_EVAL_INTERVAL`, 1 h). Tecto L3 (`capPromocaoAbaixoDeDualControl`).
+  Com a janela por omissão e a cadência de releases actual, a condição da janela não se cumpre;
+  com uma janela curta em `AOS_AUTONOMY_CONTROL`, cumpre-se. Não se acrescentou interruptor: a
+  promoção automática é a decisão ratificada do ADR-025 e o banner do nó declara-a «LIGADA»;
+  o que se corrigiu foi a fonte, que promovia indevidamente (nota seguinte).
+- **As duas decisões que tinham ficado com o dono estão tomadas (2026-10-18, opção b).** A
+  revisão independente confirmou que o oráculo e a promoção estão LIGADOS em produção
+  (`AOS_AUTONOMY_LEVELS` com 2 pares, banner «promocao automatica por fiabilidade: LIGADA»,
+  `AOS_AUTONOMY_CONTROL` ausente ⇒ janela de 30 dias) e provou que a fonte promovia
+  indevidamente. Corrigido no mesmo ramo, e escrito como emenda ao ADR-025:
+  (1) o override-rate é a fracção das CALLS que precisou de humano — uma vez por call, o permit
+  ou a recusa que seguem uma escalada não são decisão nova, e as recusas (incluindo as da
+  lista-branca do run, a decisão pendente do AOS-485) não entram no denominador;
+  (2) a janela de uma (classe, domínio) recomeça em QUALQUER mudança de nível — promoção,
+  demoção por anomalia ou `POST /autonomy` do operador (2.ª revisão: só a promoção a recomeçava,
+  e o controlador desfazia a demoção ou a decisão do operador no tick seguinte) —, um degrau por
+  janela inteira no nível novo;
+  (3) só as classes provisionadas em `AOS_AUTONOMY_LEVELS` são promovidas (uma entrada de
+  instância não configura a classe);
+  (4) um permit sem desfecho em min(1 h, janela/2) invalida a janela (o §1 do ADR, agora
+  implementado; metade da janela para a regra não morrer com janelas curtas);
+  (5) uma re-entrega do transporte não conta a dobrar, e uma entrega fora de ordem não é
+  re-entrega; o mapa dos seqs vistos é podado pela idade da janela;
+  (6) uma call que precisou de humano conta como tal mesmo sem a escalada vista (escalada antes de
+  um reinício, ou cujo registo best-effort falhou): o selo do permit leva `human_approved` quando a
+  aprovação foi verificada pelo `ApprovalGate`. O `approval.consumed` não serve: vive no stream de
+  governação (`aos-internal/gov/approvals`), com a chave do id do grant e sem `run_id`/`step_id`.
+  Provas da revisão reproduzidas como testes que agora não promovem
+  (`packages/cmd/aos/aos481_fiabilidade_real_test.go`, pela subscrição de produção `correr`):
+  P1 — 20 calls, 12 escaladas e aprovadas, em L2 → fica L2 (antes lia-se 37,5 % e promovia);
+  P2 — L0, 20 calls escaladas e aprovadas + 10 recusas → fica L0; e o caso legítimo (2 de 60
+  escaladas) continua a promover L1 → L2. Mutação, uma de cada vez: contar o permit pós-aprovação,
+  contar as recusas, não recomeçar a janela numa mudança de nível, ignorar `human_approved` (na
+  fonte ou no selo do RM), não verificar a configuração, uma entrada de instância a configurar a
+  classe, o prazo fixo de 1 h, ignorar os buracos, ignorar o início da janela da chave, o ramo do
+  desfecho antes do permit, a dedup da re-entrega, a poda dos streams e tirar o
+  `tool.call.outcome` do filtro de `correr` — cada uma avermelha pelo menos um teste de
+  `aos481_fiabilidade_real_test.go` ou `aos090_promocao_test.go` (lista no relatório da 2.ª
+  revisão).
+- **Streams que atravessam a actualização.** Uma escalada ou uma recusa gravada antes, na chave
+  nua, continua a engolir o `mediated` de um permit posterior no mesmo passo; e a re-execução,
+  depois da actualização, de uma recusa gravada antes deixa um segundo `denied` (na chave nova).
+  Nenhum leitor conta mal por isso além da fiabilidade, que só vê eventos novos: o replay compara
+  o taint (igual nos dois) e a nova tentativa só pergunta se houve `tool.call.*`.
+- **Volume.** Um `tool.call.outcome` a mais por tool call permitida, no stream do run; o payload
+  de `denied`, `escalated` e `outcome` ganha `step_id`.
+- **Os guardas de inércia mudam, e só pelo desfecho.** Os testes que comparam o nó com a base
+  medida (`aos505BaseTiposDeEvento`, usado pelos do AOS-505/507/509/514, e os digests `tipos` do
+  AOS-520 e do AOS-521) ganham o `tool.call.outcome` a seguir ao `tool.call.mediated`. Medido
+  antes de os actualizar: tirando o `tool.call.outcome` da lista, os digests voltam a ser os da
+  base. Os testes que procuravam a recusa ou a escalada pelo `step_id` do envelope
+  (`platform/identity`, `kernel/agent-runtime`, `integration`, `cmd/aos` dos AOS-413/485/530)
+  passam a procurá-la pela chave do tipo ou pelo `step_id` do payload. O payload do
+  `tool.call.mediated` fica byte-a-byte o de antes (`TestAOS497_SemDeclaracaoDeOrigem_OsEventosSaoOsDaBase`
+  inalterado).
+
 ### Estado
 
-**ABERTO.**
+**Feito, 2026-10-18.** Correcção e testes offline.
 
 ## AOS-488 — O teste do producer por família falha 1 em 3: a expiração da aprovação corre no mesmo tick do `created_at`
 

@@ -184,8 +184,9 @@ func aos485NoComposto(t *testing.T, tools []string) aos485Medido {
 	if turno1 == "" {
 		t.Fatalf("o stream do run nao tem o turn.recorded do turno 1 (%d eventos)", len(m.eventos))
 	}
-	if m.negados > 0 && (m.turnoDaRecusa != turno1 || m.passoDaRecusa != turno1+"-tool-1") {
-		t.Fatalf("step_id=%q parent_step_id=%q, quero %q e %q", m.passoDaRecusa, m.turnoDaRecusa, turno1+"-tool-1", turno1)
+	// AOS-481: o envelope da recusa leva a chave do tipo (`denied-<step_id>` da call).
+	if want := referencemonitor.EventStepID(referencemonitor.EventTypeDenied, turno1+"-tool-1"); m.negados > 0 && (m.turnoDaRecusa != turno1 || m.passoDaRecusa != want) {
+		t.Fatalf("step_id=%q parent_step_id=%q, quero %q e %q", m.passoDaRecusa, m.turnoDaRecusa, want, turno1)
 	}
 	return m
 }

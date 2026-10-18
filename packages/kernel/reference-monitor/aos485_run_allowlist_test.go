@@ -262,10 +262,13 @@ func TestAOS485_RecusaGravaToolCallDeniedNoStreamDoRun(t *testing.T) {
 		t.Fatalf("queria 1 evento %s no stream do run, vieram %+v", EventTypeDenied, evs)
 	}
 	ev := evs[0]
-	if ev.StepID != "s1-tool-1" || ev.ParentStepID != "s1" {
-		t.Fatalf("step_id=%q parent_step_id=%q, quero s1-tool-1 e s1", ev.StepID, ev.ParentStepID)
+	// AOS-481: a chave do envelope é a do tipo (`denied-<step_id>`), para um permit posterior no
+	// mesmo passo não ser engolido; o `step_id` da call vai no payload.
+	if ev.StepID != StepPrefixDenied+"s1-tool-1" || ev.ParentStepID != "s1" {
+		t.Fatalf("step_id=%q parent_step_id=%q, quero %ss1-tool-1 e s1", ev.StepID, ev.ParentStepID, StepPrefixDenied)
 	}
 	var p struct {
+		StepID    string `json:"step_id"`
 		Decision  string `json:"decision"`
 		Code      string `json:"code"`
 		DeniedBy  string `json:"denied_by"`
@@ -280,6 +283,9 @@ func TestAOS485_RecusaGravaToolCallDeniedNoStreamDoRun(t *testing.T) {
 	}
 	if err := json.Unmarshal(ev.Payload, &p); err != nil {
 		t.Fatalf("payload: %v", err)
+	}
+	if p.StepID != "s1-tool-1" {
+		t.Fatalf("step_id da call no payload %q, quero s1-tool-1", p.StepID)
 	}
 	if p.Decision != "deny" || p.Code != CodeToolOutsideRunAllowlist || p.DeniedBy != RunAllowlistHookName || p.ToolID != "echo" {
 		t.Fatalf("payload da recusa: %s", ev.Payload)

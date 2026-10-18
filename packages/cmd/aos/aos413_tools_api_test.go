@@ -126,8 +126,9 @@ func aos413NegaPeloRM(t *testing.T, tools []string) {
 			if len(p.Principal.DelegationChain) == 0 || p.Principal.DelegationChain[0].Sub != "human:"+tnHuman {
 				t.Fatalf("a recusa não leva a cadeia de delegação do token verificado: %s", e.Payload)
 			}
-			if e.ParentStepID == "" || e.ParentStepID != turno1 || e.StepID != turno1+"-tool-1" {
-				t.Fatalf("step_id=%q parent_step_id=%q, quero %q e %q", e.StepID, e.ParentStepID, turno1+"-tool-1", turno1)
+			// AOS-481: o envelope da recusa leva a chave do tipo (`denied-<step_id>` da call).
+			if want := referencemonitor.EventStepID(referencemonitor.EventTypeDenied, turno1+"-tool-1"); e.ParentStepID == "" || e.ParentStepID != turno1 || e.StepID != want {
+				t.Fatalf("step_id=%q parent_step_id=%q, quero %q e %q", e.StepID, e.ParentStepID, want, turno1)
 			}
 		}
 	}

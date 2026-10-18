@@ -392,7 +392,7 @@ Números normativos citados e os seus documentos: **overhead da política** da m
 
 1. **Autonomia automática (DEF-908, fechado-residual por AOS-090/ADR-025):** o `autonomy.Controller` está composto no nó.
    - **Vigora:** a **demoção** por anomalia. Cada trip do disjuntor multi-sinal (AOS-080) demove a **classe** dos pares (classe, domínio) que o run tocou, de forma imediata e durável, sem gate humano (ADR-014).
-   - **Vigora com limites:** a **promoção** por fiabilidade medida (desfecho pós-efeito `tool.call.outcome` e override-rate). Só actua **abaixo de L4**; L4/L5 continuam a exigir a cerimónia assinada de dual-control (AOS-305/AOS-377).
+   - **Vigora com limites:** a **promoção** por fiabilidade medida (desfecho pós-efeito `tool.call.outcome` e override-rate). Só actua **abaixo de L4**; L4/L5 continuam a exigir a cerimónia assinada de dual-control (AOS-305/AOS-377). Desde a emenda de 2026-10-18 ao ADR-025: o override-rate é a fracção das **calls** que escalaram (uma vez por call; recusas fora do denominador), só se julgam as classes provisionadas em `AOS_AUTONOMY_LEVELS`, a janela recomeça em qualquer mudança de nível — promoção, demoção ou operador (um degrau por janela inteira no nível novo) — e um permit sem desfecho em min(1 h, janela/2) invalida a janela.
    - **Residuais, a não citar como controlos vigentes:**
      - a promoção automática aplica-se em memória e **não sobrevive a reinício**: o par volta ao último nível assinado;
      - o override-rate é medido por proxy de escalada;

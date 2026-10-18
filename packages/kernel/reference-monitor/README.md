@@ -92,11 +92,18 @@ e só são impostas se a decisão final for `permit`.
 Cada mediação grava um evento via a porta mínima [`EventSink`](./eventsink.go),
 com adaptador `NewEventStoreSink` para `packages/substrate/eventstore`:
 
-- `stream_id = run_id`; `idempotency_key = run_id:step_id`;
+- `stream_id = run_id`; `idempotency_key = run_id:<step_id do envelope>`;
 - tipo: `tool.call.mediated` (permit) / `tool.call.denied` (deny) /
-  `tool.call.escalated` (escalate);
-- *payload* com decisão, `tool_id`, `capability`, latência e principal — **sem
-  segredos** (o `Input` da tool não é gravado).
+  `tool.call.escalated` (escalate), e o desfecho pós-efeito `tool.call.outcome`
+  (`NewEventStoreOutcomeSink`, ADR-025);
+- o `step_id` do envelope é a chave do tipo (AOS-481, `EventStepID`): o da call
+  no `mediated`, `denied-<step_id>`, `escalated-<step_id>` e `outcome-<step_id>`
+  nos outros três. Com a chave do passo em todos, o Event Store engolia como
+  duplicado o desfecho, a decisão pós-aprovação e o permit que segue uma recusa no
+  mesmo passo. A re-execução da mesma decisão no mesmo passo continua a deduplicar;
+- *payload* com decisão, `tool_id`, `capability`, latência e principal, e, nos
+  três tipos com prefixo, o `step_id` da call (para os correlacionar com o
+  `mediated`) — **sem segredos** (o `Input` da tool não é gravado).
 
 ## Overhead
 

@@ -475,10 +475,12 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 	// ORDEM: WORM PRIMÁRIO (índice 0), Event Store a seguir. É deliberado e corrige um achado
 	// da revisão adversarial: o TeeSink escreve por ordem e PÁRA no primeiro erro
 	// ([audit.NewTeeSink]). Com o Event Store à cabeça, uma queda do WORM (com o ES de pé)
-	// deixaria no ES um `tool.call.mediated` JÁ COMMITADO e depois degradaria para deny — mas o
-	// `tool.call.denied` re-emitido por [Monitor.fail] colidiria com a MESMA chave de
-	// idempotência (run_id, step_id) do `mediated` e seria DEDUPLICADO, deixando o ES a afirmar
-	// uma autorização+execução que nunca aconteceu (e é o ES que o AOS-332 lê). Com o WORM à
+	// deixaria no ES um `tool.call.mediated` JÁ COMMITADO e depois degradaria para deny — e o ES
+	// afirmaria uma autorização que não teve efeito (e é o ES que o AOS-332 lê). Até ao AOS-481 o
+	// `tool.call.denied` re-emitido por [Monitor.fail] colidia ainda com a MESMA chave de
+	// idempotência (run_id, step_id) do `mediated` e era DEDUPLICADO; desde então cada tipo tem a
+	// sua chave ([referencemonitor.EventStepID]) e o `denied` ficaria ao lado, mas o `mediated`
+	// falso continuaria lá. Com o WORM à
 	// cabeça: se o WORM cai, o tee pára ANTES de tocar o ES ⇒ o ES nunca ganha um `mediated`
 	// falso; e um `mediated` NO ES passa a implicar que o tee INTEIRO teve sucesso ⇒ a call foi
 	// mesmo autorizada e despachada. Se em vez disso cai o ES, o WORM (autoritativo, append-only,

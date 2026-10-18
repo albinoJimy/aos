@@ -146,8 +146,10 @@ func aos485RecusaNoNoComposto(t *testing.T, duravel bool) {
 	if turno1 == "" || negado == nil {
 		t.Fatalf("queria o turn.recorded do turno 1 e um tool.call.denied; tipos=%v", aos485Tipos(c.eventos))
 	}
-	if negado.StepID != turno1+"-tool-1" || negado.ParentStepID != turno1 {
-		t.Fatalf("step_id=%q parent_step_id=%q, quero %q e %q", negado.StepID, negado.ParentStepID, turno1+"-tool-1", turno1)
+	// AOS-481: o envelope leva a chave do tipo (`denied-<step_id>`), para um permit posterior no
+	// mesmo passo não ser engolido; o `step_id` da call vai no payload (conferido em aos485PorVia).
+	if want := referencemonitor.EventStepID(referencemonitor.EventTypeDenied, turno1+"-tool-1"); negado.StepID != want || negado.ParentStepID != turno1 {
+		t.Fatalf("step_id=%q parent_step_id=%q, quero %q e %q", negado.StepID, negado.ParentStepID, want, turno1)
 	}
 	var p struct {
 		Decision  string `json:"decision"`
@@ -286,6 +288,7 @@ func aos485PorVia(t *testing.T, permitidas []string, duravel bool) (negacoes []a
 			mediadas++
 		case referencemonitor.EventTypeDenied:
 			var p struct {
+				StepID   string `json:"step_id"`
 				Code     string `json:"code"`
 				DeniedBy string `json:"denied_by"`
 				ToolID   string `json:"tool_id"`
@@ -293,7 +296,11 @@ func aos485PorVia(t *testing.T, permitidas []string, duravel bool) (negacoes []a
 			if err := json.Unmarshal(ev.Payload, &p); err != nil {
 				t.Fatalf("payload: %v", err)
 			}
-			negacoes = append(negacoes, aos485Negacao{ev.StepID, ev.ParentStepID, p.Code, p.DeniedBy, p.ToolID})
+			// O `step_id` da call é o do payload; o do envelope é a chave do tipo (AOS-481).
+			if want := referencemonitor.EventStepID(ev.Type, p.StepID); ev.StepID != want {
+				t.Fatalf("step_id do envelope %q, quero %q", ev.StepID, want)
+			}
+			negacoes = append(negacoes, aos485Negacao{p.StepID, ev.ParentStepID, p.Code, p.DeniedBy, p.ToolID})
 		}
 	}
 	return negacoes, mediadas, execucoes

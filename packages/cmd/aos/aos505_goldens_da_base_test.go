@@ -17,6 +17,10 @@ var aos505BaseTiposDeEvento = []string{
 	"turn.recorded",
 	"step.checkpoint",
 	"tool.call.mediated",
+	// AOS-481: o desfecho da tool call passa a chegar ao stream do run, logo a seguir ao selo.
+	// Na base era engolido pelo Event Store (a mesma chave do `tool.call.mediated`); é a única
+	// diferença face à base medida, e é a correcção.
+	"tool.call.outcome",
 	"step.ledger.applied",
 	"step.checkpoint",
 	"replay.captured",

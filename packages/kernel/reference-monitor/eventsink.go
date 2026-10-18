@@ -22,6 +22,64 @@ const (
 	EventTypeOutcome = "tool.call.outcome"
 )
 
+// Prefixos do `step_id` do ENVELOPE dos eventos de mediação e de desfecho (AOS-481).
+//
+// # Porque uma chave por tipo
+//
+// O Event Store deduplica pela chave `run_id:step_id` DENTRO do stream, QUALQUER que seja o tipo
+// do evento, e devolve `StatusDuplicate` SEM erro. Com o `step_id` da call em todos, o primeiro
+// evento de um passo engolia os seguintes: o `tool.call.outcome` colidia com o
+// `tool.call.mediated` do mesmo passo (gravado antes, audit-before-effect); a decisão que segue
+// uma aprovação (permit ou deny) colidia com o `tool.call.escalated`; e o permit que segue uma
+// recusa no mesmo passo (AOS-485) colidia com o `tool.call.denied`. O WORM tinha tudo; o log do
+// run não, e a fiabilidade da promoção de autonomia (AOS-090, ADR-025) nunca recebia desfechos.
+//
+// A chave passa a ser f(`step_id` da call, tipo do evento): cada TIPO de decisão de um passo, e o
+// desfecho, tem a sua. O `tool.call.mediated` fica com o `step_id` nu, como sempre: é o selo
+// pré-efeito, o tipo dominante em todos os logs gravados, e quem já o lia pela chave do passo
+// continua a lê-lo. Os outros três ganham o nome do tipo como prefixo.
+//
+// # Porque não há sufixo de tentativa
+//
+// A idempotência continua a ser por (`run_id`, `step_id`, tipo): a re-execução determinista da
+// mesma decisão no mesmo passo — uma retoma que volta a pedir a mesma call e recebe o mesmo
+// veredicto — deduplica, que é a propriedade que a chave existe para dar. Um número de tentativa
+// estável sob re-execução teria de vir de fora do RM (o RM não sabe que tentativa é esta, e
+// contá-la no stream não é determinista em replay). O único caso conhecido de duas decisões do
+// MESMO tipo, e com significado distinto, no mesmo passo é uma segunda escalada depois de uma
+// aprovação inválida ou expirada; a segunda fica no WORM e no `approval.pending` próprio, e não
+// num segundo `tool.call.escalated` (residual declarado no AOS-481).
+//
+// Os prefixos não colidem com nenhum domínio de dedup do stream do run: os `step_id` do runtime
+// (`step-NNNNNN-tool-N`), `ledger-`, `ckpt-`, `cap-`, `custo-modelo-`, `consumo-`, `ctrl-`,
+// `state-`, `comp-` e `lease-`. Nos três tipos com prefixo o `step_id` da call vai também no
+// payload (`step_id`), para a correlação não ter de desfazer o prefixo.
+const (
+	StepPrefixDenied    = "denied-"
+	StepPrefixEscalated = "escalated-"
+	StepPrefixOutcome   = "outcome-"
+)
+
+// EventStepID devolve o `step_id` do envelope de um evento `tool.call.*` do tipo dado para a
+// call do passo `callStepID` (AOS-481). `tool.call.mediated` (e qualquer tipo fora da família)
+// fica com o passo nu. Um passo vazio fica vazio: um prefixo sobre o vazio daria a todas as
+// calls sem passo de um run a MESMA chave fixa, e o comportamento de hoje para elas não muda.
+func EventStepID(eventType, callStepID string) string {
+	if callStepID == "" {
+		return ""
+	}
+	switch eventType {
+	case EventTypeDenied:
+		return StepPrefixDenied + callStepID
+	case EventTypeEscalated:
+		return StepPrefixEscalated + callStepID
+	case EventTypeOutcome:
+		return StepPrefixOutcome + callStepID
+	default:
+		return callStepID
+	}
+}
+
 // MediationRecord é o registo de auditoria de uma mediação. O RM constrói-o
 // para permit E para deny/escalate e submete-o ao [EventSink].
 type MediationRecord struct {
@@ -43,6 +101,12 @@ type MediationRecord struct {
 	// PolicyVersion é a versão de política em vigor na decisão (preenchida pelo
 	// PDP via [HookResult.PolicyVersion]). Fica no evento de mediação (AOS-004).
 	PolicyVersion string
+	// HumanApproved diz que o permit foi destravado por uma aprovação humana VERIFICADA
+	// ([ApprovalGate], [Call.HumanApproval]) — não-forjável, só este pacote o põe na call. É o
+	// sinal, dentro do próprio selo, de que a call precisou de humano, mesmo quando a escalada
+	// que a precedeu não está no log que o leitor vê (escalada antes de um reinício, ou cujo
+	// registo best-effort falhou). AOS-481, emenda de 2026-10-18 ao ADR-025.
+	HumanApproved bool
 	// Metadata são os metadados estruturados do hook que TERMINOU a mediação
 	// (AOS-340), vindos de [HookResult.Metadata]. Registo, nunca enforcement: não
 	// passam por `enforceObligations` e não podem negar nada.
@@ -78,7 +142,13 @@ func eventTypeFor(e Effect) string {
 // alvo e o contexto de decisão para que o evento seja explicável/auditável sem
 // depender de estado externo (contrato C1, tecnica/12 §4).
 type mediationPayload struct {
-	PortVersion   string       `json:"port_version"`
+	PortVersion string `json:"port_version"`
+	// StepID é o `step_id` da call (AOS-481), só quando o do envelope NÃO é ele: em `denied` e
+	// `escalated` o envelope leva o prefixo do tipo ([EventStepID]), e é por este campo que a
+	// decisão se correlaciona com o `tool.call.mediated` e o desfecho da mesma call. No
+	// `mediated` fica omitido: o envelope já é o passo da call, e o payload do selo fica
+	// byte-a-byte o de antes (o guarda do AOS-497 compara-o com a base).
+	StepID        string       `json:"step_id,omitempty"`
 	PolicyVersion string       `json:"policy_version,omitempty"`
 	RequestID     string       `json:"request_id,omitempty"`
 	Decision      string       `json:"decision"`
@@ -96,6 +166,9 @@ type mediationPayload struct {
 	// `omitempty` mantém o payload de quem nada acrescenta byte-a-byte igual ao de
 	// antes — acrescentar um campo OPCIONAL é MINOR no `port_version` (tecnica/12 §4).
 	Metadata map[string]string `json:"metadata,omitempty"`
+	// HumanApproved: o permit veio de uma aprovação humana verificada ([MediationRecord.HumanApproved]).
+	// `omitempty`: um permit directo fica byte-a-byte o de antes.
+	HumanApproved bool `json:"human_approved,omitempty"`
 }
 
 type resourceDTO struct {
@@ -161,6 +234,8 @@ func NewEventStoreSink(store eventstore.EventStore) EventSink {
 }
 
 func (s *eventStoreSink) RecordMediation(ctx context.Context, rec MediationRecord) (uint64, error) {
+	typ := eventTypeFor(rec.Effect)
+	stepID := EventStepID(typ, rec.StepID)
 	payload := mediationPayload{
 		PortVersion:   PortVersion,
 		PolicyVersion: rec.PolicyVersion,
@@ -195,8 +270,12 @@ func (s *eventStoreSink) RecordMediation(ctx context.Context, rec MediationRecor
 			RequestedBy:     rec.Principal.RequestedBy,
 			MandateSigner:   rec.Principal.MandateSigner,
 		},
-		Obligations: rec.Obligations,
-		Metadata:    rec.Metadata,
+		Obligations:   rec.Obligations,
+		Metadata:      rec.Metadata,
+		HumanApproved: rec.HumanApproved,
+	}
+	if stepID != rec.StepID {
+		payload.StepID = rec.StepID
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -204,10 +283,12 @@ func (s *eventStoreSink) RecordMediation(ctx context.Context, rec MediationRecor
 	}
 
 	in := eventstore.EventInput{
-		Type:         eventTypeFor(rec.Effect),
-		Payload:      raw,
-		RunID:        rec.RunID,
-		StepID:       rec.StepID,
+		Type:    typ,
+		Payload: raw,
+		RunID:   rec.RunID,
+		// Chave própria por tipo (AOS-481): sem ela a decisão que segue uma escalada ou uma
+		// recusa no mesmo passo era engolida como duplicado. Ver [EventStepID].
+		StepID:       stepID,
 		ParentStepID: rec.ParentStepID,
 		// A projecção é partilhada com os factos que a call causa a jusante (AOS-478,
 		// [Principal.EventProducer]): o mesmo passo identifica o mesmo principal.
@@ -259,7 +340,10 @@ func (discardSink) RecordMediation(context.Context, MediationRecord) (uint64, er
 // outcomePayload é o corpo JSON do evento tool.call.outcome (ADR-025). Sem segredos: só o
 // desfecho, a classe/domínio de onde a fiabilidade agrega, e metadados de correlação.
 type outcomePayload struct {
-	PortVersion  string      `json:"port_version"`
+	PortVersion string `json:"port_version"`
+	// StepID é o `step_id` da call (AOS-481): o do envelope é `outcome-<step_id>`. É por este
+	// que o desfecho se correlaciona com o `tool.call.mediated` da mesma call.
+	StepID       string      `json:"step_id,omitempty"`
 	Outcome      string      `json:"outcome"`
 	ErrorKind    string      `json:"error_kind,omitempty"`
 	ToolID       string      `json:"tool_id,omitempty"`
@@ -285,6 +369,7 @@ func NewEventStoreOutcomeSink(store eventstore.EventStore) OutcomeSink {
 func (s *eventStoreOutcomeSink) RecordOutcome(ctx context.Context, rec OutcomeRecord) error {
 	payload := outcomePayload{
 		PortVersion:  PortVersion,
+		StepID:       rec.StepID,
 		Outcome:      rec.Outcome,
 		ErrorKind:    rec.ErrorKind,
 		ToolID:       rec.ToolID,
@@ -301,7 +386,9 @@ func (s *eventStoreOutcomeSink) RecordOutcome(ctx context.Context, rec OutcomeRe
 		Type:    EventTypeOutcome,
 		Payload: raw,
 		RunID:   rec.RunID,
-		StepID:  rec.StepID,
+		// AOS-481: `outcome-<step_id>`. Com o `step_id` nu, o desfecho colidia com o selo
+		// `tool.call.mediated` do mesmo passo, gravado antes, e o Event Store engolia-o.
+		StepID: EventStepID(EventTypeOutcome, rec.StepID),
 		// AOS-478: o desfecho é da MESMA tool call que o selo `tool.call.mediated` do passo,
 		// e identifica o mesmo principal.
 		Producer: rec.Principal.EventProducer(),
