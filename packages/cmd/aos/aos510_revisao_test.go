@@ -26,7 +26,9 @@ import (
 
 // TestAOS510_ServeAPI_LigaOInterruptorLidoDoAmbiente: o servidor que o ENTRYPOINT constrói anuncia
 // a classe quando a variável está em `on`, e não a anuncia sem ela. É o `GET /tools` do processo,
-// e não o de um handler montado pelo teste.
+// e não o de um handler montado pelo teste. O manifesto é o de produção sem a `ocr_read`
+// ([manifestoDeProducaoSemOCR]): o teste é sobre o interruptor, não compõe o Model Gateway, e sem
+// ele a `ocr_read` (emenda de 2026-10-18 ao ADR-034 §2.7) recusaria o arranque.
 func TestAOS510_ServeAPI_LigaOInterruptorLidoDoAmbiente(t *testing.T) {
 	for _, c := range []struct {
 		valor   string
@@ -34,7 +36,7 @@ func TestAOS510_ServeAPI_LigaOInterruptorLidoDoAmbiente(t *testing.T) {
 	}{{"on", true}, {"off", false}, {"", false}} {
 		t.Run("AOS_RUN_RETRY_EMPTY="+c.valor, func(t *testing.T) {
 			clearIngressEnv(t)
-			aos441Ambiente(t, aos441ManifestoDeProducao)
+			aos441Ambiente(t, manifestoDeProducaoSemOCR(t, aos441ManifestoDeProducao))
 			t.Setenv("AOS_RUN_RETRY_MAX", "2")
 			t.Setenv("AOS_RUN_RETRY_EMPTY", c.valor)
 			node, _ := newAPINode(t, &countingModel{}, false)
@@ -74,7 +76,7 @@ func TestAOS510_ServeAPI_LigaOInterruptorLidoDoAmbiente(t *testing.T) {
 	}
 	// Um valor fora do vocabulário recusa o arranque, pelo entrypoint.
 	clearIngressEnv(t)
-	aos441Ambiente(t, aos441ManifestoDeProducao)
+	aos441Ambiente(t, manifestoDeProducaoSemOCR(t, aos441ManifestoDeProducao))
 	t.Setenv("AOS_RUN_RETRY_EMPTY", "observe")
 	node, _ := newAPINode(t, &countingModel{}, false)
 	defer func() { _ = node.Close() }()

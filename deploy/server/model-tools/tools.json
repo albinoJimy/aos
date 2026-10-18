@@ -17,5 +17,24 @@
     "resource_region": "eu-west",
     "egress": "none",
     "sandbox": { "command": "read", "path_arg": "doc_id" }
+  },
+  {
+    "name": "ocr_read",
+    "description": "Transcreve o texto de uma imagem (PNG ou JPEG) da pasta de documentos, por id. Usa isto quando te pedirem para ler o texto de uma imagem.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "doc_id": { "type": "string", "description": "id da imagem a transcrever (o nome do ficheiro, por exemplo fatura-a-limpo.png)" }
+      },
+      "required": ["doc_id"]
+    },
+    "capability": "cap:fs.read",
+    "reversibility": "reversible",
+    "mutation": "none",
+    "resource_type": "file",
+    "resource_value": "doc://{doc_id}",
+    "resource_region": "eu-west",
+    "egress": "external",
+    "modelo": { "alias": "ocr-visao" }
   }
 ]

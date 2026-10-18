@@ -595,11 +595,12 @@ services:
       # da autorização é o rótulo do CONTEXTO do turno, cunhado pelo runtime (ADR-034): trusted
       # enquanto o contexto só tem o objectivo, untrusted depois de um plan_input, resultado de
       # tool ou memória — e uma capability privilegiada pedida sobre contexto untrusted é NEGADA
-      # pelo taint-gate. O ./model-tools/tools.json deste servidor só oferece `doc_read`: o
-      # `web_post` (cap:http.post, egress externo) SAIU por decisão do dono a 2026-09-26 (ADR-034
+      # pelo taint-gate. O ./model-tools/tools.json deste servidor oferece `doc_read` e `ocr_read`:
+      # o `web_post` (cap:http.post, egress externo) SAIU por decisão do dono a 2026-09-26 (ADR-034
       # §2.7) — com a opção C um web_post de contexto limpo já não morre pelo taint, só pela região
-      # do Cedar. Voltar a oferecer uma tool de egress externo é decisão explícita (fase 2 /
-      # opção A do ADR-034), não uma edição deste ficheiro.
+      # do Cedar. A `ocr_read` (egress externo, ADR-042) é a única excepção, decidida pelo dono a
+      # 2026-10-18 (emenda ao ADR-034 §2.7). Voltar a oferecer outra tool de egress externo é
+      # decisão explícita (fase 2 / opção A do ADR-034), não uma edição deste ficheiro.
       AOS_MODEL_TOOLS: "${AOS_MODEL_TOOLS:-}"
       AOS_MODEL_TOOLS_REGISTER: "${AOS_MODEL_TOOLS_REGISTER:-}"
 

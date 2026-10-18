@@ -177,6 +177,19 @@ A mudança chega a produção com a próxima release: o `deploy.yml` sincroniza
 (só `doc_read`) não muda, e a conferência do AOS-441 continua a bater — as tools do nó que o
 snapshot não nomeia não contam.
 
+**Emenda de 2026-10-18 (AOS-530; decisão do dono: «aceito a excepção, e resolva para a
+ocr_read»).** A `ocr_read` (ADR-042) passa a ser oferecida no manifesto de produção como
+**excepção** a esta regra, apesar de ter egress externo. A regra continua para qualquer outra tool
+com egress externo ou de `cap:http.post`. A excepção é por nome **e** forma: a entrada chama-se
+`ocr_read`, declara `modelo.alias`, usa `cap:fs.read` e o recurso `doc://{doc_id}`; uma entrada com
+o mesmo nome e outra forma não está coberta. As razões: o modelo só escolhe o `doc_id` entre as
+imagens que o dono semeou (ADR-042 §2.4); a instrução da visão é fixa e versionada; o modelo de
+visão não recebe tools (ADR-042 §2.4, barreira 3); há uma leitura por run, porque a `ocr_read`
+partilha a `cap:fs.read` da `doc_read` e a capability está armada em produção
+(`AOS_PRIVILEGED_CAPS=cap:http.post,cap:fs.read`; ADR-042 §2.8); e o que sai do servidor é a
+imagem, nunca conteúdo do run (ADR-042 §2.4, §4). `TestAOS069_ManifestoDeProducaoNaoOfereceEgressExterno`
+continua a avermelhar para qualquer outra tool com egress externo.
+
 ## 3. Alternativas consideradas
 
 - **(A) Dual-LLM / CaMeL completo** — um planeador que só vê trusted + handles e um executor que
@@ -315,7 +328,9 @@ snapshot não nomeia não contam.
   como `plan_input`, pelo loop real, não produz nenhuma call privilegiada permitida (fase 0 e fase
   1), com controlo de contexto limpo e meta-teste com o gate desligado.
 - `packages/cmd/aos/aos069_web_post_contexto_limpo_test.go` — o manifesto de produção não oferece
-  nenhuma tool de `cap:http.post` nem de egress externo (§2.7); onde o `web_post` é oferecido, morre
+  nenhuma tool de `cap:http.post` nem de egress externo (§2.7), salvo a `ocr_read` com a forma da
+  emenda de 2026-10-18 — `TestAOS069_ExcepcaoDaOCRNaoCobreOutraTool` prova que a excepção não cobre
+  outra tool; onde o `web_post` é oferecido, morre
   em contexto limpo no PDP pela região (R8); e a injecção no objectivo passa a cláusula de taint
   (R7).
 - `packages/kernel/agent-runtime/replay/aos069_autoridade_replay_test.go` — a âncora opt-in

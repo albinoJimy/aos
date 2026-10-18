@@ -121,8 +121,9 @@ func noComInjeccao(priv []string, withGate bool, inputs []agentruntime.PlanInput
 }
 
 // capabilityDaTool é o binding das duas tools dos demos (deploy/node/dev-hardened/model-tools); o
-// manifesto de produção só oferece doc_read desde 2026-09-26 (ADR-034 §2.7), mas a propriedade tem de
-// valer também para um nó que ofereça o web_post.
+// manifesto de produção não oferece o web_post desde 2026-09-26 (ADR-034 §2.7; oferece doc_read e,
+// desde a emenda de 2026-10-18, a ocr_read), mas a propriedade tem de valer também para um nó que
+// ofereça o web_post.
 var capabilityDaTool = map[string]string{"web_post": "cap:http.post", "doc_read": "cap:fs.read"}
 
 // planInput é o documento que o nó n1 publicou, com a injecção dentro.

@@ -37,6 +37,12 @@ import (
 // o ficheiro real e não um fixture: o gatilho que DEF-701/DEF-702 declaravam («catálogo de tools
 // não-vazio a executar código não-confiável») ocorreu NESTE ficheiro, e um fixture inventado
 // deixaria o teste verde no dia em que alguém removesse de lá o bloco `sandbox`.
+//
+// Desde a emenda de 2026-10-18 ao ADR-034 §2.7 o ficheiro tem também a `ocr_read`, que sem o
+// Model Gateway composto recusa o arranque (ErrOCRSemGateway) ANTES da coluna do driver. Estes
+// testes medem o driver e não compõem gateway: usam [manifestoDeProducaoSemOCR], derivado deste
+// ficheiro, que mantém a `doc_read` com o bloco `sandbox`. O arranque de produção com a `ocr_read`
+// e o gateway mede-se em TestAOS530_ProducaoArrancaComOManifestoRealEOGateway.
 const manifestoDeProducaoComSandbox = "../../../deploy/server/model-tools/tools.json"
 
 // aos344ProducaoQuaseCompleta monta uma produção que passa TODAS as colunas de postura, para que
@@ -77,7 +83,7 @@ func aos344ProducaoQuaseCompleta(t *testing.T) {
 // exactamente o que o compose de produção entrega hoje.
 func TestAOS344_ProducaoSemDriverDeSandboxRecusa(t *testing.T) {
 	aos344ProducaoQuaseCompleta(t)
-	t.Setenv("AOS_MODEL_TOOLS", manifestoDeProducaoComSandbox)
+	t.Setenv("AOS_MODEL_TOOLS", manifestoDeProducaoSemOCR(t, manifestoDeProducaoComSandbox))
 	t.Setenv("AOS_SANDBOX_DRIVER", "") // o estado sob teste: o default do compose
 
 	if err := run(io.Discard); !errors.Is(err, ErrProductionNeedsSandboxDriver) {
@@ -90,7 +96,7 @@ func TestAOS344_ProducaoSemDriverDeSandboxRecusa(t *testing.T) {
 // nenhuma — só tornaria a mesma postura deliberada, e a recusa perderia o sentido.
 func TestAOS344_ProducaoComOFakeExplicitoRecusaNAMESMA(t *testing.T) {
 	aos344ProducaoQuaseCompleta(t)
-	t.Setenv("AOS_MODEL_TOOLS", manifestoDeProducaoComSandbox)
+	t.Setenv("AOS_MODEL_TOOLS", manifestoDeProducaoSemOCR(t, manifestoDeProducaoComSandbox))
 	t.Setenv("AOS_SANDBOX_DRIVER", string(sandbox.DriverFake))
 
 	if err := run(io.Discard); !errors.Is(err, ErrProductionNeedsSandboxDriver) {
@@ -107,7 +113,7 @@ func TestAOS344_ProducaoComOFakeExplicitoRecusaNAMESMA(t *testing.T) {
 // alinhamento que este ticket pede — falhar fechado, não fabricar um resultado.
 func TestAOS344_ProducaoComGVisorArranca(t *testing.T) {
 	aos344ProducaoQuaseCompleta(t)
-	t.Setenv("AOS_MODEL_TOOLS", manifestoDeProducaoComSandbox)
+	t.Setenv("AOS_MODEL_TOOLS", manifestoDeProducaoSemOCR(t, manifestoDeProducaoComSandbox))
 	t.Setenv("AOS_SANDBOX_DRIVER", string(sandbox.DriverGVisor))
 	t.Setenv("AOS_SANDBOX_GVISOR_URL", "")
 
@@ -150,7 +156,7 @@ func TestAOS344_ForaDeProducaoOFakeContinuaAFuncionar(t *testing.T) {
 			t.Setenv("AOS_MODE", "") // modo de referência
 			// AOS-407: o manifesto de produção declara eu-west; o mapa de boards tem de o conter.
 			t.Setenv("AOS_BOARD_REGIONS", "board:demo=eu-west")
-			t.Setenv("AOS_MODEL_TOOLS", manifestoDeProducaoComSandbox)
+			t.Setenv("AOS_MODEL_TOOLS", manifestoDeProducaoSemOCR(t, manifestoDeProducaoComSandbox))
 			t.Setenv("AOS_SANDBOX_DRIVER", c.valor)
 
 			if err := run(&sb); err != nil {

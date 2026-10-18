@@ -9,7 +9,9 @@ package main
 //   1. DECISÃO DO DONO (2026-09-26, ADR-034 §2.7): o manifesto de PRODUÇÃO
 //      (`deploy/server/model-tools/tools.json`) deixa de oferecer o `web_post` — e nenhuma tool de
 //      `cap:http.post` ou de egress externo. [TestAOS069_ManifestoDeProducaoNaoOfereceEgressExterno]
-//      avermelha se alguém a reintroduzir: fazê-lo é uma decisão explícita, não uma edição.
+//      avermelha se alguém a reintroduzir: fazê-lo é uma decisão explícita, não uma edição. A
+//      única excepção é a `ocr_read` (emenda de 2026-10-18 ao ADR-034 §2.7, ADR-042), por nome e
+//      forma.
 //   2. Onde o `web_post` ainda é oferecido (os demos dev-hardened, fixture aqui), quem o mata com o
 //      bundle de referência é a REGIÃO: `allow_http_post` exige `resource.region == "eu"`, e a tool
 //      declara `eu-west` (desde o AOS-407 a região da tool alinha-se ao board, nunca o contrário)
@@ -29,6 +31,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -54,6 +62,10 @@ const toolsJSONComWebPost = "../../../deploy/node/dev-hardened/model-tools/tools
 // egress externo até à fase 2 / opção A do ADR-034. Reintroduzi-la tem de avermelhar aqui e
 // obrigar a uma decisão escrita — com a opção C, um efeito externo pedido em contexto limpo já não
 // morre no taint.
+//
+// A ÚNICA EXCEPÇÃO é a da emenda de 2026-10-18 ao ADR-034 §2.7 (decisão do dono, AOS-530): a
+// `ocr_read` do ADR-042, e só com a forma que a decisão cobre — ver [excepcaoOCRDaEmenda]. Uma
+// entrada com o mesmo nome e outra forma volta a avermelhar.
 func TestAOS069_ManifestoDeProducaoNaoOfereceEgressExterno(t *testing.T) {
 	t.Setenv("AOS_MODEL_TOOLS", toolsJSONProducao)
 	specs, err := readModelToolSpecs()
@@ -63,13 +75,109 @@ func TestAOS069_ManifestoDeProducaoNaoOfereceEgressExterno(t *testing.T) {
 	if len(specs) == 0 {
 		t.Fatal("o manifesto de producao ficou vazio — o teste seria vacuo")
 	}
+	for _, v := range violacoesDoADR034Seccao27(specs) {
+		t.Error(v)
+	}
+}
+
+// excepcaoOCRDaEmenda diz se a entrada é EXACTAMENTE a excepção da emenda de 2026-10-18 ao
+// ADR-034 §2.7: a `ocr_read` com `modelo.alias`, `cap:fs.read` e `doc://{doc_id}`. É por nome E
+// forma: o que o dono aceitou foi uma leitura por run (a `cap:fs.read`, armada em produção) de
+// uma imagem que ele semeou (`doc://{doc_id}`), por um modelo de visão sem tools (o bloco
+// `modelo`). Os literais estão aqui, e não as constantes do código, para que mudar a forma da
+// tool não alargue a excepção em silêncio.
+func excepcaoOCRDaEmenda(s modelToolSpec) bool {
+	return s.Name == "ocr_read" &&
+		s.Modelo != nil && strings.TrimSpace(s.Modelo.Alias) != "" &&
+		s.Capability == "cap:fs.read" &&
+		s.ResourceValue == "doc://{doc_id}"
+}
+
+// violacoesDoADR034Seccao27 devolve, para um manifesto, as entradas que a regra do ADR-034 §2.7
+// proíbe em produção: `cap:http.post`, o `web_post`, ou egress diferente de `none` — salvo a
+// excepção da emenda de 2026-10-18.
+func violacoesDoADR034Seccao27(specs []modelToolSpec) []string {
+	var v []string
 	for _, s := range specs {
 		if s.Capability == "cap:http.post" || s.Name == "web_post" {
-			t.Errorf("o manifesto de producao voltou a oferecer %q (%s) — retirado por decisao do dono a 2026-09-26 (ADR-034 §2.7); reintroduzir é decisao explicita", s.Name, s.Capability)
+			v = append(v, fmt.Sprintf("o manifesto de producao voltou a oferecer %q (%s) — retirado por decisao do dono a 2026-09-26 (ADR-034 §2.7); reintroduzir é decisao explicita", s.Name, s.Capability))
 		}
-		if s.Egress != "none" {
-			t.Errorf("o manifesto de producao oferece %q com egress %q — so tools sem egress externo ate a fase 2 / opcao A do ADR-034", s.Name, s.Egress)
+		if s.Egress != "none" && !excepcaoOCRDaEmenda(s) {
+			v = append(v, fmt.Sprintf("o manifesto de producao oferece %q com egress %q — so tools sem egress externo ate a fase 2 / opcao A do ADR-034 (§2.7); a unica excepcao e a ocr_read com modelo.alias, cap:fs.read e doc://{doc_id} (emenda de 2026-10-18)", s.Name, s.Egress))
 		}
+	}
+	return v
+}
+
+// MUTAÇÃO da excepção: um manifesto temporário com o de produção e MAIS uma tool de egress
+// externo avermelha; e uma `ocr_read` com outra forma (sem o bloco `modelo`, ou com outro
+// recurso) também — a excepção da emenda de 2026-10-18 não é por nome.
+func TestAOS069_ExcepcaoDaOCRNaoCobreOutraTool(t *testing.T) {
+	raw, err := os.ReadFile(toolsJSONProducao)
+	if err != nil {
+		t.Fatalf("ler o manifesto de producao: %v", err)
+	}
+	var base []map[string]any
+	if err := json.Unmarshal(raw, &base); err != nil {
+		t.Fatalf("o manifesto de producao nao e JSON: %v", err)
+	}
+	segunda := map[string]any{
+		"name": "web_fetch", "description": "le uma pagina",
+		"parameters": map[string]any{"type": "object", "properties": map[string]any{"doc_id": map[string]any{"type": "string"}}, "required": []string{"doc_id"}},
+		"capability": "cap:fs.read", "reversibility": "reversible", "mutation": "none",
+		"resource_type": "file", "resource_value": "doc://{doc_id}", "resource_region": "eu-west",
+		"egress": "external",
+	}
+	semModelo := func() []map[string]any {
+		var out []map[string]any
+		for _, e := range base {
+			c := map[string]any{}
+			for k, x := range e {
+				c[k] = x
+			}
+			if c["name"] == "ocr_read" {
+				delete(c, "modelo")
+			}
+			out = append(out, c)
+		}
+		return out
+	}
+	casos := map[string]struct {
+		manifesto []map[string]any
+		esperado  string
+	}{
+		"segunda tool de egress externo": {append(append([]map[string]any{}, base...), segunda), "web_fetch"},
+		"ocr_read sem o bloco modelo":    {semModelo(), "ocr_read"},
+	}
+	for nome, c := range casos {
+		t.Run(nome, func(t *testing.T) {
+			b, err := json.Marshal(c.manifesto)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := filepath.Join(t.TempDir(), "tools.json")
+			if err := os.WriteFile(p, b, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("AOS_MODEL_TOOLS", p)
+			specs, err := readModelToolSpecs()
+			if err != nil {
+				t.Fatalf("o manifesto mutado nao carrega (a mutacao tem de ser um manifesto valido): %v", err)
+			}
+			v := violacoesDoADR034Seccao27(specs)
+			if len(v) != 1 || !strings.Contains(v[0], strconv.Quote(c.esperado)) {
+				t.Fatalf("a mutacao %q tinha de dar exactamente uma violacao sobre %q; deu %q", nome, c.esperado, v)
+			}
+		})
+	}
+	// Com outro recurso o carregador já recusa a ocr_read (validarLigacaoModelo); o predicado
+	// recusa-a por si, para a excepção não depender dessa validação.
+	outra := modelToolSpec{Name: "ocr_read", Capability: "cap:fs.read", ResourceValue: "doc://outra/{doc_id}", Egress: "external", Modelo: &modeloMapping{Alias: "ocr-visao"}}
+	if excepcaoOCRDaEmenda(outra) {
+		t.Error("a excepcao da emenda de 2026-10-18 cobriu uma ocr_read com outro recurso")
+	}
+	if v := violacoesDoADR034Seccao27([]modelToolSpec{outra}); len(v) != 1 {
+		t.Errorf("uma ocr_read com outro recurso tinha de avermelhar; deu %q", v)
 	}
 }
 
