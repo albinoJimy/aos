@@ -2431,7 +2431,10 @@ de fidelidade, sem conteúdo decifrado.
       chamada e não por run.
 - [x] Documentado em `tecnica/12_Contratos_de_Interface.md` §5.1 (o `/replay` e o `/reconstruct`,
       que não estava) e na tabela de planos do `deploy/node/README.md`.
-- [ ] Uma série em produção que use a rota. É o que fecha o resíduo da §7 — não este ticket.
+- [x] Uma série em produção que use a rota. É o que fecha o resíduo da §7 — não este ticket.
+      *(2026-10-18, v0.1.60: os 40 runs de nós da série A5.1 lidos pelo dono por
+      `GET /runs/{id}/replay` — fidelidade 1 em 40/40, 60/60 turnos, 0 divergências, 0 retomados.
+      O resíduo da A5.1 fica fechado; acompanhamento §4 e §7.)*
 
 ### Fora de âmbito
 
