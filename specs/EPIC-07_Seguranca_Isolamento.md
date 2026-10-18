@@ -1034,11 +1034,15 @@ quem não liga a tool.
       allowlist em vigor, ou sem registo assinado de uso `tool`, ou sem preço com a contabilidade
       composta, impede o arranque; e um pedido a um alias que o estágio da allowlist nega não chega
       ao provider.
-- [ ] **A tool mediada.** Um run com a `ocr_read` lê uma imagem da bateria do AOS-529 pela mediação
+- [x] **A tool mediada.** Um run com a `ocr_read` lê uma imagem da bateria do AOS-529 pela mediação
       do RM; o WORM sela o recurso `doc://<id>`; o resultado `aos-ocr/v1` chega ao modelo como
       texto, com o digest certo da imagem e o modelo servido; o resultado é `untrusted` e o
       contexto do run passa a `untrusted`; uma segunda leitura no mesmo run, com `cap:fs.read`
       armada, é negada como a da `doc_read`.
+      *(Nos testes do nó composto, com PNG e JPEG gerados: a mediação, o selo `doc://<id>`, o
+      `untrusted` e a segunda leitura negada. Em produção, na série A5.1 de 2026-10-18: as imagens
+      da bateria do AOS-529 lidas pela mediação, com o digest certo e o modelo servido em 4 de 4
+      planos da amostra.)*
 - [x] **Identidade.** O selo de atribuição do gateway para a chamada da tool leva o principal
       resolvido do token do run, o `run_id` e o `step_id` da tool call e a tool de origem; sem
       credencial no contexto a tool falha sem ler o ficheiro; provado pelo caminho directo, pelo
@@ -1073,15 +1077,16 @@ quem não liga a tool.
       gate `nats` do CI no PR #507 — run do ramo `feature/AOS-530-custo-ocr`, `packages/cmd/aos`
       PASS=1680 FAIL=0 SKIP=0: a mediação, o step-ledger e o evento de custo no stream do run no
       JetStream, e o consumo durável lido de lá.)*
-- [ ] **Em produção**, depois dos actos do dono: uma série pequena de planos com imagens sintéticas
+- [x] **Em produção**, depois dos actos do dono: uma série pequena de planos com imagens sintéticas
       lidas pela `ocr_read`, com os factos entregues ao nó seguinte, o custo no run e o replay de
       todos — o critério da A5.1 (D7).
       *(Série de 2026-10-18 na v0.1.58, `ocr1`–`ocr20`: 20 de 20 planos com código 0; 20 de 20 com
       a `ocr_read` mediada e `transcrito`, o custo no run e a entrega por referência ao nó seguinte;
       amostra de 4 planos lida pelo dono — digest certo em 4/4, 26/26 factos entregues, 25/26 na
       resposta do nó seguinte por causa do objectivo. Por cumprir à letra: o replay de produção
-      reconstrói as capturas mas não recalcula os `prompt_hash` — não há rota para isso. Caixa por
-      marcar até o dono decidir; acompanhamento §4.)*
+      reconstrói as capturas mas não recalcula os `prompt_hash` — não há rota para isso. **Marcada
+      por decisão do dono a 2026-10-18 («fecha a A5.1 com o resíduo»)**, com esse resíduo na §7
+      do acompanhamento.)*
 - [ ] Os gates locais verdes (`make ci`), com a RTM regenerada.
 
 ### Notas
