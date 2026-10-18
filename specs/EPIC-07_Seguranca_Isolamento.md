@@ -462,6 +462,11 @@ mesma release: o `deploy.yml` sincroniza `deploy/server/model-tools/` sem `--ign
 deploy recria o nó. O snapshot do `aos-orq` (só `doc_read`) não muda, e a conferência do AOS-441
 continua a bater (tools do nó que o snapshot não nomeia não contam).
 
+**Emenda de 2026-10-18 (AOS-530, ADR-042):** o dono aceitou a `ocr_read` no catálogo de produção como
+excepção a esta regra (ADR-034 §2.7, emenda). O catálogo de produção passa a ser `doc_read` e
+`ocr_read`; a excepção é por nome e forma (`modelo.alias`, `cap:fs.read`, `doc://{doc_id}`), e
+qualquer outra tool de egress externo ou de `cap:http.post` continua a avermelhar o teste.
+
 **Fase 1 armada e verificada em PRODUÇÃO (2026-09-26, v0.1.37).** Com a release que traz a
 correcção da via durável (abaixo), o operador definiu `AOS_PRIVILEGED_CAPS=cap:http.post,cap:fs.read`
 (cópia anterior em `/opt/aos/.env.antes-aos069-fase1-v0137`) e recriou só o nó, com o lock da

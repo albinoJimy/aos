@@ -2026,7 +2026,7 @@ docker inspect -f '{{.State.Status}} reinícios={{.RestartCount}}' aos-aos-1    
 docker logs aos-aos-1 2>&1 | grep -c 'NAO tem fonte de preco'                    # 0
 ```
 
-### Ligar o OCR — a tool `ocr_read` (AOS-530, ADR-042) — nada ligado hoje
+### Ligar o OCR — a tool `ocr_read` (AOS-530, ADR-042) — a entrada está no repositório desde 2026-10-18; liga-se com a release
 
 A `ocr_read` lê uma imagem (PNG ou JPEG) da pasta semeada e devolve o texto transcrito por um
 **modelo de visão**, por **uma** chamada ao Model Gateway do nó — o mesmo dos turnos, com a
@@ -2039,7 +2039,13 @@ digest do perfil, digest da instrução, motor `modelo`), `untrusted` como o de 
 replay usa o resultado capturado e **não** volta a chamar o modelo.
 
 **Sem a entrada `ocr_read` no `tools.json`, o nó é o de antes** — o arranque, o pedido ao titular
-byte a byte e o `/metrics`. Pôr a entrada é um acto do dono, **por PR ao repositório** (passo 7).
+byte a byte e o `/metrics`. Pôr a entrada é um acto do dono, **por PR ao repositório** (passo 7) —
+e está feito: desde 2026-10-18 a entrada está no `tools.json` do repositório, como **excepção** à
+regra do ADR-034 §2.7 (produção só oferece tools sem egress externo), decidida pelo dono e escrita
+na emenda de 2026-10-18 desse ADR. A excepção é só da `ocr_read`, com esta forma (`modelo.alias`,
+`cap:fs.read`, `doc://{doc_id}`); outra tool de egress externo continua a avermelhar
+`TestAOS069_ManifestoDeProducaoNaoOfereceEgressExterno`. Os passos 2 a 6 foram feitos em produção
+pelo dono a 2026-10-18; a tool liga-se no nó de produção com a release que traz a entrada.
 
 **O custo no run (AOS-530, peça 3b; ADR-042 §2.6).** Cada chamada tem duas metades:
 
@@ -2134,12 +2140,16 @@ todos estão feitos (as recusas estão abaixo).
    0644) — um ficheiro sem permissão de leitura sai `ficheiro_ilegivel`. O compose monta-a no nó, só de
    leitura, em `/etc/aos/ocr-seed`.
 6. **A variável** no `.env`: `AOS_OCR_SEED_DIR=/etc/aos/ocr-seed`.
-6b. **(Opcional) Uma leitura por run:** `cap:fs.read` em `AOS_PRIVILEGED_CAPS` (por exemplo
-   `cap:http.post,cap:fs.read`). Sem ela a regra «uma leitura por run» NÃO vale: um run pode ler
+6b. **Uma leitura por run:** `cap:fs.read` em `AOS_PRIVILEGED_CAPS` (por exemplo
+   `cap:http.post,cap:fs.read`). **Em produção já está armado** — `AOS_PRIVILEGED_CAPS=cap:http.post,cap:fs.read`
+   desde a fase 1 do AOS-069 (v0.1.37, 2026-09-26) —, e é uma das razões da excepção do ADR-034
+   §2.7 (emenda de 2026-10-18); fora de produção é opcional. Sem ela a regra «uma leitura por run» NÃO vale: um run pode ler
    várias imagens (e pagar uma chamada por cada). Lê antes o aviso no `docker-compose.prod.yml`,
    junto de `AOS_PRIVILEGED_CAPS`: armar `cap:fs.read` muda também a `doc_read` de todos os runs.
 7. **A entrada no `tools.json` — por PR ao repositório e uma release, NUNCA editando o servidor.**
-   O `deploy/server/model-tools/tools.json` do repositório é a fonte: o deploy copia a pasta
+   **Feito:** a entrada está no `deploy/server/model-tools/tools.json` do repositório desde
+   2026-10-18 (AOS-530; excepção ao ADR-034 §2.7, emenda dessa data), e chega ao servidor com a
+   release seguinte. O `deploy/server/model-tools/tools.json` do repositório é a fonte: o deploy copia a pasta
    `model-tools/` para `/opt/aos/model-tools/` por `rsync` **sem** `--ignore-existing`
    (`.github/workflows/deploy.yml`), pelo que uma edição feita à mão no servidor é desfeita no
    deploy seguinte. A entrada, por exemplo:
@@ -2389,8 +2399,9 @@ até ao fim do plano.
   posse do run — se o snapshot nomear uma tool que o nó não tem, com um `digest` diferente do dele,
   ou com `egress`/`reversibility`/`mutation` **menos arriscados** do que o nó declara (mais
   conservador é aceite). A recusa nomeia cada divergência e lista as tools do nó com o digest a copiar, p. ex.
-  `tool "fs.read" não existe no nó (o nó tem: doc_read sha256:…)` — o catálogo de produção só oferece
-  `doc_read` desde 2026-09-26 (o `web_post` saiu por decisão do dono, ADR-034 §2.7). Quando bate,
+  `tool "fs.read" não existe no nó (o nó tem: doc_read sha256:…)` — o catálogo de produção não oferece
+  o `web_post` desde 2026-09-26 (saiu por decisão do dono, ADR-034 §2.7): oferece `doc_read` e,
+  desde a emenda de 2026-10-18 a esse ADR, a `ocr_read`. Quando bate,
   o registo diz `snapshot: N tool(s) conferida(s) com o catálogo do nó`. O que o nó **não** declara
   — `sensitivity`, `admissible` — continua a ser escrito à mão no snapshot. Uma tool sem `egress`
   no `AOS_MODEL_TOOLS` aparece no catálogo como `unknown` (conta como externa), e o snapshot tem de

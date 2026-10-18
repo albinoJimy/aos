@@ -26,9 +26,51 @@ import (
 // o snapshot de produção teve durante semanas.
 const aos441ManifestoDeProducao = "../../../deploy/server/model-tools/tools.json"
 
+// manifestoDeProducaoSemOCR escreve num ficheiro temporário o manifesto de PRODUÇÃO (lido de
+// origem, que é o ficheiro real) sem a entrada `ocr_read`, e devolve o caminho. É para os testes que arrancam o nó com o manifesto de produção
+// e não compõem o Model Gateway — e que não são sobre o OCR: desde a emenda de 2026-10-18 ao
+// ADR-034 §2.7 a `ocr_read` está no manifesto, e sem gateway o nó recusa arrancar
+// (ErrOCRSemGateway, ADR-042 §2.1). Deriva-se do ficheiro REAL, filtrando só por nome, para que
+// cada teste continue a seguir o resto do manifesto de produção (o bloco `sandbox` da `doc_read`,
+// a região, os eixos) — um fixture escrito à mão deixaria de o seguir no dia em que mudasse.
+func manifestoDeProducaoSemOCR(t *testing.T, origem string) string {
+	t.Helper()
+	raw, err := os.ReadFile(origem)
+	if err != nil {
+		t.Fatalf("ler o manifesto de producao: %v", err)
+	}
+	var entradas []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &entradas); err != nil {
+		t.Fatalf("o manifesto de producao nao e JSON: %v", err)
+	}
+	var sem []map[string]json.RawMessage
+	for _, e := range entradas {
+		var nome string
+		if err := json.Unmarshal(e["name"], &nome); err != nil {
+			t.Fatalf("entrada do manifesto de producao sem name legivel: %v", err)
+		}
+		if nome != ocrToolName {
+			sem = append(sem, e)
+		}
+	}
+	if len(sem) == 0 {
+		t.Fatal("o manifesto de producao sem a ocr_read ficou vazio — o teste seria vacuo")
+	}
+	b, err := json.Marshal(sem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(t.TempDir(), "tools.json")
+	if err := os.WriteFile(p, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 // aos441ManifestoComEgress é o manifesto dos demos dev-hardened, que ainda oferece o `web_post`.
-// Desde a decisão do dono de 2026-09-26 (ADR-034 §2.7, AOS-069) o de produção só tem `doc_read`, e a
-// normalização de uma tool de egress externo sem reversibilidade declarada prova-se aqui.
+// Desde a decisão do dono de 2026-09-26 (ADR-034 §2.7, AOS-069) o de produção não tem o `web_post`
+// (tem `doc_read` e, desde a emenda de 2026-10-18, a `ocr_read`), e a normalização de uma tool de
+// egress externo sem reversibilidade declarada prova-se aqui.
 const aos441ManifestoComEgress = "../../../deploy/node/dev-hardened/model-tools/tools.json"
 
 func aos441Ambiente(t *testing.T, manifesto string) {
@@ -70,16 +112,25 @@ func TestAOS441CatalogoServeOsNomesDoManifesto(t *testing.T) {
 	for _, e := range cat {
 		porNome[e.Name] = e
 	}
-	doc, ok := porNome["doc_read"]
-	if !ok {
-		t.Fatalf("o manifesto de produção nomeia `doc_read` e o catálogo não o tem: %+v", cat)
+	// Decisão do dono (2026-09-26, ADR-034 §2.7) e a sua emenda de 2026-10-18 (AOS-530, ADR-042):
+	// o catálogo de produção tem exactamente `doc_read` e `ocr_read` — esta última é a única tool
+	// de egress externo, e a excepção é por nome e forma.
+	quer := map[string]entradaDoCatalogo{
+		"doc_read": {Name: "doc_read", Egress: "none", Reversibility: "reversible", Mutation: "none", Version: "1.0.0"},
+		"ocr_read": {Name: "ocr_read", Egress: "external", Reversibility: "reversible", Mutation: "none", Version: "1.0.0"},
 	}
-	if doc.Egress != "none" || doc.Reversibility != "reversible" || doc.Mutation != "none" || doc.Version != "1.0.0" {
-		t.Errorf("doc_read: %+v — esperado egress none, reversible, mutation none, 1.0.0", doc)
+	if len(cat) != len(quer) {
+		t.Errorf("o manifesto de produção oferece %d tools (%+v) — por decisão do dono são doc_read e ocr_read (ADR-034 §2.7, emenda de 2026-10-18)", len(cat), cat)
 	}
-	// Decisão do dono (2026-09-26, ADR-034 §2.7): o catálogo de produção só tem `doc_read`.
-	if len(cat) != 1 {
-		t.Errorf("o manifesto de produção passou a oferecer %d tools (%+v) — era só doc_read por decisão do dono (ADR-034)", len(cat), cat)
+	for nome, q := range quer {
+		e, ok := porNome[nome]
+		if !ok {
+			t.Errorf("o manifesto de produção nomeia `%s` e o catálogo não o tem: %+v", nome, cat)
+			continue
+		}
+		if e.Egress != q.Egress || e.Reversibility != q.Reversibility || e.Mutation != q.Mutation || e.Version != q.Version {
+			t.Errorf("%s: %+v — esperado egress %s, %s, mutation %s, %s", nome, e, q.Egress, q.Reversibility, q.Mutation, q.Version)
+		}
 	}
 	if _, fantasma := porNome["fs.read"]; fantasma {
 		t.Error("o catálogo tem `fs.read`, que o manifesto do nó não nomeia")
@@ -192,11 +243,14 @@ func TestAOS441EgressAusenteSaiUnknown(t *testing.T) {
 // O SERVIDOR QUE O ENTRYPOINT CONSTRÓI serve o catálogo. Sem isto, apagar o `WithToolCatalog` de
 // [serveAPI] deixava a suite verde — todos os outros testes montam o handler à mão (o vácuo que o
 // TestAOS277ServeAPIEnforcaOsLimitesLidos fechou para os limites de ingresso).
+//
+// Serve o catálogo do manifesto de produção INTEIRO: desde a emenda de 2026-10-18 ao ADR-034
+// §2.7 ele tem a `ocr_read`, que só arranca com o Model Gateway composto (ADR-042 §2.1) — por
+// isso o nó é o do harness do AOS-530 ([aos530NoComOManifestoDeProducao]) e não o newAPINode com
+// um cliente de modelo injectado.
 func TestAOS441ServeAPIServeOCatalogo(t *testing.T) {
 	clearIngressEnv(t)
-	aos441Ambiente(t, aos441ManifestoDeProducao)
-	node, _ := newAPINode(t, &countingModel{}, false)
-	defer func() { _ = node.Close() }()
+	node := aos530NoComOManifestoDeProducao(t, io.Discard)
 
 	addr := portaLivreLoopback(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -228,7 +282,7 @@ func TestAOS441ServeAPIServeOCatalogo(t *testing.T) {
 	for _, e := range corpo.Tools {
 		nomes = append(nomes, e.Name)
 	}
-	if !reflect.DeepEqual(nomes, []string{"doc_read"}) {
+	if !reflect.DeepEqual(nomes, []string{"doc_read", "ocr_read"}) {
 		t.Fatalf("o servidor de serveAPI tinha de servir o catálogo do manifesto de produção, serviu %v", nomes)
 	}
 }

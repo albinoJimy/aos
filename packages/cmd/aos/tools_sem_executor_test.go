@@ -67,7 +67,9 @@ func TestTodasComExecutorNaoProduzemRuido(t *testing.T) {
 // decisão a tornar consciente). Nesse dia o dono decidiu RETIRÁ-LO (ADR-034 §2.7, AOS-069): com a
 // autorização derivada do contexto, um `web_post` de contexto limpo deixava de morrer no taint e
 // passava a depender da região do Cedar. O catálogo de produção ficou só com `doc_read`, que tem
-// executor. Voltar a oferecer uma tool sem executor — ou o `web_post` — é decisão explícita.
+// executor; desde a emenda de 2026-10-18 ao ADR-034 §2.7 tem também a `ocr_read`, cujo executor é
+// a chamada ao Model Gateway do nó (ADR-042). Voltar a oferecer uma tool sem executor — ou o
+// `web_post` — é decisão explícita.
 func TestManifestoDeProducaoNaoTemToolSemExecutor(t *testing.T) {
 	t.Setenv("AOS_MODEL_TOOLS", "../../../deploy/server/model-tools/tools.json")
 	specs, err := readModelToolSpecs()
