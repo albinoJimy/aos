@@ -2323,7 +2323,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		if cerr != nil {
 			return nil, fmt.Errorf("aos: compor o controlador de autonomia (AOS-090): %w", cerr)
 		}
-		fiabilidade.comControlador(ctrl) // nil-safe
+		fiabilidade.comControlador(ctrl, cfg.Autonomy.registry.LevelFor) // nil-safe
 		anomaliaAutonomia = novasAnomaliasDeAutonomia(ctrl, es, nil)
 	}
 

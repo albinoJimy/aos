@@ -104,7 +104,7 @@ func TestAOS090_Promocao_FiabilidadeSustentadaPromoveAbaixoDeL4(t *testing.T) {
 	agora = base.Add(janela + time.Minute)
 	historia() // 0% erro, 0% override, amostras suficientes
 	ctrl, reg := controladorComFonte(t, agg, janela, autonomy.L1)
-	agg.comControlador(ctrl)
+	agg.comControlador(ctrl, reg.LevelFor)
 	ctx := context.Background()
 	nivel := func() autonomy.Level { return reg.LevelFor(autonomy.ClassPrefix+"worker", "fs") }
 

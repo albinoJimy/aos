@@ -238,3 +238,35 @@ func TestAOS481_ChavesNaoColidem(t *testing.T) {
 		}
 	}
 }
+
+// TestAOS481_PermitAprovadoLevaAMarcaHumana — o permit destravado por uma aprovação humana
+// VERIFICADA (ApprovalGate) diz `human_approved` no payload; o permit directo não o leva, e o seu
+// payload fica o de antes. É o sinal com que a fiabilidade da promoção conta a call como «precisou
+// de humano» mesmo sem ver a escalada (emenda de 2026-10-18 ao ADR-025).
+func TestAOS481_PermitAprovadoLevaAMarcaHumana(t *testing.T) {
+	es, err := eventstore.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(WithHooks(NewApprovalGate(&aos478Verificador{}), &spyHook{name: "policy", result: HookResult{Decision: HookAllow}}),
+		WithEventSink(NewEventStoreSink(es)))
+	if err := m.Register("tool.echo", func(context.Context, []byte) ([]byte, error) { return nil, nil }); err != nil {
+		t.Fatal(err)
+	}
+	directo := baseCall()
+	aprovado := baseCall()
+	aprovado.StepID = "step-2"
+	aprovado.ApprovalEvidence = []byte("grant-1")
+	aos481Mediar(t, m, directo, EffectPermit)
+	aos481Mediar(t, m, aprovado, EffectPermit)
+	evs, err := es.Read(context.Background(), directo.RunID, 1)
+	if err != nil || len(evs) != 2 {
+		t.Fatalf("Read: err=%v n=%d", err, len(evs))
+	}
+	if strings.Contains(string(evs[0].Payload), "human_approved") {
+		t.Fatalf("o permit directo leva a marca: %s", evs[0].Payload)
+	}
+	if !strings.Contains(string(evs[1].Payload), `"human_approved":true`) {
+		t.Fatalf("o permit aprovado nao leva a marca: %s", evs[1].Payload)
+	}
+}

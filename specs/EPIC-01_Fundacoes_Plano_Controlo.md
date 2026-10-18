@@ -1186,17 +1186,32 @@ Reconstituir os desfechos que ficaram por gravar em logs antigos (estão no WORM
   (1) o override-rate é a fracção das CALLS que precisou de humano — uma vez por call, o permit
   ou a recusa que seguem uma escalada não são decisão nova, e as recusas (incluindo as da
   lista-branca do run, a decisão pendente do AOS-485) não entram no denominador;
-  (2) a janela de uma (classe, domínio) recomeça a cada promoção — um degrau por janela inteira,
-  não por avaliação de hora a hora;
-  (3) só as classes provisionadas em `AOS_AUTONOMY_LEVELS` são promovidas;
-  (4) um permit sem desfecho em 1 h invalida a janela (o §1 do ADR, agora implementado);
-  (5) uma re-entrega do transporte não conta a dobrar.
+  (2) a janela de uma (classe, domínio) recomeça em QUALQUER mudança de nível — promoção,
+  demoção por anomalia ou `POST /autonomy` do operador (2.ª revisão: só a promoção a recomeçava,
+  e o controlador desfazia a demoção ou a decisão do operador no tick seguinte) —, um degrau por
+  janela inteira no nível novo;
+  (3) só as classes provisionadas em `AOS_AUTONOMY_LEVELS` são promovidas (uma entrada de
+  instância não configura a classe);
+  (4) um permit sem desfecho em min(1 h, janela/2) invalida a janela (o §1 do ADR, agora
+  implementado; metade da janela para a regra não morrer com janelas curtas);
+  (5) uma re-entrega do transporte não conta a dobrar, e uma entrega fora de ordem não é
+  re-entrega; o mapa dos seqs vistos é podado pela idade da janela;
+  (6) uma call que precisou de humano conta como tal mesmo sem a escalada vista (escalada antes de
+  um reinício, ou cujo registo best-effort falhou): o selo do permit leva `human_approved` quando a
+  aprovação foi verificada pelo `ApprovalGate`. O `approval.consumed` não serve: vive no stream de
+  governação (`aos-internal/gov/approvals`), com a chave do id do grant e sem `run_id`/`step_id`.
   Provas da revisão reproduzidas como testes que agora não promovem
   (`packages/cmd/aos/aos481_fiabilidade_real_test.go`, pela subscrição de produção `correr`):
   P1 — 20 calls, 12 escaladas e aprovadas, em L2 → fica L2 (antes lia-se 37,5 % e promovia);
   P2 — L0, 20 calls escaladas e aprovadas + 10 recusas → fica L0; e o caso legítimo (2 de 60
-  escaladas) continua a promover L1 → L2. Mutação: desligar cada uma das cinco regras, e tirar o
-  `tool.call.outcome` do filtro de `correr`, avermelha pelo menos um teste.
+  escaladas) continua a promover L1 → L2. Mutação, uma de cada vez: contar o permit pós-aprovação,
+  contar as recusas, não recomeçar a janela numa mudança de nível, ignorar `human_approved` (na
+  fonte ou no selo do RM), não verificar a configuração, uma entrada de instância a configurar a
+  classe, o prazo fixo de 1 h, ignorar os buracos, ignorar o início da janela da chave, o ramo do
+  desfecho antes do permit, a dedup da re-entrega, a poda dos streams e tirar o
+  `tool.call.outcome` do filtro de `correr` — cada uma avermelha pelo menos um teste de
+  `aos481_fiabilidade_real_test.go` ou `aos090_promocao_test.go` (lista no relatório da 2.ª
+  revisão).
 - **Streams que atravessam a actualização.** Uma escalada ou uma recusa gravada antes, na chave
   nua, continua a engolir o `mediated` de um permit posterior no mesmo passo; e a re-execução,
   depois da actualização, de uma recusa gravada antes deixa um segundo `denied` (na chave nova).

@@ -101,6 +101,12 @@ type MediationRecord struct {
 	// PolicyVersion é a versão de política em vigor na decisão (preenchida pelo
 	// PDP via [HookResult.PolicyVersion]). Fica no evento de mediação (AOS-004).
 	PolicyVersion string
+	// HumanApproved diz que o permit foi destravado por uma aprovação humana VERIFICADA
+	// ([ApprovalGate], [Call.HumanApproval]) — não-forjável, só este pacote o põe na call. É o
+	// sinal, dentro do próprio selo, de que a call precisou de humano, mesmo quando a escalada
+	// que a precedeu não está no log que o leitor vê (escalada antes de um reinício, ou cujo
+	// registo best-effort falhou). AOS-481, emenda de 2026-10-18 ao ADR-025.
+	HumanApproved bool
 	// Metadata são os metadados estruturados do hook que TERMINOU a mediação
 	// (AOS-340), vindos de [HookResult.Metadata]. Registo, nunca enforcement: não
 	// passam por `enforceObligations` e não podem negar nada.
@@ -160,6 +166,9 @@ type mediationPayload struct {
 	// `omitempty` mantém o payload de quem nada acrescenta byte-a-byte igual ao de
 	// antes — acrescentar um campo OPCIONAL é MINOR no `port_version` (tecnica/12 §4).
 	Metadata map[string]string `json:"metadata,omitempty"`
+	// HumanApproved: o permit veio de uma aprovação humana verificada ([MediationRecord.HumanApproved]).
+	// `omitempty`: um permit directo fica byte-a-byte o de antes.
+	HumanApproved bool `json:"human_approved,omitempty"`
 }
 
 type resourceDTO struct {
@@ -261,8 +270,9 @@ func (s *eventStoreSink) RecordMediation(ctx context.Context, rec MediationRecor
 			RequestedBy:     rec.Principal.RequestedBy,
 			MandateSigner:   rec.Principal.MandateSigner,
 		},
-		Obligations: rec.Obligations,
-		Metadata:    rec.Metadata,
+		Obligations:   rec.Obligations,
+		Metadata:      rec.Metadata,
+		HumanApproved: rec.HumanApproved,
 	}
 	if stepID != rec.StepID {
 		payload.StepID = rec.StepID

@@ -290,7 +290,7 @@ A **fonte de verdade do catálogo é, portanto, o conjunto das constantes declar
 | `step.*` | 2 | `packages/kernel/agent-runtime/durable/{checkpoint,step_ledger}.go` |
 | `subagent.*` | 6 | `packages/control-plane/orchestrator/delegation.go` |
 | `task.*` | 8 | `packages/control-plane/orchestrator/contract/{events,dag_events}.go` |
-| `tool.call.*` | 4 | `packages/kernel/reference-monitor/eventsink.go` (`mediated`, `denied`, `escalated` e `outcome`; no stream do run, cada um com a chave do seu tipo desde o AOS-481 — `run_id:<step_id>` no `mediated`, `run_id:<tipo>-<step_id>` nos outros três — e, nesses três, o `step_id` da call no payload. Com a chave do passo em todos, o `outcome` nunca chegava ao stream, e a decisão que segue uma escalada ou uma recusa no mesmo passo também não) |
+| `tool.call.*` | 4 | `packages/kernel/reference-monitor/eventsink.go` (`mediated`, `denied`, `escalated` e `outcome`; o payload do `mediated` leva `human_approved: true` quando o permit foi destravado por uma aprovação humana verificada pelo `ApprovalGate`, e omite-o num permit directo, que fica com os bytes de antes — é por ele que a fiabilidade da promoção conta a call como «precisou de humano» sem ver a escalada (emenda de 2026-10-18 ao ADR-025); no stream do run, cada um com a chave do seu tipo desde o AOS-481 — `run_id:<step_id>` no `mediated`, `run_id:<tipo>-<step_id>` nos outros três — e, nesses três, o `step_id` da call no payload. Com a chave do passo em todos, o `outcome` nunca chegava ao stream, e a decisão que segue uma escalada ou uma recusa no mesmo passo também não) |
 | `turn.recorded` | 1 | `packages/kernel/agent-runtime/turn.go` |
 | `worker.step.dispatched` | 1 | `packages/kernel/agent-runtime/worker/worker.go` |
 

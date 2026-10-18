@@ -519,6 +519,8 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (dec Decision, err er
 		Resource: call.Resource, Context: call.Context,
 		Principal: call.Principal, Latency: policyLatency, Obligations: obligations,
 		PolicyVersion: policyVersion,
+		// AOS-481: a call precisou de humano, e o selo di-lo (a fiabilidade da promoção conta-a).
+		HumanApproved: call.humanApproved != nil,
 	}
 	seq, err := m.sink.RecordMediation(ctx, rec)
 	if err != nil {

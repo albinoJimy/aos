@@ -33,11 +33,16 @@ import (
 //   - SÓ CLASSES CONFIGURADAS: só se julga uma (classe, domínio) provisionada em
 //     AOS_AUTONOMY_LEVELS ([fiabilidadeAgregada.comParesConfigurados]); uma classe observada
 //     e não registada nunca é promovida.
-//   - A JANELA RECOMEÇA A CADA PROMOÇÃO: as amostras de antes da promoção não servem para o
-//     degrau seguinte; o próximo exige uma janela inteira observada no nível novo. Sem isto, o
-//     Evaluate de hora a hora subia um degrau por tick sobre a mesma história.
+//   - A JANELA RECOMEÇA A CADA MUDANÇA DE NÍVEL, venha de onde vier — promoção do controlador,
+//     demoção por anomalia, `POST /autonomy` do operador: as amostras de antes não servem; o
+//     próximo degrau exige uma janela inteira observada no nível novo. Sem isto, o Evaluate de
+//     hora a hora subia um degrau por tick sobre a mesma história, e desfazia no tick seguinte
+//     uma demoção ou uma decisão do operador com a história do nível anterior.
+//   - UMA CALL QUE PRECISOU DE HUMANO CONTA COMO TAL mesmo que a escalada não tenha sido vista
+//     (escalada antes de um reinício, ou cujo registo best-effort falhou): o selo do permit diz
+//     `human_approved` quando a aprovação foi verificada pelo [referencemonitor.ApprovalGate].
 //   - JANELA COM BURACOS ⇒ WindowOK=false (ADR-025 §1): um permit (`tool.call.mediated`) sem
-//     desfecho ao fim de [prazoDoDesfecho] torna a janela dessa chave inválida.
+//     desfecho ao fim de min([prazoDoDesfecho], janela/2) torna a janela dessa chave inválida.
 //   - Uma re-entrega do Event Store (mesmo stream, seq já visto) não conta a dobrar.
 //
 // WINDOWOK HONESTO: a subscrição só vê eventos NOVOS (desde o arranque), pelo que a janela só
@@ -93,7 +98,20 @@ type amostraFiab struct {
 // do Evaluate por omissão; uma tool que demore mais deixa a janela inválida por excesso de
 // cautela, nunca o contrário. Um buraco dentro da janela de 30 dias trava a promoção dessa
 // (classe, domínio) até sair da janela — é o «janela com buracos ⇒ não promove» do ADR.
+//
+// Com uma janela curta (AOS_AUTONOMY_CONTROL), o prazo efectivo é metade da janela
+// ([prazoEfectivoDoDesfecho]): com uma janela de 1 h ou menos, um prazo de 1 h nunca se vencia
+// dentro dela e a regra morria. Prefere-se encurtar o prazo a recusar a configuração: janelas
+// curtas são legítimas em ensaio, e um prazo mais curto só torna a regra mais cautelosa.
 const prazoDoDesfecho = time.Hour
+
+// prazoEfectivoDoDesfecho é min([prazoDoDesfecho], janela/2).
+func prazoEfectivoDoDesfecho(janela time.Duration) time.Duration {
+	if janela/2 < prazoDoDesfecho {
+		return janela / 2
+	}
+	return prazoDoDesfecho
+}
 
 // estadoChamada é o que a agregação sabe de UMA tool call (stream do run + `step_id` da call):
 // se já contou como decisão, e se o seu permit espera ainda pelo desfecho.
@@ -108,12 +126,16 @@ type estadoChamada struct {
 // janelaClasse acumula as amostras de uma (classe, domínio), em ordem de observação.
 type janelaClasse struct {
 	// inicio é o início da observação desta chave NO NÍVEL ACTUAL: zero ⇒ o início do processo;
-	// reposto a cada promoção (a janela recomeça, emenda de 2026-10-18 ao ADR-025).
-	inicio    time.Time
-	desfechos []amostraFiab
-	decisoes  []amostraFiab
-	chamadas  map[string]*estadoChamada
-	inseridas int // chamadas inseridas desde a última poda
+	// reposto a cada mudança de nível (a janela recomeça, emenda de 2026-10-18 ao ADR-025).
+	inicio time.Time
+	// nivel é o nível da chave no registo quando a janela (re)começou; nivelConhecido diz se já
+	// foi lido (uma janela criada antes de o registo estar ligado adopta o primeiro que ler).
+	nivel          autonomy.Level
+	nivelConhecido bool
+	desfechos      []amostraFiab
+	decisoes       []amostraFiab
+	chamadas       map[string]*estadoChamada
+	inseridas      int // chamadas inseridas desde a última poda
 }
 
 // podaDasChamadas é de quantas em quantas chamadas novas se poda o mapa por idade.
@@ -134,8 +156,15 @@ type fiabilidadeAgregada struct {
 	// configurados são as (classe, domínio) provisionadas em AOS_AUTONOMY_LEVELS — as únicas
 	// que a promoção julga. Vazio ⇒ nenhuma promove (fail-closed).
 	configurados map[classeDominio]struct{}
-	// ultimoSeq é o maior seq visto por stream: uma re-entrega (seq <= este) é ignorada.
-	ultimoSeq map[string]uint64
+	// ultimoSeq são os seqs vistos por stream (os dos eventos tool.call.* do run, poucos por
+	// call), com o instante em que o stream foi visto pela última vez: uma re-entrega (seq já
+	// visto) é ignorada. Um conjunto e não só o maior: uma entrega fora de ordem (o desfecho antes
+	// do permit) não é re-entrega. Podado pela idade da janela, com a cadência das chamadas
+	// ([podaDasChamadas]) — um stream por run, e os runs não param.
+	ultimoSeq    map[string]*seqVisto
+	novosStreams int
+	// nivelDe lê o nível em vigor de uma chave no registo do controlador ([comControlador]).
+	nivelDe func(agent, domain string) autonomy.Level
 	// subscrita, se não-nil, é fechado quando a subscrição de [correr] fica activa. Só os testes
 	// o usam, para não perderem eventos gravados antes de a subscrição existir.
 	subscrita chan struct{}
@@ -159,8 +188,15 @@ func novaFiabilidade(es eventstore.EventStore, now func() time.Time, janela, int
 		intervalo: intervalo,
 		inicio:    now(),
 		porChave:  make(map[classeDominio]*janelaClasse),
-		ultimoSeq: make(map[string]uint64),
+		ultimoSeq: make(map[string]*seqVisto),
 	}
+}
+
+// seqVisto são os seqs vistos de um stream, o maior deles, e quando o stream foi visto.
+type seqVisto struct {
+	seqs map[uint64]struct{}
+	seq  uint64
+	ts   time.Time
 }
 
 // comParesConfigurados regista as (classe, domínio) que a promoção pode julgar: as entradas de
@@ -188,16 +224,38 @@ func (f *fiabilidadeAgregada) configurado(k classeDominio) bool {
 	return ok
 }
 
-// comControlador liga o controlador que o Evaluate periódico invoca. Chamado pelo Bootstrap
-// depois de [autonomy.NewController] (o agregador é a fonte desse controlador, logo existe
-// antes dele). Receptor nil ⇒ no-op.
-func (f *fiabilidadeAgregada) comControlador(c *autonomy.Controller) {
+// comControlador liga o controlador que o Evaluate periódico invoca e a leitura do nível em vigor
+// no registo dele (`nivelDe`, tipicamente [autonomy.LevelRegistry.LevelFor]). Chamado pelo
+// Bootstrap depois de [autonomy.NewController] (o agregador é a fonte desse controlador, logo
+// existe antes dele). É pela leitura do nível que a janela recomeça em qualquer mudança —
+// promoção, demoção por anomalia ou operador. Receptor nil ⇒ no-op.
+func (f *fiabilidadeAgregada) comControlador(c *autonomy.Controller, nivelDe func(agent, domain string) autonomy.Level) {
 	if f == nil {
 		return
 	}
 	f.mu.Lock()
 	f.ctrl = c
+	f.nivelDe = nivelDe
 	f.mu.Unlock()
+}
+
+// acertarNivel recomeça a janela da chave se o nível em vigor mudou desde que ela começou (ou
+// adopta-o, se ainda não o conhecia). Chamado com f.mu tomado, antes de juntar uma amostra e
+// antes de julgar. Sem `nivelDe` ligado não há como saber, e nada muda.
+func (f *fiabilidadeAgregada) acertarNivel(k classeDominio, j *janelaClasse, agora time.Time) {
+	if f.nivelDe == nil {
+		return
+	}
+	n := f.nivelDe(autonomy.ClassPrefix+k.classe, k.dominio)
+	if !j.nivelConhecido {
+		j.nivel, j.nivelConhecido = n, true
+		return
+	}
+	if n != j.nivel {
+		j.nivel = n
+		j.inicio = agora
+		j.desfechos, j.decisoes = nil, nil
+	}
 }
 
 // amostraPayload é o subconjunto dos payloads de mediação (principal.agent_class) e de
@@ -212,6 +270,8 @@ type amostraPayload struct {
 		AgentClass string `json:"agent_class"`
 	} `json:"principal"` // eventos de decisão (aninhado)
 	Outcome string `json:"outcome"` // desfechos
+	// HumanApproved: o permit veio de uma aprovação humana verificada (AOS-481).
+	HumanApproved bool `json:"human_approved"`
 	// StepID é o `step_id` da call no payload (AOS-481): presente em denied/escalated/outcome,
 	// cujo envelope leva o prefixo do tipo; ausente no mediated, cujo envelope já é o passo.
 	StepID string `json:"step_id"`
@@ -234,9 +294,10 @@ func (f *fiabilidadeAgregada) Reliability(agent, domain string, window time.Dura
 	if j == nil {
 		return autonomy.Reliability{WindowOK: false}
 	}
+	f.acertarNivel(chave, j, agora)
 	// Observação insuficiente ⇒ não julgável: não há como afirmar "sustentado durante a janela".
-	// A observação conta desde o arranque OU desde a última promoção desta chave, o que for
-	// mais recente — a janela recomeça a cada degrau.
+	// A observação conta desde o arranque OU desde a última mudança de nível desta chave, o que
+	// for mais recente — a janela recomeça a cada mudança.
 	inicio := f.inicio
 	if j.inicio.After(inicio) {
 		inicio = j.inicio
@@ -246,9 +307,10 @@ func (f *fiabilidadeAgregada) Reliability(agent, domain string, window time.Dura
 	}
 	corte := agora.Add(-window)
 	// Janela com BURACOS ⇒ não julgável (ADR-025 §1): um permit dentro da janela cujo desfecho
-	// não chegou em [prazoDoDesfecho].
+	// não chegou em min([prazoDoDesfecho], janela/2).
+	prazo := prazoEfectivoDoDesfecho(window)
 	for _, c := range j.chamadas {
-		if c.permitPendente && !c.permitEm.Before(corte) && agora.Sub(c.permitEm) > prazoDoDesfecho {
+		if c.permitPendente && !c.permitEm.Before(corte) && agora.Sub(c.permitEm) > prazo {
 			return autonomy.Reliability{WindowOK: false}
 		}
 	}
@@ -303,10 +365,20 @@ func (f *fiabilidadeAgregada) observar(ev eventstore.Event) {
 	// RE-ENTREGA: o mesmo evento entregue outra vez pelo transporte (seq já visto no stream) não
 	// conta a dobrar. Só com seq e stream conhecidos — um evento sem eles não é deduplicável.
 	if ev.Seq > 0 && ev.StreamID != "" {
-		if ev.Seq <= f.ultimoSeq[ev.StreamID] {
+		visto := f.ultimoSeq[ev.StreamID]
+		if visto == nil {
+			f.podarStreams(agora)
+			visto = &seqVisto{seqs: make(map[uint64]struct{})}
+			f.ultimoSeq[ev.StreamID] = visto
+		}
+		if _, ja := visto.seqs[ev.Seq]; ja {
 			return
 		}
-		f.ultimoSeq[ev.StreamID] = ev.Seq
+		visto.seqs[ev.Seq] = struct{}{}
+		visto.ts = agora
+		if ev.Seq > visto.seq {
+			visto.seq = ev.Seq
+		}
 	}
 	chave := classeDominio{classe: classe, dominio: dom}
 	j := f.porChave[chave]
@@ -314,6 +386,7 @@ func (f *fiabilidadeAgregada) observar(ev eventstore.Event) {
 		j = &janelaClasse{chamadas: make(map[string]*estadoChamada)}
 		f.porChave[chave] = j
 	}
+	f.acertarNivel(chave, j, agora)
 	// A CALL a que o evento pertence: o `step_id` da call (no payload, ou o do envelope no
 	// mediated) no stream do run. Sem passo não há call identificável: o evento conta sozinho.
 	passo := p.StepID
@@ -335,7 +408,9 @@ func (f *fiabilidadeAgregada) observar(ev eventstore.Event) {
 			}
 		}
 	case referencemonitor.EventTypeEscalated, referencemonitor.EventTypeMediated:
-		escala := ev.Type == referencemonitor.EventTypeEscalated
+		// Precisou de humano: a escalada, ou o permit que diz que veio de uma aprovação verificada
+		// (a escalada pode não estar no que este processo viu — reinício, registo falhado).
+		escala := ev.Type == referencemonitor.EventTypeEscalated || p.HumanApproved
 		// UMA decisão por call: a escalada conta, e o permit que a segue no mesmo passo não.
 		if c == nil || !c.decidida {
 			j.decisoes = append(podarAmostras(j.decisoes, agora, f.maxIdade), amostraFiab{ts: agora, escala: escala})
@@ -376,19 +451,20 @@ func (j *janelaClasse) chamada(k string, agora time.Time, idade time.Duration) *
 	return c
 }
 
-// recomecarJanela recomeça a janela de uma (classe, domínio) depois de uma promoção: as
-// amostras de antes não servem para o degrau seguinte (emenda de 2026-10-18 ao ADR-025). O
-// estado por call fica — é ele que impede o permit de uma call escalada antes da promoção de
-// contar como decisão nova depois dela.
-func (f *fiabilidadeAgregada) recomecarJanela(k classeDominio) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	j := f.porChave[k]
-	if j == nil {
+// podarStreams apaga, de [podaDasChamadas] em [podaDasChamadas] streams novos, os streams não
+// vistos há mais do que a janela. Chamado com f.mu tomado.
+func (f *fiabilidadeAgregada) podarStreams(agora time.Time) {
+	f.novosStreams++
+	if f.novosStreams < podaDasChamadas {
 		return
 	}
-	j.inicio = f.now()
-	j.desfechos, j.decisoes = nil, nil
+	f.novosStreams = 0
+	corte := agora.Add(-f.maxIdade)
+	for s, v := range f.ultimoSeq {
+		if v.ts.Before(corte) {
+			delete(f.ultimoSeq, s)
+		}
+	}
 }
 
 // podarAmostras remove as amostras mais velhas do que `idade` (janela). As amostras estão em
@@ -475,8 +551,8 @@ func (f *fiabilidadeAgregada) avaliarPromocoes(ctx context.Context) {
 		if !ok {
 			continue // só classes configuradas (emenda de 2026-10-18 ao ADR-025)
 		}
-		if _, mudou, _ := ctrl.Evaluate(ctx, autonomy.ClassPrefix+k.classe, k.dominio); mudou {
-			f.recomecarJanela(k)
-		}
+		// Uma promoção muda o nível, e a janela recomeça na leitura seguinte ([acertarNivel]),
+		// como em qualquer outra mudança de nível.
+		_, _, _ = ctrl.Evaluate(ctx, autonomy.ClassPrefix+k.classe, k.dominio)
 	}
 }
