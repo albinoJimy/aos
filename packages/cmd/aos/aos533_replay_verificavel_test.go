@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -67,6 +68,12 @@ type aos533Opcoes struct {
 	l4 bool
 	// spans compõe a observabilidade (a torneira de spans do avaliador de SLOs).
 	spans bool
+	// dir e vault, quando dados, são os de uma incarnação ANTERIOR do nó: o mesmo WAL, o mesmo
+	// WORM, a mesma chave do emissor e a mesma custódia de KEK — um reinício do nó.
+	dir   string
+	vault audit.KeyVault
+	// svc são opções a mais do serviço (o relógio do lease da incarnação nova).
+	svc []NodeServiceOption
 }
 
 type aos533No struct {
@@ -82,7 +89,10 @@ type aos533No struct {
 func aos533Compor(t *testing.T, o aos533Opcoes, guiao func(agentruntime.PromptView) agentruntime.ModelResponse) *aos533No {
 	t.Helper()
 	ctx := context.Background()
-	dir := t.TempDir()
+	dir := o.dir
+	if dir == "" {
+		dir = t.TempDir()
+	}
 	signer := acnSigner(t)
 	var opts []pdp.Option
 	if o.l4 {
@@ -105,6 +115,9 @@ func aos533Compor(t *testing.T, o aos533Opcoes, guiao func(agentruntime.PromptVi
 	cfg.WORMPath = filepath.Join(dir, "worm.wal")
 	cfg.IssuerKeyPath = filepath.Join(dir, "issuer.seed")
 	cfg.BoardRegions = map[string]string{govBoard: govRegion}
+	if o.vault != nil {
+		cfg.DSARVault = o.vault
+	}
 	cfg.Model = model
 	cfg.Catalog = catalogStub{entries: []domain.Entry{acnEntry(t, signer, "passo_um"), acnEntry(t, signer, "passo_dois")}}
 	cfg.SignedToolRegistry = nodeSignedRegistrySpec(signer, nil)
@@ -131,7 +144,7 @@ func aos533Compor(t *testing.T, o aos533Opcoes, guiao func(agentruntime.PromptVi
 			t.Fatal(err)
 		}
 	}
-	svc, err := NewNodeService(node, WithSLOEvalInterval(0))
+	svc, err := NewNodeService(node, append([]NodeServiceOption{WithSLOEvalInterval(0)}, o.svc...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -645,76 +658,102 @@ func (e *aos533Embrulho) Error() string { return "replay: turno 1 (step-000001):
 func (e *aos533Embrulho) Unwrap() error { return e.err }
 
 // aos533Transicao é uma transição como a [state.Machine] a escreve (produtor, step `state-N`).
-func aos533Transicao(n int, from, to string, tok uint64, ts string) eventstore.Event {
+func aos533Transicao(n int, from, to string, tok uint64) eventstore.Event {
 	p, _ := json.Marshal(map[string]any{"from": from, "to": to, "token_value": tok})
-	return eventstore.Event{Type: state.EventTypeTransition, Payload: p, StepID: fmt.Sprintf("state-%d", n), Ts: ts,
+	return eventstore.Event{Type: state.EventTypeTransition, Payload: p, StepID: fmt.Sprintf("state-%d", n),
 		Producer: eventstore.Producer{NHIID: state.DefaultProducerNHI}}
 }
 
-func aos533Turno(turn int, ts string) eventstore.Event {
+func aos533Turno(turn int) eventstore.Event {
 	p, _ := json.Marshal(map[string]any{"turn": turn})
-	return eventstore.Event{Type: agentruntime.EventTypeTurnRecorded, Payload: p, Ts: ts}
+	return eventstore.Event{Type: agentruntime.EventTypeTurnRecorded, Payload: p}
 }
 
-func aos533Claim(tok uint64, ts string) eventstore.Event {
-	p, _ := json.Marshal(map[string]any{"token": tok})
-	return eventstore.Event{Type: durable.EventTypeLeaseClaimed, Payload: p, Ts: ts,
-		Producer: eventstore.Producer{NHIID: durable.DefaultLeaseProducerNHI}}
+func aos533Claims(n int) []eventstore.Event {
+	out := make([]eventstore.Event, 0, n)
+	for k := 1; k <= n; k++ {
+		p, _ := json.Marshal(map[string]any{"token": k})
+		out = append(out, eventstore.Event{Type: durable.EventTypeLeaseClaimed, Payload: p,
+			Producer: eventstore.Producer{NHIID: durable.DefaultLeaseProducerNHI}})
+	}
+	return out
 }
 
-// TestAOS533_AnalisarVidas: a forma medida de uma retoma por aprovação (o stream de um run do nó
-// composto) desculpa o turno 2, e só ele; cada forjamento de uma linha deixa de desculpar.
+// TestAOS533_AnalisarVidas: as formas MEDIDAS no nó composto (as transições de retoma não levam
+// token; só a primeira e a terminal levam) — e cada forjamento de uma linha deixa de desculpar.
 func TestAOS533_AnalisarVidas(t *testing.T) {
-	const t0, t1, t2, t3, t4, t5 = "2026-10-18T10:00:00.1Z", "2026-10-18T10:00:00.2Z", "2026-10-18T10:00:00.3Z",
-		"2026-10-18T10:00:00.4Z", "2026-10-18T10:00:00.5Z", "2026-10-18T10:00:00.6Z"
-	legitimo := func() []eventstore.Event {
+	// Duas retomas por aprovação (medido: claims 1,2,3; token só em state-1 e state-6).
+	duas := func() []eventstore.Event {
 		return []eventstore.Event{
-			aos533Transicao(1, "ready", "running", 1, t0), aos533Turno(1, t1),
-			aos533Transicao(2, "running", "waiting_on_human", 0, t2),
-			aos533Transicao(3, "waiting_on_human", "running", 0, t4), aos533Turno(2, t5),
-			aos533Transicao(4, "running", "complete", 2, t5),
+			aos533Transicao(1, "ready", "running", 1), aos533Turno(1),
+			aos533Transicao(2, "running", "waiting_on_human", 0),
+			aos533Transicao(3, "waiting_on_human", "running", 0), aos533Turno(2),
+			aos533Transicao(4, "running", "waiting_on_human", 0),
+			aos533Transicao(5, "waiting_on_human", "running", 0), aos533Turno(3),
+			aos533Transicao(6, "running", "complete", 3),
 		}
 	}
-	lease := []eventstore.Event{aos533Claim(1, t0), aos533Claim(2, t3)}
-	v := analisarVidas(legitimo(), lease)
-	if !v.retomado() || len(v.desculpados) != 1 || !v.desculpados[2] {
-		t.Fatalf("a retoma legitima desculpa o turno 2, e so ele: %v", v.desculpados)
+	v := analisarVidas(duas(), aos533Claims(3))
+	if v.corroboradas != 2 || len(v.desculpados) != 2 || !v.desculpados[2] || !v.desculpados[3] {
+		t.Fatalf("duas retomas: as duas vidas corroboradas, turnos 2 e 3 desculpados: %+v", v)
+	}
+	// A MEIO (em waiting_on_human depois da 2.ª escalada, antes da 2.ª retoma): uma vida corroborada.
+	meio := duas()[:6]
+	if v := analisarVidas(meio, aos533Claims(2)); v.corroboradas != 1 || !v.desculpados[2] || len(v.desculpados) != 1 {
+		t.Fatalf("a meio: a vida 2 corroborada sem terminal, turno 2 desculpado: %+v", v)
+	}
+	// Retoma + kill de humano (a forma do abort de exaustão e do human-TTL: waiting_on_human →
+	// killed, sem token).
+	kill := append(duas()[:6], aos533Transicao(5, "waiting_on_human", "killed", 0))
+	if v := analisarVidas(kill, aos533Claims(2)); v.corroboradas != 1 || !v.desculpados[2] {
+		t.Fatalf("retomado + kill: a vida 2 corroborada: %+v", v)
+	}
+	// Retoma por pausa (paused → running, sem token) e wall-clock (running → timed_out).
+	pausa := []eventstore.Event{aos533Transicao(1, "ready", "running", 1), aos533Turno(1),
+		aos533Transicao(2, "running", "paused", 0), aos533Transicao(3, "paused", "running", 0), aos533Turno(2),
+		aos533Transicao(4, "running", "timed_out", 0)}
+	if v := analisarVidas(pausa, aos533Claims(2)); v.corroboradas != 1 || !v.desculpados[2] {
+		t.Fatalf("retoma por pausa: a vida 2 corroborada: %+v", v)
+	}
+	// Crash: a vida 2 encontra o run em running e não transita; o par é a terminal com o token 2,
+	// depois dos turnos — nenhum desculpado (declarado).
+	crash := []eventstore.Event{aos533Transicao(1, "ready", "running", 1), aos533Turno(1), aos533Turno(2),
+		aos533Transicao(2, "running", "complete", 2)}
+	if v := analisarVidas(crash, aos533Claims(2)); v.corroboradas != 1 || len(v.desculpados) != 0 {
+		t.Fatalf("crash: corroborado pela terminal com o token 2, sem turno desculpado: %+v", v)
+	}
+	// Crash duplo: o claim 2 não tem par (sem retoma, sem token 2); o 3 tem a terminal.
+	if v := analisarVidas([]eventstore.Event{aos533Transicao(1, "ready", "running", 1), aos533Turno(1),
+		aos533Transicao(2, "running", "complete", 3)}, aos533Claims(3)); v.corroboradas != 1 {
+		t.Fatalf("crash duplo: so a vida 3 corrobora: %+v", v)
 	}
 
-	umaVida := []eventstore.Event{aos533Transicao(1, "ready", "running", 1, t0), aos533Turno(1, t1), aos533Turno(2, t2),
-		aos533Transicao(2, "running", "complete", 1, t2)}
-	casos := map[string]struct {
-		run, lease []eventstore.Event
-	}{
-		// A PoC da revisão: uma linha depois do terminal, com o produtor e o step certos.
+	umaVida := []eventstore.Event{aos533Transicao(1, "ready", "running", 1), aos533Turno(1), aos533Turno(2),
+		aos533Transicao(2, "running", "complete", 1)}
+	casos := map[string]struct{ run, lease []eventstore.Event }{
+		// A PoC da 1.ª revisão: uma linha depois do terminal, com o produtor e o step certos.
 		"transicao_depois_do_terminal": {append(append([]eventstore.Event{}, umaVida...),
-			aos533Transicao(3, "waiting_on_human", "running", 0, t5)), []eventstore.Event{aos533Claim(1, t0)}},
-		"sem_corroboracao_no_lease": {legitimo(), []eventstore.Event{aos533Claim(1, t0)}},
-		// Um claim 2 sem nenhuma transicao com o token 2, e um turno gravado depois dele.
-		"claim_que_a_maquina_nao_usou": {[]eventstore.Event{aos533Transicao(1, "ready", "running", 1, t0), aos533Turno(1, t1),
-			aos533Turno(2, t5), aos533Transicao(2, "running", "complete", 1, t5)}, lease},
-		"claim_com_outro_produtor": {legitimo(), []eventstore.Event{aos533Claim(1, t0),
-			{Type: durable.EventTypeLeaseClaimed, Payload: []byte(`{"token":2}`), Ts: t3}}},
-		"claims_fora_de_ordem": {legitimo(), []eventstore.Event{aos533Claim(2, t0), aos533Claim(1, t3)}},
+			aos533Transicao(3, "waiting_on_human", "running", 0), aos533Turno(3)), aos533Claims(2)},
+		// Um claim forjado sem transição de retoma nem transição com o seu token.
+		"claim_sem_par":             {umaVida, aos533Claims(2)},
+		"sem_corroboracao_no_lease": {duas(), aos533Claims(1)},
+		"claim_com_outro_produtor": {duas(), append(aos533Claims(1),
+			eventstore.Event{Type: durable.EventTypeLeaseClaimed, Payload: []byte(`{"token":2}`)})},
+		"claims_fora_de_ordem": {duas(), append(aos533Claims(2)[1:], aos533Claims(1)...)},
 		"transicao_com_outro_produtor": func() struct{ run, lease []eventstore.Event } {
-			r := legitimo()
-			r[2].Producer.NHIID = "agt-forjado"
-			return struct{ run, lease []eventstore.Event }{r, lease}
+			r := duas()
+			r[3].Producer.NHIID = "agt-forjado"
+			return struct{ run, lease []eventstore.Event }{r, aos533Claims(3)}
 		}(),
 		"cadeia_com_buraco": func() struct{ run, lease []eventstore.Event } {
-			r := legitimo()
-			r[3] = aos533Transicao(4, "waiting_on_human", "running", 0, t4)
-			return struct{ run, lease []eventstore.Event }{r, lease}
-		}(),
-		"from_que_nao_e_o_to_anterior": func() struct{ run, lease []eventstore.Event } {
-			r := legitimo()
-			r[3] = aos533Transicao(3, "paused", "running", 0, t4)
-			return struct{ run, lease []eventstore.Event }{r, lease}
+			r := duas()
+			r[3] = aos533Transicao(9, "waiting_on_human", "running", 0)
+			return struct{ run, lease []eventstore.Event }{r, aos533Claims(3)}
 		}(),
 	}
 	for nome, c := range casos {
 		if v := analisarVidas(c.run, c.lease); v.retomado() {
-			t.Errorf("%s: nao pode ser tratado como retomado (%v)", nome, v.desculpados)
+			t.Errorf("%s: nao pode ser tratado como retomado (%+v)", nome, v)
 		}
 	}
 }
@@ -848,4 +887,178 @@ func TestAOS533_SystemEMemoria(t *testing.T) {
 			t.Errorf("%s: o replay tinha de divergir no turno 1: %+v", nome, r.Divergence)
 		}
 	}
+}
+
+// aos533SemAlarme exige que a chamada não tenha amostrado o SLI nem posto o alerta a disparar.
+func aos533SemAlarme(t *testing.T, n *aos533No) {
+	t.Helper()
+	ctx := context.Background()
+	var ev *SLOEvaluation
+	for i := 0; i < 4; i++ {
+		ev = n.svc.EvaluateSLOsNow(ctx)
+	}
+	if v := aos274SLI(t, ev, otelgenai.SLIReplayFidelity); v.Samples != 0 {
+		t.Fatalf("a divergencia desculpada nao amostra o SLI: %d amostras (valor %g)", v.Samples, v.Value)
+	}
+	if aos274Alert(t, ev, otelgenai.AlertReplayFidelityLow).Alert.Fired {
+		t.Fatal("o alerta replay_fidelity_low disparou sobre um run retomado legitimo")
+	}
+}
+
+// aos533Desculpada exige a divergência desculpada do turno dado: retomado, nota, sem amostra.
+func aos533Desculpada(t *testing.T, n *aos533No, runID string, turno int) {
+	t.Helper()
+	code, resp, corpo := n.replay(t, runID, govHeaders())
+	if code != http.StatusOK {
+		t.Fatalf("200 esperado, veio %d (%s)", code, corpo)
+	}
+	if !resp.Retomado || resp.Divergence == nil || resp.Divergence.Turn != turno || resp.Divergence.Reason != "prompt_hash" ||
+		resp.Nota != notaRetomado || resp.SLIAmostrado {
+		t.Fatalf("divergencia desculpada no turno %d esperada (retomado, nota, sem amostra): %+v", turno, resp)
+	}
+}
+
+// aos533Aprovar aprova o pendente e retoma, até o run sair de em-curso.
+func aos533Aprovar(t *testing.T, n *aos533No, runID, requestID string) {
+	t.Helper()
+	aos533Aprova(t, n, runID, requestID)
+	if err := n.svc.Resume(context.Background(), runID, n.token(t)); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	n.esperar(t, runID)
+}
+
+// TestAOS533_DuasRetomas: o caso da 2.ª revisão — um run L4 com DUAS tool calls escaladas (três
+// vidas, claims 1, 2 e 3; as transições de retoma sem token). Consultado a meio (de novo em
+// waiting_on_human) e depois do complete, a divergência do 1.º turno da vida 2 é desculpada, sem
+// amostra e sem alerta; e o 1.º turno de cada vida retomada está nos desculpados.
+func TestAOS533_DuasRetomas(t *testing.T) {
+	ctx := context.Background()
+	n := aos533Compor(t, aos533Opcoes{l4: true, spans: true}, nil) // passo_um, passo_dois, conclui
+	const runID = "run-533-duas-retomas"
+	n.correr(t, agentruntime.Goal{RunID: runID})
+	aos533Aprovar(t, n, runID, "req-533-duas-1")
+	if _, susp := n.svc.Suspended(ctx, runID); !susp {
+		t.Fatal("PRECONDICAO: a segunda tool call tinha de escalar")
+	}
+	aos533Desculpada(t, n, runID, 2) // a meio
+	aos533Aprovar(t, n, runID, "req-533-duas-2")
+	if fim, done := n.svc.Outcome(runID); !done || !fim.Result.Terminated {
+		t.Fatalf("o run tinha de terminar: %+v", fim)
+	}
+	aos533Desculpada(t, n, runID, 2) // depois do complete
+	evs, _ := n.node.EventStore.Read(ctx, runID, 1)
+	lease, _ := n.node.EventStore.Read(ctx, durable.LeaseStreamID(runID), 1)
+	if v := analisarVidas(evs, lease); v.corroboradas != 2 || !v.desculpados[2] || !v.desculpados[3] {
+		t.Fatalf("duas vidas corroboradas, o 1.o turno de cada uma desculpado: %+v", v)
+	}
+	aos533SemAlarme(t, n)
+}
+
+// TestAOS533_RetomadoEKill: retomado, de novo à espera de humano, e morto nessa espera
+// (`waiting_on_human → killed`, sem token — a transição do abort de exaustão e do human-TTL,
+// escrita pela mesma máquina de estados do nó).
+func TestAOS533_RetomadoEKill(t *testing.T) {
+	ctx := context.Background()
+	n := aos533Compor(t, aos533Opcoes{l4: true, spans: true}, nil)
+	const runID = "run-533-kill"
+	n.correr(t, agentruntime.Goal{RunID: runID})
+	aos533Aprovar(t, n, runID, "req-533-kill")
+	m, err := state.NewMachine(n.node.EventStore, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, err := m.Rebuild(ctx); err != nil || st != state.WaitingOnHuman {
+		t.Fatalf("PRECONDICAO: waiting_on_human, veio %s (%v)", st, err)
+	}
+	if err := m.Transition(ctx, state.Killed, state.TransitionEvent{Reason: "abort do operador (teste AOS-533)"}); err != nil {
+		t.Fatal(err)
+	}
+	aos533Desculpada(t, n, runID, 2)
+	aos533SemAlarme(t, n)
+}
+
+// TestAOS533_RetomaPorCrash: a re-hospedagem pela varredura de arranque (AOS-253), sobre o MESMO
+// WAL, WORM e custódia de KEK. O crash é o do AOS-253 (o turno 1 aplicado e capturado, o run em
+// `running` com o lease 1, sem terminal); a vida 2 reclama o lease 2, não transita no arranque e
+// sela a terminal com o token 2. Medido: fidelidade total — sem divergência a desculpar —, com
+// `retomado: true` e amostra no SLI de valor 1.
+func TestAOS533_RetomaPorCrash(t *testing.T) {
+	ctx := context.Background()
+	dir, vault := t.TempDir(), audit.NewInMemoryKeyVault(nil)
+	const runID = "run-533-crash"
+	n1 := aos533Compor(t, aos533Opcoes{dir: dir, vault: vault}, aos533Guiao)
+	goal := agentruntime.Goal{RunID: runID, Principal: referencemonitor.Principal{NHIID: acnAgent},
+		Credential: n1.token(t), Objective: aos533Objectivo, MaxTurns: 5}
+	// O turno 1 corre ANTES do lease, como na passagem do AOS-253 (o Runtime.Run directo nao
+	// apresenta token; com um detentor ja registado a escrita seria recusada, AOS-299).
+	prod := goal
+	prod.MaxTurns = 1
+	if _, _, err := n1.node.Runtime.Run(ctx, prod, nil); err != nil && !errors.Is(err, agentruntime.ErrMaxTurnsExceeded) {
+		t.Fatalf("turno 1: %v", err)
+	}
+	leases, err := durable.NewLeaseManager(n1.node.EventStore, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := leases.Claim(ctx, runID); err != nil {
+		t.Fatal(err)
+	}
+	m, err := state.NewMachine(n1.node.EventStore, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Rebuild(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Transition(ctx, state.Running, state.TransitionEvent{Token: state.Uint64Token(1), Reason: "crash_simulado"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := n1.node.ResumeRecords.Put(ctx, registoDeRetomaDeTeste(t, goal)); err != nil {
+		t.Fatal(err)
+	}
+	_ = n1.svc.Shutdown(ctx)
+	_ = n1.node.Close()
+
+	futuro := durable.ClockFunc(func() time.Time { return time.Now().Add(time.Hour) })
+	n2 := aos533Compor(t, aos533Opcoes{dir: dir, vault: vault, spans: true, svc: []NodeServiceOption{WithLeaseClock(futuro)}}, aos533Guiao)
+	if _, retomados, err := n2.svc.ResumeInterruptedRuns(ctx); err != nil || retomados != 1 {
+		t.Fatalf("a varredura tinha de retomar 1 run: %d %v", retomados, err)
+	}
+	n2.esperar(t, runID)
+	code, resp, corpo := n2.replay(t, runID, govHeaders())
+	if code != http.StatusOK {
+		t.Fatalf("200 esperado, veio %d (%s)", code, corpo)
+	}
+	if !resp.Retomado || resp.Diverged || resp.Fidelity.Value != 1 || resp.Nota != "" || !resp.SLIAmostrado {
+		t.Fatalf("retoma por crash: retomado, fiel, com amostra: %+v", resp)
+	}
+	v := aos274SLI(t, n2.svc.EvaluateSLOsNow(ctx), otelgenai.SLIReplayFidelity)
+	if v.Samples != 1 || v.Value != 1 || v.Breached() {
+		t.Fatalf("uma amostra de fidelidade 1: samples=%d valor=%g", v.Samples, v.Value)
+	}
+}
+
+// aos533StoreSemLease falha a leitura do stream de lease (o resto passa).
+type aos533StoreSemLease struct{ EventStorePort }
+
+func (s aos533StoreSemLease) Read(ctx context.Context, stream string, from uint64) ([]eventstore.Event, error) {
+	if strings.HasPrefix(stream, "lease:") {
+		return nil, eventstore.ErrNoQuorum
+	}
+	return s.EventStorePort.Read(ctx, stream, from)
+}
+
+// TestAOS533_LeaseIndisponivel: um erro a ler o lease é 503 `lease_indisponivel`, sem amostra —
+// e não «sem corroboração», que pusesse a divergência desculpável de um run retomado a alarmar.
+func TestAOS533_LeaseIndisponivel(t *testing.T) {
+	n := aos533Compor(t, aos533Opcoes{l4: true, spans: true}, aos533Guiao)
+	const runID = "run-533-lease"
+	aos533Retomar(t, n, runID)
+	n.node.EventStore = aos533StoreSemLease{n.node.EventStore}
+	rec := getReq(n.h, "/runs/"+runID+"/replay", govHeaders())
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), `"code":"`+causaReplayLeaseIndisp+`"`) {
+		t.Fatalf("503 lease_indisponivel esperado: %d %s", rec.Code, rec.Body.String())
+	}
+	aos533SemAlarme(t, n)
 }

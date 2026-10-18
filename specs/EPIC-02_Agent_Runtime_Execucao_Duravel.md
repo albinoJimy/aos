@@ -2410,12 +2410,20 @@ de fidelidade, sem conteúdo decifrado.
 - [x] Um run retomado por aprovação sai `retomado: true`, diverge no turno 2 por `prompt_hash`
       (medido: confirma a inferência do ADR-037 §5 para a retoma por aprovação) e leva a nota de
       que a divergência num run retomado não prova adulteração; não amostra o SLI.
-- [x] «Retomado» não se forja com uma linha (revisão): exige a cadeia de transições coerente da
-      máquina de estados e um claim de lease de token ≥ 2 que a cadeia usou. A PoC da revisão
-      (captura forjada + `waiting_on_human → running` depois do `complete`) dá divergência normal,
-      com amostra no SLI e o alerta `replay_fidelity_low` a disparar. Só o primeiro turno gravado
-      depois de uma retoma corroborada é desculpado; noutro turno é divergência normal, mesmo com
-      `retomado: true`.
+- [x] «Retomado» não se forja com uma linha (1.ª revisão): exige a cadeia de transições coerente
+      da máquina de estados e, para cada claim de lease k ≥ 2, um par na cadeia — por ORDEM, a
+      (k−1)-ésima transição de retoma (`waiting_on_human → running` ou `paused → running`, que não
+      levam token) ou, sem ela (re-hospedagem por crash), a transição que leve o token k. A PoC da
+      1.ª revisão (captura forjada + `waiting_on_human → running` depois do `complete`) dá
+      divergência normal, com amostra no SLI e o alerta `replay_fidelity_low` a disparar; um claim
+      forjado sem par não corrobora. Só o primeiro turno gravado DEPOIS (por seq) do par de cada
+      vida é desculpado; noutro turno é divergência normal, mesmo com `retomado: true`.
+- [x] Nenhum cenário legítimo medido dispara o alerta (2.ª revisão): duas retomas por aprovação
+      (consultado a meio, em `waiting_on_human`, e depois do `complete`), retomado e morto em
+      `waiting_on_human` (a forma do abort de exaustão e do human-TTL), retoma por crash pela
+      varredura de arranque (fiel, com amostra de valor 1). Um erro a ler o lease é 503
+      `lease_indisponivel`, sem amostra. A retoma por pausa está coberta pela forma da cadeia
+      (unitário), não pelo nó: nenhum teste do repositório consegue uma retoma de pausa pelo HTTP.
 - [x] System e memory_context guardados por teste: fidelidade 1 com eles, divergência no turno 1
       sem cada um.
 - [x] SLI `replay_fidelity`: com a torneira composta, uma chamada é uma amostra com o valor da
@@ -2436,9 +2444,15 @@ de fidelidade, sem conteúdo decifrado.
 ### Notas
 
 - O detector de «retomado» cruza duas fontes: a cadeia de transições da máquina de estados e o
-  stream de lease (escolhido como evidência independente por cobrir as duas retomas — aprovação e
-  crash; o grant four-eyes só cobriria a primeira). Quem escreve cru nos dois streams com a cadeia
-  inteira certa ainda o forja, mas a desculpa fica presa a um turno por retoma.
+  stream de lease, um claim por vida. As transições de retoma não levam token (o kernel não muda
+  por isto: mudaria payloads, goldens e streams gravados), pelo que o par de cada claim é por
+  ordem; só a re-hospedagem por crash se corrobora pelo token, e aí o par é posterior aos turnos
+  dessa vida — nenhum turno dela é desculpado, e uma divergência nela (a do ADR-037 §5 depois de
+  uma falha de tool) sai normal. Com crashes e aprovações intercalados, o emparelhamento por ordem
+  pode atribuir a desculpa à vida errada. Quem escreve cru nos dois streams com a cadeia inteira
+  certa ainda forja uma retoma, mas a desculpa fica presa a um turno por retoma.
+- A divergência desculpada pára o motor nesse turno: os turnos seguintes de um run retomado não
+  são verificados nessa chamada.
 - `anchors_not_verified` declara sempre `tools_from_log` (o tool set vem do `manifest.tools` do
   próprio log: coerência com o log, não fonte independente) e `projection_version` (a versão da
   projecção do AOS-513 não tem âncora).
@@ -2455,8 +2469,9 @@ de fidelidade, sem conteúdo decifrado.
 `packages/cmd/aos/sli_produtor.go` e `slo_evaluator.go` (o SLI e o banner). Testes em
 `packages/cmd/aos/aos533_replay_verificavel_test.go`; mutações (objectivo, system ou memória
 tirados da spec, selo retirado, detector de retoma desligado, transição aceite em qualquer posição,
-claim de lease não usado aceite, divergência desculpada em qualquer turno, tools vazias, tracer
-retirado) avermelham-nos todas.
+claim de lease não usado aceite, divergência desculpada em qualquer turno, emparelhamento por
+ordem retirado, carimbo de tempo em vez de seq, erro do lease tratado como «sem corroboração»,
+tools vazias, tracer retirado) avermelham-nos todas.
 
 ---
 
