@@ -2335,6 +2335,114 @@ chamador).** A decisão está no ADR-038
 
 ---
 
+## AOS-533 — O replay verificável de produção: `GET /runs/{id}/replay` recalcula os `prompt_hash` de um run e devolve o veredicto de fidelidade, sem conteúdo
+
+<!-- rtm: adrs-mencionados -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-02 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — resíduo da sub-fase A5.1 |
+| Tipo | feat |
+| Prioridade | P1: a fidelidade de replay de produção só estava provada em testes e no gate `replay`; o critério P6 e o resíduo da A5.1 não têm por onde ser medidos num run real |
+| Estimativa | M |
+| Dependências | AOS-214 (replay soberano: as portas e o opener por-titular), AOS-530 (a série A5.1 e o resíduo), ADR-037 §5 (o replay de um run retomado diverge) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` §7, `docs/adr/ADR-037-o-desfecho-de-um-run-e-um-veredicto-do-kernel.md` §5, `packages/kernel/agent-runtime/replay/engine.go`, `packages/cmd/aos/sovereign_replay.go`, `packages/integration/resume_records.go`, `tecnica/12_Contratos_de_Interface.md` §5.1 |
+
+### Contexto
+
+Resíduo da sub-fase A5.1 (2026-10-18, §7 do acompanhamento): **o replay de produção não recalcula
+os `prompt_hash`**. O `GET /runs/{id}/reconstruct` (AOS-214) é o `ReplayEngine` em modo de
+reconstrução — decifra as capturas, sem efeitos e sem chamar o modelo nem a tool — e na série A5.1
+bateu com a resposta servida em 8 de 8 runs. A verificação (`ReplayEngine.Replay`) não tem rota de
+produção: está provada nos testes (`TestAOS530_No_ReplaySemNovaChamada`) e no gate `replay`.
+
+O que a descoberta estabeleceu:
+
+- `Replay(ctx, runID, Options{Spec})` devolve `ReplayResult` (turnos com `prompt_hash` gravado e
+  re-materializado, fidelidade, âncoras corridas, divergência localizada, veredicto do AOS-493,
+  hash do estado final). Divergência não é erro. Sem modelo, sem tools, sem escrita.
+- **A spec não está no log** (só os hashes). Está no registo de retoma do run
+  (`ResumeRecords.Get`), que o nó escreve no arranque de cada hospedagem, cifrado por titular, e
+  que só existe com o four-eyes composto e com titular. Em produção (v0.1.59) os 40 runs de nós da
+  série A5.1 têm `resume-<run>`.
+- O tool set mais seguro é o `manifest.tools` do primeiro turno (o que o run ofereceu, AOS-486) —
+  o precedente do `hashDaSementeCom` (AOS-506), que já recalcula o turno 1 em produção.
+- O `manifest.model.params` funde os params do perfil da rota: a âncora `model` com os do registo
+  daria falsos «model».
+
+### Objectivo
+
+Uma rota de leitura soberana que corre o `ReplayEngine.Replay` sobre um run e devolve o veredicto
+de fidelidade, sem conteúdo decifrado.
+
+### Âmbito
+
+- `GET /runs/{id}/replay`, no plano de dados, com as **mesmas portas do `/reconstruct` pela mesma
+  ordem** (uma só função partilhada) e selo WORM próprio, `read:replay`.
+- A spec montada no servidor: system, objectivo, memory_context, inputs do plano e aviso da nova
+  tentativa do registo de retoma; tools do manifesto do primeiro turno. Modelo, versão do
+  assembler, sequência de step_id e autoridade ficam fora, e a resposta declara-os.
+- Run retomado marcado na resposta; não amostra o SLI.
+- O SLI `replay_fidelity` passa a ter produtor a pedido (o span `replay`, pelo tracer do nó).
+
+### Critérios de Aceitação
+
+- [x] A rota responde só com hashes, contagens e vocabulário fechado: `run_id`, `fidelity`
+      (valor, coincidentes, verificados), `turns` verificados, `diverged`, `divergence` (turno,
+      step, motivo, hash esperado e obtido), `anchors_verified`, `anchors_not_verified`,
+      `final_state_hash`, `verdict`, `spec_origin` (`resume_record`), `retomado`, `nota`,
+      `sli_amostrado`. Nunca o texto do modelo, os resultados das tools, o objectivo nem os inputs
+      (sonda de marcadores, com o `/reconstruct` como controlo de que são decifráveis).
+- [x] Portas: leitor de outro board ⇒ 404 igual ao do run inexistente, sem selo; sem gate soberano,
+      sem cifra ou sem registo de retoma composto ⇒ 501 com causa, sem selo; o selo `read:replay`
+      está no WORM antes da resposta, sem PII.
+- [x] Recusas com causa própria e sem 500 genérico: sem registo de retoma ⇒ 422
+      `sem_registo_de_retoma`; registo recusado ⇒ 422; captura incompleta, corrompida, layout ou
+      aviso desconhecidos ⇒ 422; captura de referência sem PayloadStore ⇒ 501 (limitação do nó, não
+      defeito do run); depois do `/dsar/erase` ⇒ 410; custódia sem resposta ⇒ 503.
+- [x] Fidelidade total, no nó composto, para um run normal, um nó de plano com inputs, um run com
+      a `ocr_read` e uma nova tentativa com aviso; os controlos in-process provam que sem os inputs
+      ou sem o aviso a spec diverge no turno 1, e que outro objectivo diverge por `prompt_hash`.
+- [x] Uma captura adulterada escrita crua no stream diverge no turno seguinte por `prompt_hash`.
+- [x] Um run retomado por aprovação sai `retomado: true`, diverge no turno 2 por `prompt_hash`
+      (medido: confirma a inferência do ADR-037 §5 para a retoma por aprovação) e leva a nota de
+      que a divergência num run retomado não prova adulteração; não amostra o SLI.
+- [x] SLI `replay_fidelity`: com a torneira composta, uma chamada é uma amostra com o valor da
+      fidelidade; `produtor="1"`; o banner do avaliador diz que a amostragem é a pedido, por
+      chamada e não por run.
+- [x] Documentado em `tecnica/12_Contratos_de_Interface.md` §5.1 (o `/replay` e o `/reconstruct`,
+      que não estava) e na tabela de planos do `deploy/node/README.md`.
+- [ ] Uma série em produção que use a rota. É o que fecha o resíduo da §7 — não este ticket.
+
+### Fora de âmbito
+
+- Reproduzir com fidelidade um run retomado cujo turno re-executado mudou de desfecho (ADR-037 §5):
+  a rota só o distingue.
+- As âncoras `model`, `assembly_version`, `step_id` e `authority`.
+- O PayloadStore de mode 3 no nó.
+- Amostragem periódica do SLI (por run, sem chamada).
+
+### Notas
+
+- O detector de «retomado» lê o stream do run: uma transição `waiting_on_human → running` ou
+  transições com mais de um fencing token. Escrita crua no stream pode forjá-lo; quem a tem pode
+  forjar coisas piores.
+- A amostra do SLI é por chamada: o mesmo run verificado duas vezes conta duas.
+
+### Estado
+
+**IMPLEMENTADO (2026-10-18), por verificar em produção.** `packages/cmd/aos/replay_verificavel.go`
+(a rota), `packages/cmd/aos/sovereign_replay.go` (as portas partilhadas com o `/reconstruct`),
+`packages/cmd/aos/sli_produtor.go` e `slo_evaluator.go` (o SLI e o banner). Testes em
+`packages/cmd/aos/aos533_replay_verificavel_test.go`; mutações (objectivo trocado na spec, selo
+retirado, detector de retoma desligado, tools vazias, tracer retirado, run retomado a amostrar)
+avermelham-nos todas.
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -2353,3 +2461,4 @@ chamador).** A decisão está no ADR-038
 | 1.11 | 2026-10-05 | AOS-493 revisto: contrato impossível recusa o arranque, medição dos runs que acabam sobre uma recusa ou falha de tool, critério do replay restrito aos runs de uma só vida, saga de compensação decidida e com limite declarado | Equipa AOS |
 | 1.12 | 2026-10-05 | +AOS-497 (o kernel designa e sela a origem da saída de um run): em 2 de 21 planos em produção o nó de leitura chamou a tool com sucesso e entregou um resumo em vez do conteúdo; primeira peça da saída por referência | Equipa AOS |
 | 1.13 | 2026-10-05 | AOS-497 implementado e revisto: a regra de designação conta as chamadas pedidas, o run com entradas tem o estado `inapplicable`, a forma do nome valida-se no arranque, e a fonte dos bytes é o step-ledger. Por verificar em produção | Equipa AOS |
+| 1.14 | 2026-10-18 | +AOS-533 (o replay verificável de produção, `GET /runs/{id}/replay`): resíduo da sub-fase A5.1 — o replay de produção não recalculava os `prompt_hash` | Equipa AOS |

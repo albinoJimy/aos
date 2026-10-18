@@ -196,6 +196,9 @@ type aos530Opcoes struct {
 	// nats, quando preenchido, é o cluster JetStream onde o nó guarda o Event Store (em vez do WAL),
 	// com o stream natsStream.
 	nats, natsStream string
+	// soberano compõe o gate soberano de leitura (board→região) e o four-eyes (que compõe o registo
+	// de retoma): é o que o `GET /runs/{id}/replay` do AOS-533 exige.
+	soberano bool
 }
 
 // aos530No é o nó composto com a `ocr_read`.
@@ -305,6 +308,10 @@ func aos530Compor(t *testing.T, o aos530Opcoes) *aos530No {
 		Set("human:"+tnHuman, durCap, "model:invoke").Set(durAgent, durCap, "model:invoke").Set("agent:"+durClass, durCap, "model:invoke")
 	if o.privilegiada {
 		cfg.Privileged = referencemonitor.NewStaticPrivilegedSet(durCap)
+	}
+	if o.soberano {
+		cfg.BoardRegions = map[string]string{govBoard: govRegion}
+		cfg.Approvers = aos533Aprovadores(t)
 	}
 	log := &bytes.Buffer{}
 	node, err := Bootstrap(ctx, cfg, log)
