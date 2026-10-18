@@ -339,8 +339,9 @@ func assertDeniedAudited(t *testing.T, store eventstore.EventStore, runID, stepI
 	if err != nil {
 		t.Fatalf("Read audit: %v", err)
 	}
+	// AOS-481: a recusa tem chave própria no stream (`denied-<step_id>`); procura-se por ela.
 	for _, e := range events {
-		if e.StepID != stepID {
+		if e.StepID != rm.EventStepID(rm.EventTypeDenied, stepID) {
 			continue
 		}
 		if e.Type != rm.EventTypeDenied {

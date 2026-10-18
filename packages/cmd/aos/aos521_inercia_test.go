@@ -142,10 +142,12 @@ var aos521InerciaDaBase = aos521Inercia{
 	pedidos:    "e73b2e0973d2c2b67919bc14833e15af7159a0910d41c4ed006dc96c31719988",
 	manifestos: "3a049a98499e368819a82cf3ae3d21faf5e600d614fc87eec59dfb384fa80ec7",
 	registos:   "343a2af6aa943701dc03706b3224b0816a33c8db58f77f6da4fab9669fce9b4b",
-	tipos:      "225eff7b72711157e0594e338270aa554781d472b9d573579cbf8cd7c6c12168",
-	livro:      "model.canary.opened,model.canary.plan_assigned",
-	metricas:   "9701c6288da62eb86521cc545420364f0aac433c4e6a1c8cd8e26bf4548faa00",
-	familias:   "fd78c028d9ed24c6f6f6c828f563529d2c10aad0005b0bb353e878e73884948d",
+	// AOS-481: o `tool.call.outcome` passa a chegar ao stream do run; sem ele o digest é o da base
+	// (225eff7b…), medido tirando-o da lista.
+	tipos:    "4120c3cc3a0d5920a0255597a539ea312cb89e727e770eacf922f761b31851ce",
+	livro:    "model.canary.opened,model.canary.plan_assigned",
+	metricas: "9701c6288da62eb86521cc545420364f0aac433c4e6a1c8cd8e26bf4548faa00",
+	familias: "fd78c028d9ed24c6f6f6c828f563529d2c10aad0005b0bb353e878e73884948d",
 	// Seis leituras do stream do run, uma do das aprovações e UMA do livro, por hospedagem — a do
 	// candidato e a do titular. O disjuntor desligado não pode acrescentar nenhuma.
 	leituras: "0: run=6 aprovacoes=1 livro=1; a: run=6 aprovacoes=1 livro=1",

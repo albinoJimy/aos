@@ -452,10 +452,10 @@ func TestAOS478_ProducerPorFamilia(t *testing.T) {
 	// Não-vacuidade: as famílias que o AOS-478 corrigiu, e as que lhes servem de referência,
 	// TÊM de ter sido exercitadas — senão o laço acima passava sobre nada.
 	for _, tipo := range []string{
-		// Só `escalated`: o `mediated` da retoma e o `outcome` partilham a chave (run_id, step_id)
-		// do selo anterior e o Event Store deduplica-os (o WORM tem-nos). Defeito anterior a este
-		// ticket, reportado à parte; o producer de ambos é coberto em reference-monitor.
-		"tool.call.escalated",
+		// A escalada, o permit da retoma e o desfecho, no stream do run. Até ao AOS-481 só a
+		// escalada chegava: o `mediated` da retoma e o `outcome` partilhavam a chave
+		// (run_id, step_id) da escalada e o Event Store deduplicava-os (o WORM tinha-os).
+		"tool.call.escalated", "tool.call.mediated", "tool.call.outcome",
 		"step.ledger.applied",
 		sandbox.EventInstanceCreated, sandbox.EventExecCompleted, sandbox.EventInstanceDestroyed,
 		"approval.pending", "approval.granted", "approval.consumed", "approval.expired", "approval.decided",
@@ -561,9 +561,9 @@ func aos478TesteExiste(t *testing.T, pacote, nome string) bool {
 // (AC2 e AC4 do AOS-478).
 func aos478Relacoes(t *testing.T, eventos []eventstore.Event) {
 	t.Helper()
-	// O producer do selo `tool.call.*` de cada tool, no run A (no Event Store é o `escalated`:
-	// ver a nota da lista de não-vacuidade). A identidade já está resolvida quando a política
-	// escala, pelo que é o principal VERIFICADO — o mesmo que o `mediated` levaria.
+	// O producer do selo `tool.call.*` de cada tool, no run A (a escalada, o permit da retoma e o
+	// desfecho; até ao AOS-481 só a escalada chegava ao Event Store). A identidade já está
+	// resolvida quando a política escala, pelo que é o principal VERIFICADO — o mesmo do `mediated`.
 	mediado := map[string]eventstore.Producer{}
 	for _, ev := range eventos {
 		if ev.StreamID != aos478RunA || !strings.HasPrefix(ev.Type, "tool.call.") {

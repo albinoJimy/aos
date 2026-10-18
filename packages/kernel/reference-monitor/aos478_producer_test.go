@@ -60,9 +60,10 @@ func TestAOS478_DesfechoLevaOMesmoProducerQueAMediacao(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// Passo distinto: o sink do desfecho usa a MESMA chave (run_id, step_id) que o selo.
+	// O MESMO passo do selo: desde o AOS-481 o desfecho tem chave própria (`outcome-<step_id>`)
+	// e já não é engolido pelo selo.
 	if err := NewEventStoreOutcomeSink(es).RecordOutcome(ctx, OutcomeRecord{
-		RunID: call.RunID, StepID: "step-outcome", ToolID: call.ToolID, Outcome: OutcomeOK, Principal: call.Principal,
+		RunID: call.RunID, StepID: call.StepID, ToolID: call.ToolID, Outcome: OutcomeOK, Principal: call.Principal,
 	}); err != nil {
 		t.Fatal(err)
 	}
