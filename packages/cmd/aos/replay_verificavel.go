@@ -72,7 +72,7 @@ import (
 const specOriginResumeRecord = "resume_record"
 
 // notaRetomado é o texto constante que acompanha a divergência de um run retomado.
-const notaRetomado = "divergencia num run retomado nao prova adulteracao: a captura do turno re-executado e a da primeira vida e o turno seguinte foi gravado na segunda (ADR-037 §5)"
+const notaRetomado = "divergencia num run retomado nao prova adulteracao: a captura do turno re-executado e a da primeira vida e o turno seguinte foi gravado na segunda (ADR-037 §5); os turnos depois do turno desculpado nao foram verificados"
 
 // Causas de recusa do `/replay`, em vocabulário fechado (o campo `code` do corpo de erro).
 const (
@@ -103,11 +103,15 @@ var anchorsDoReplay = []string{"model", "assembly_version", "step_id", "authorit
 //     tem âncora no motor.
 var anchorsSemFonteIndependente = []string{"tools_from_log", "projection_version"}
 
-// replayFidelityWire é a fidelidade com os dois contadores de que é a fracção.
+// replayFidelityWire é a fidelidade com os dois contadores de que é a fracção, e o total de turnos
+// gravados do run: o motor pára na primeira divergência, e `verified < turns_recorded` diz que os
+// turnos seguintes ficaram por verificar — num run retomado, os depois do turno desculpado
+// (revisão do AOS-533: uma captura adulterada a partir dele fica silenciada nesta chamada).
 type replayFidelityWire struct {
-	Value    float64 `json:"value"`
-	Matched  int     `json:"matched"`
-	Verified int     `json:"verified"`
+	Value         float64 `json:"value"`
+	Matched       int     `json:"matched"`
+	Verified      int     `json:"verified"`
+	TurnsRecorded int     `json:"turns_recorded"`
 }
 
 // replayTurnWire é um turno verificado: só hashes.
@@ -219,7 +223,9 @@ func (h *apiHandler) handleReplay(w http.ResponseWriter, r *http.Request) {
 		}
 		amostra = h.replayAmostra()
 	}
-	writeJSON(w, http.StatusOK, replayResponseDe(res, v.retomado(), desculpada, amostra))
+	out := replayResponseDe(res, v.retomado(), desculpada, amostra)
+	out.Fidelity.TurnsRecorded = turnosGravados(events)
+	writeJSON(w, http.StatusOK, out)
 }
 
 // correrReplay compõe o motor — com o tracer do nó se `comSpan`, para o span `replay`
@@ -372,7 +378,10 @@ func (v vidas) retomado() bool { return v.corroboradas > 0 }
 //     `paused → running` — as transições de retoma NÃO levam token, ver [runGate.ResumeFromHuman]
 //     e [runGate.Resume]). Sem essa transição (a re-hospedagem por crash, AOS-253, que encontra o
 //     run em `running` e não transita no arranque), o par é a primeira transição que leve o token k
-//     (na prática, a terminal ou a escalada seguinte dessa vida). Um claim sem par não corrobora.
+//     (na prática, o selo terminal dessa vida; a `ready → running` só leva o token 1, e as
+//     escaladas e os kills não levam token). Um claim sem par não corrobora: uma vida de crash que
+//     acaba em `waiting_on_human → killed` (sem token) NÃO é corroborada, e o run sai
+//     `retomado: false`, com amostra no SLI.
 //  4. O TURNO DESCULPADO de cada vida corroborada é o primeiro `turn.recorded` DEPOIS, por seq, do
 //     evento que a corroborou: numa retoma por aprovação ou por pausa, o primeiro turno que a vida
 //     nova gravou (os anteriores reproduzem-se sem re-gravar).
@@ -452,6 +461,23 @@ func analisarVidas(runEvents, leaseEvents []eventstore.Event) vidas {
 		}
 	}
 	return v
+}
+
+// turnosGravados conta os turnos distintos com `turn.recorded` no stream do run.
+func turnosGravados(events []eventstore.Event) int {
+	vistos := map[int]bool{}
+	for _, ev := range events {
+		if ev.Type != agentruntime.EventTypeTurnRecorded {
+			continue
+		}
+		var p struct {
+			Turn int `json:"turn"`
+		}
+		if json.Unmarshal(ev.Payload, &p) == nil {
+			vistos[p.Turn] = true
+		}
+	}
+	return len(vistos)
 }
 
 // primeiroTurnoDepois devolve o número do primeiro `turn.recorded` do stream depois da posição dada.

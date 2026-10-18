@@ -2451,8 +2451,15 @@ de fidelidade, sem conteúdo decifrado.
   uma falha de tool) sai normal. Com crashes e aprovações intercalados, o emparelhamento por ordem
   pode atribuir a desculpa à vida errada. Quem escreve cru nos dois streams com a cadeia inteira
   certa ainda forja uma retoma, mas a desculpa fica presa a um turno por retoma.
-- A divergência desculpada pára o motor nesse turno: os turnos seguintes de um run retomado não
-  são verificados nessa chamada.
+- **Resíduo (3.ª revisão): a divergência desculpada pára o motor nesse turno.** Os turnos
+  seguintes de um run retomado ficam por verificar, e uma captura adulterada a partir do turno
+  desculpado fica silenciada nessa chamada (200, `retomado`, nota, sem amostra). Fica visível —
+  `fidelity.turns_recorded` ao lado de `verified`, e a nota diz que os turnos depois do desculpado
+  não foram verificados —, mas não fechado. A correcção estrutural é gravar a captura da
+  re-execução sob uma chave por vida, ou reproduzir o turno re-executado do `applied_result` do
+  step-ledger: ticket próprio, não este.
+- Uma vida de crash que acaba em `waiting_on_human → killed` (sem token) não é corroborada: o run
+  sai `retomado: false`, com amostra.
 - `anchors_not_verified` declara sempre `tools_from_log` (o tool set vem do `manifest.tools` do
   próprio log: coerência com o log, não fonte independente) e `projection_version` (a versão da
   projecção do AOS-513 não tem âncora).
@@ -2471,7 +2478,10 @@ de fidelidade, sem conteúdo decifrado.
 tirados da spec, selo retirado, detector de retoma desligado, transição aceite em qualquer posição,
 claim de lease não usado aceite, divergência desculpada em qualquer turno, emparelhamento por
 ordem retirado, carimbo de tempo em vez de seq, erro do lease tratado como «sem corroboração»,
-tools vazias, tracer retirado) avermelham-nos todas.
+desculpar qualquer turno ≥ ao desculpado, `turns_recorded` a zero, tools vazias, tracer retirado)
+avermelham-nos todas. Um run retomado cujo turno desculpável bate (a autonomia sobe para L5 antes
+da retoma e a captura do turno 1 é reposta com o resultado real) e uma captura posterior forjada
+dão divergência normal no turno 3, com amostra e alerta.
 
 ---
 

@@ -82,6 +82,8 @@ type aos533No struct {
 	h     http.Handler
 	model *acnModel
 	keys  [2]ed25519.PrivateKey
+	// levels é o registo de autonomia (só com o oráculo L4 composto).
+	levels *autonomy.LevelRegistry
 }
 
 // aos533Compor arranca o nó do ciclo de aprovação (approval_cycle_node_test.go) com o gate
@@ -95,8 +97,9 @@ func aos533Compor(t *testing.T, o aos533Opcoes, guiao func(agentruntime.PromptVi
 	}
 	signer := acnSigner(t)
 	var opts []pdp.Option
+	var levels *autonomy.LevelRegistry
 	if o.l4 {
-		levels := autonomy.NewLevelRegistry()
+		levels = autonomy.NewLevelRegistry()
 		if _, err := levels.SetLevel(ctx, acnAgent, "fs", autonomy.L4, "teste do replay de um run retomado", "operador"); err != nil {
 			t.Fatal(err)
 		}
@@ -156,7 +159,7 @@ func aos533Compor(t *testing.T, o aos533Opcoes, guiao func(agentruntime.PromptVi
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &aos533No{node: node, svc: svc, h: h, model: model, keys: [2]ed25519.PrivateKey{privA, privB}}
+	return &aos533No{node: node, svc: svc, h: h, model: model, keys: [2]ed25519.PrivateKey{privA, privB}, levels: levels}
 }
 
 func (n *aos533No) token(t *testing.T) string {
@@ -231,7 +234,8 @@ func aos533Fiel(t *testing.T, resp replayResponse, turnos int) {
 	if resp.Diverged || resp.Divergence != nil {
 		t.Fatalf("o replay nao podia divergir: %+v", resp.Divergence)
 	}
-	if resp.Fidelity.Value != 1 || resp.Fidelity.Matched != turnos || resp.Fidelity.Verified != turnos || len(resp.Turns) != turnos {
+	if resp.Fidelity.Value != 1 || resp.Fidelity.Matched != turnos || resp.Fidelity.Verified != turnos || len(resp.Turns) != turnos ||
+		resp.Fidelity.TurnsRecorded != turnos {
 		t.Fatalf("fidelidade total sobre %d turnos esperada: %+v (turnos=%d)", turnos, resp.Fidelity, len(resp.Turns))
 	}
 	for _, tw := range resp.Turns {
@@ -372,19 +376,25 @@ func aos533ReplayInProcess(t *testing.T, n *aos533No, runID string, muda func(*r
 // tool: o tail muda e o turno 2 deixa de bater.
 func aos533ForjarCaptura(t *testing.T, n *aos533No, runID string) {
 	t.Helper()
-	ctx := context.Background()
+	aos533ForjarCapturaDe(t, n, runID, 1, "passo_um", "doc-a", `{"content":"ADULTERADO"}`, "step-forjado-533")
+}
+
+// aos533ForjarCapturaDe escreve CRUA uma captura inline do turno dado: uma tool call `tool` sobre
+// `recurso` (a forma de [acnCall]) com o resultado `saida`, untrusted.
+func aos533ForjarCapturaDe(t *testing.T, n *aos533No, runID string, turno int, tool, recurso, saida, step string) {
+	t.Helper()
 	forjada, err := json.Marshal(map[string]any{
-		"schema_version": "1.0", "turn": 1, "observed_at_unix_nano": 1,
+		"schema_version": "1.0", "turn": turno, "observed_at_unix_nano": 1,
 		"response": map[string]any{"final": false, "input_tokens": 1, "output_tokens": 1, "cost_micro_usd": 0,
-			"tool_calls": []map[string]any{{"tool_id": "passo_um", "capability": acnCap, "resource_type": "doc",
-				"resource_value": "doc-a", "resource_region": "eu", "input": []byte(`{"doc":"doc-a"}`)}}},
-		"tool_results": []map[string]any{{"taint": "untrusted", "output": []byte(`{"content":"ADULTERADO"}`)}},
+			"tool_calls": []map[string]any{{"tool_id": tool, "capability": acnCap, "resource_type": "doc",
+				"resource_value": recurso, "resource_region": "eu", "input": []byte(`{"doc":"` + recurso + `"}`)}}},
+		"tool_results": []map[string]any{{"taint": "untrusted", "output": []byte(saida)}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := n.node.EventStore.Append(ctx, runID, eventstore.EventInput{
-		Type: replay.EventTypeCaptured, Payload: forjada, RunID: runID, StepID: "step-forjado-533",
+	if _, err := n.node.EventStore.Append(context.Background(), runID, eventstore.EventInput{
+		Type: replay.EventTypeCaptured, Payload: forjada, RunID: runID, StepID: step,
 		Producer: eventstore.Producer{NHIID: acnAgent},
 	}); err != nil {
 		t.Fatal(err)
@@ -1061,4 +1071,80 @@ func TestAOS533_LeaseIndisponivel(t *testing.T) {
 		t.Fatalf("503 lease_indisponivel esperado: %d %s", rec.Code, rec.Body.String())
 	}
 	aos533SemAlarme(t, n)
+}
+
+// TestAOS533_RetomadoNaoVerificaDepoisDoDesculpado: o resíduo M1 da 3.ª revisão, tornado visível.
+// Num run retomado o motor pára na divergência desculpada; uma captura adulterada a partir dela
+// fica silenciada — mas a resposta diz que há turnos por verificar (`verified < turns_recorded`) e
+// a nota di-lo.
+func TestAOS533_RetomadoNaoVerificaDepoisDoDesculpado(t *testing.T) {
+	n := aos533Compor(t, aos533Opcoes{l4: true}, aos533Guiao)
+	const runID = "run-533-m1"
+	aos533Retomar(t, n, runID)
+	aos533ForjarCaptura(t, n, runID)
+	code, resp, corpo := n.replay(t, runID, govHeaders())
+	if code != http.StatusOK || !resp.Retomado || resp.Nota != notaRetomado || !strings.Contains(resp.Nota, "nao foram verificados") {
+		t.Fatalf("divergencia desculpada com a nota dos turnos por verificar: %d %+v (%s)", code, resp, corpo)
+	}
+	if resp.Fidelity.TurnsRecorded != 2 || resp.Fidelity.Verified != 2 {
+		t.Fatalf("turns_recorded ao lado de verified: %+v", resp.Fidelity)
+	}
+}
+
+// TestAOS533_RetomadoComDesculpavelFielEDivergenciaPosterior (B2 da 3.ª revisão): um run retomado
+// cujo primeiro turno depois da retoma BATE, e uma captura posterior forjada. O run escala o
+// turno 1 (L4); antes da retoma a autonomia sobe para L5, pelo que o turno 2 corre sem escalar e o
+// turno 3 conclui. A captura do turno 1 é reposta com o resultado REAL (o que a vida 2 viu): o
+// turno 2 — o desculpável — bate, e o replay é fiel. Depois forja-se a captura do turno 2: a
+// divergência cai no turno 3, que NÃO é o desculpado — divergência normal, com amostra e alerta.
+func TestAOS533_RetomadoComDesculpavelFielEDivergenciaPosterior(t *testing.T) {
+	ctx := context.Background()
+	n := aos533Compor(t, aos533Opcoes{l4: true, spans: true}, func(v agentruntime.PromptView) agentruntime.ModelResponse {
+		switch v.Turn {
+		case 1:
+			return acnCall("passo_um", "doc-a")
+		case 2:
+			return acnCall("passo_dois", "doc-b")
+		default:
+			return agentruntime.ModelResponse{Text: aos533Texto, Final: true}
+		}
+	})
+	const runID = "run-533-b2"
+	n.correr(t, agentruntime.Goal{RunID: runID})
+	if _, susp := n.svc.Suspended(ctx, runID); !susp {
+		t.Fatal("PRECONDICAO: o turno 1 escala")
+	}
+	if _, err := n.levels.SetLevel(ctx, acnAgent, "fs", autonomy.L5, "o turno 2 corre sem escalar (teste AOS-533)", "operador"); err != nil {
+		t.Fatal(err)
+	}
+	aos533Aprovar(t, n, runID, "req-533-b2")
+	if fim, done := n.svc.Outcome(runID); !done || !fim.Result.Terminated {
+		t.Fatalf("o run tinha de terminar na vida 2: %+v", fim)
+	}
+	if _, susp := n.svc.Suspended(ctx, runID); susp {
+		t.Fatal("PRECONDICAO: o turno 2 nao escala em L5")
+	}
+
+	saida := `{"content":"` + aos533Saida + `"}`
+	aos533ForjarCapturaDe(t, n, runID, 1, "passo_um", "doc-a", saida, "step-reposta-533")
+	code, resp, corpo := n.replay(t, runID, govHeaders())
+	if code != http.StatusOK || resp.Diverged || resp.Fidelity.Verified != 3 || resp.Fidelity.TurnsRecorded != 3 || !resp.Retomado {
+		t.Fatalf("com a captura do turno 1 reposta, o desculpavel bate e o replay e fiel: %d %+v (%s)", code, resp, corpo)
+	}
+
+	aos533ForjarCapturaDe(t, n, runID, 2, "passo_dois", "doc-b", `{"content":"ADULTERADO"}`, "step-forjado-533")
+	code, resp, corpo = n.replay(t, runID, govHeaders())
+	if code != http.StatusOK {
+		t.Fatalf("200 esperado, veio %d (%s)", code, corpo)
+	}
+	if !resp.Retomado || resp.Divergence == nil || resp.Divergence.Turn != 3 || resp.Nota != "" || !resp.SLIAmostrado {
+		t.Fatalf("divergencia no turno 3 (posterior ao desculpado 2): normal, sem nota, com amostra: %+v", resp)
+	}
+	var ev *SLOEvaluation
+	for i := 0; i < 4; i++ {
+		ev = n.svc.EvaluateSLOsNow(ctx)
+	}
+	if !aos274Alert(t, ev, otelgenai.AlertReplayFidelityLow).Alert.Fired {
+		t.Fatal("o alerta replay_fidelity_low tinha de disparar sobre a captura posterior adulterada")
+	}
 }
