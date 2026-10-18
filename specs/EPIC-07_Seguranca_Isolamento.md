@@ -1076,6 +1076,12 @@ quem não liga a tool.
 - [ ] **Em produção**, depois dos actos do dono: uma série pequena de planos com imagens sintéticas
       lidas pela `ocr_read`, com os factos entregues ao nó seguinte, o custo no run e o replay de
       todos — o critério da A5.1 (D7).
+      *(Série de 2026-10-18 na v0.1.58, `ocr1`–`ocr20`: 20 de 20 planos com código 0; 20 de 20 com
+      a `ocr_read` mediada e `transcrito`, o custo no run e a entrega por referência ao nó seguinte;
+      amostra de 4 planos lida pelo dono — digest certo em 4/4, 26/26 factos entregues, 25/26 na
+      resposta do nó seguinte por causa do objectivo. Por cumprir à letra: o replay de produção
+      reconstrói as capturas mas não recalcula os `prompt_hash` — não há rota para isso. Caixa por
+      marcar até o dono decidir; acompanhamento §4.)*
 - [ ] Os gates locais verdes (`make ci`), com a RTM regenerada.
 
 ### Notas
