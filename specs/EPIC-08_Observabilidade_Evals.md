@@ -2724,15 +2724,23 @@ Só o elo do proxy.
 
 ### Critérios de Aceitação
 
-- [ ] O falso regista, por parte do `content`, o tipo, as chaves e, numa data URL, a classe, o
+- [x] O falso regista, por parte do `content`, o tipo, as chaves e, numa data URL, a classe, o
       sha256 e o tamanho; nenhum byte do media nem texto da mensagem aparece no que regista; um
       tipo ou uma chave fora do vocabulário conta como `outra`; um corpo acima do tecto do falso
       conta-se com causa própria. Com testes que correm sem Docker.
-- [ ] O cenário com o proxy real corre pelas duas rotas, com o MP4 pequeno e o de 3 a 6 MB, e o
+- [x] O cenário com o proxy real corre pelas duas rotas, com o MP4 pequeno e o de 3 a 6 MB, e o
       seu relatório (`AOS_BANCO_VIDEO_REPORT`) diz, por rota e por tamanho, o código HTTP do proxy,
       os tipos de parte que chegaram ao fornecedor e se o sha256 é o enviado. Fica vermelho só se o
       ensaio não se montar, se o proxy não chegar ao falso ou se uma chave aparecer numa saída.
-- [ ] A medida registada neste ticket, numa nota com a data, com a conclusão para o elo 1.
+- [x] A medida registada neste ticket, numa nota com a data, com a conclusão para o elo 1.
+      *(Medido a 2026-10-19 no posto, com Docker, `TestAOS534_ProxyReal_VideoPeloProxy`, proxy
+      `ghcr.io/berriai/litellm@sha256:154e23bb…` (1.96.2) contra o falso na forma da OpenRouter,
+      modelo `google/gemini-2.5-flash`: nas duas rotas (`openrouter/…` e `openai/…`), o MP4 pequeno
+      (4 248 bytes) e o grande (4 194 456 bytes, pedido de 5 592 829 bytes) chegaram ao fornecedor
+      como `video_url` com data URL `video/mp4` e o **sha256 igual ao enviado** — `intacta` em 4 de 4;
+      o controlo só com texto chegou com 200 nas duas. **Conclusão para o elo 1: o proxy fixado
+      passa o vídeo nativo intacto, sem tecto de corpo até 5,6 MB.** Ficam os elos 2 (que modelos
+      aceitam vídeo pela OpenRouter, a medir com o modelo real) e 3 (limites do fornecedor).)*
 
 ### Fora de âmbito
 
