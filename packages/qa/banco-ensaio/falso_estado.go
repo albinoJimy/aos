@@ -165,6 +165,12 @@ type FormaNoFornecedor struct {
 	Parametros map[string]int `json:"parametros_do_pedido"`
 	// Recusas conta as respostas 400 do falso, por causa.
 	Recusas map[string]int `json:"respostas_400_por_causa"`
+	// Partes conta as partes do `content` das mensagens, por tipo e por chave interior (AOS-534,
+	// [FalsoDeEstado.contarPartes]). Vazio quando nenhuma mensagem trazia partes.
+	Partes map[string]int `json:"partes_do_content,omitempty"`
+	// Media lista as partes com media, pela ordem de chegada: a classe da URL, o sha256 e o
+	// tamanho dos bytes. Nunca os bytes.
+	Media []MediaNoFornecedor `json:"media_no_content,omitempty"`
 }
 
 // ExigirChave faz o falso recusar com 401 os pedidos cuja chave não tenha este sha256. A chave
@@ -188,6 +194,7 @@ func (f *FalsoDeEstado) Forma() *FormaNoFornecedor {
 		Wire: f.forma.Wire, Pedidos: f.forma.Pedidos, Turnos: f.forma.Turnos,
 		Assistant: copia(f.forma.Assistant), Estado: copia(f.forma.Estado),
 		Parametros: copia(f.forma.Parametros), Recusas: copia(f.forma.Recusas),
+		Partes: copia(f.forma.Partes), Media: append([]MediaNoFornecedor(nil), f.forma.Media...),
 	}
 }
 
@@ -227,7 +234,7 @@ func (f *FalsoDeEstado) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(f.Forma())
 		return
 	}
-	corpo, _ := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+	corpo, _ := io.ReadAll(io.LimitReader(r.Body, maxCorpoDoFalsoDoEstado+1))
 	if f.exigeChave {
 		chave := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if chave == "" {
@@ -246,6 +253,10 @@ func (f *FalsoDeEstado) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.forma.Pedidos++
+	if len(corpo) > maxCorpoDoFalsoDoEstado {
+		f.recusar(w, RecusaCorpoAcimaDoTecto, strings.HasSuffix(r.URL.Path, "/messages"))
+		return
+	}
 	var topo map[string]json.RawMessage
 	if json.Unmarshal(corpo, &topo) != nil {
 		f.recusar(w, RecusaPedidoIlegivel, false)
@@ -254,6 +265,7 @@ func (f *FalsoDeEstado) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.contarParametros(r, topo)
 	var msgs []map[string]json.RawMessage
 	_ = json.Unmarshal(topo["messages"], &msgs)
+	f.contarPartes(msgs)
 	if strings.HasSuffix(r.URL.Path, "/messages") {
 		f.forma.Wire = WireDeMensagens
 		f.servirMensagens(w, corpo, topo, msgs)
