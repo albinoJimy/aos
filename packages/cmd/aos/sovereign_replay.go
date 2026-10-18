@@ -46,6 +46,11 @@ import (
 // soberana de conteúdo selado — vocabulário estável, sem PII (a par de [capReadOutcome]/[capReadTrajectory]).
 const capReadReconstruct = "read:reconstruct"
 
+// capReadReplay é a capability selada no WORM (D6) para o REPLAY VERIFICÁVEL de um run (AOS-533,
+// `GET /runs/{id}/replay`): a rota decifra as capturas e o registo de retoma do run para
+// re-materializar os prompts, mas não devolve conteúdo — o selo é próprio porque a leitura é outra.
+const capReadReplay = "read:replay"
+
 // reconstructedTurnWire é a projecção de wire de um turno reconstruído e DECIFRADO devolvido ao
 // leitor autorizado. Carrega o conteúdo em claro (o deliverable do leitor soberano) — nunca vai a
 // log/span/erro.
@@ -77,41 +82,63 @@ type reconstructResponse struct {
 // ([resolveSealed]: escopo + opener!=nil) é belt-and-suspenders, e a sua falsificabilidade dos «dois
 // sentidos» é exercitada IN-PROCESS (motor composto sem opener/escopo), não pelo endpoint. Futuros
 // leitores: não presumam que o escopo é per-chamador aqui — a decisão soberana é a D7 acima.
-func (h *apiHandler) newReaderReplayEngine(reader readerIdentity) (*replay.ReplayEngine, error) {
+//
+// `extra` acrescenta opções ao motor — o `/replay` (AOS-533) passa o tracer do nó, para o span
+// `replay` alimentar o SLI de fidelidade; o `/reconstruct` não passa nenhuma.
+func (h *apiHandler) newReaderReplayEngine(reader readerIdentity, extra ...replay.EngineOption) (*replay.ReplayEngine, error) {
 	accessor := replay.Accessor{
 		Principal: reader.principal,
 		Scopes:    []string{replay.DefaultSovereignContentScope},
 	}
-	return replay.NewEngine(h.node.EventStore, replay.WithContentOpener(h.node.contentOpener, accessor))
+	opts := append([]replay.EngineOption{replay.WithContentOpener(h.node.contentOpener, accessor)}, extra...)
+	return replay.NewEngine(h.node.EventStore, opts...)
 }
 
-// handleReconstruct serve GET /runs/{id}/reconstruct: a reconstrução soberana do conteúdo selado de
-// um run para um leitor autorizado (AOS-214). Ordem deliberada de portas fail-closed — ver o
-// cabeçalho do ficheiro.
-func (h *apiHandler) handleReconstruct(w http.ResponseWriter, r *http.Request) {
-	runID := r.PathValue("id")
+// leituraDeConteudo descreve, para as portas partilhadas de [apiHandler.portasDaLeituraDeConteudo],
+// a rota que as pede: o rótulo das mensagens de 501/erro de leitura, a capability do selo D6 e uma
+// verificação de composição PRÓPRIA da rota (nil ⇒ nenhuma), corrida com as outras de composição —
+// antes da posse e do selo, porque uma rota desligada não sela nada.
+type leituraDeConteudo struct {
+	desligada    string
+	indisponivel string
+	capability   string
+	composta     func(w http.ResponseWriter) bool
+}
+
+// portasDaLeituraDeConteudo aplica, PELA ORDEM, as portas fail-closed das rotas que DECIFRAM
+// conteúdo por-titular (`/reconstruct`, AOS-214; `/replay`, AOS-533) — ver o cabeçalho do ficheiro:
+// D7 (404/401 uniforme), composição (501), posse com a trava de stream interno (AOS-426, 404
+// uniforme) e o selo WORM D6 como pré-condição (503). Devolve o leitor e os eventos crus do stream
+// (ciphertext, já lidos para a posse); ok=false ⇒ a resposta já foi escrita.
+//
+// É UMA só função para as duas rotas de propósito: uma segunda cópia das portas é a forma de uma
+// delas, um dia, deixar de ter uma.
+func (h *apiHandler) portasDaLeituraDeConteudo(w http.ResponseWriter, r *http.Request, runID string, l leituraDeConteudo) (readerIdentity, []eventstore.Event, bool) {
 	if runID == "" {
 		writeError(w, http.StatusNotFound, "not found")
-		return
+		return readerIdentity{}, nil, false
 	}
 
 	// (1) AUTHZ SOBERANA POR-CHAMADOR (D7). Leitor não autorizado ⇒ 404 uniforme (não-enumerável,
-	// sem PII). Gate não composto ⇒ legado (proceed=true): mas a reconstrução EXIGE o gate soberano
-	// (é uma leitura de conteúdo sensível decifrado), pelo que sem ele NEGAMOS abaixo (501).
+	// sem PII). Gate não composto ⇒ legado (proceed=true): mas a leitura de conteúdo EXIGE o gate
+	// soberano (decifra conteúdo sensível), pelo que sem ele NEGAMOS abaixo (501).
 	reader, residency, authorized := h.admitSovereignRead(w, r, runID)
 	if !authorized {
-		return
+		return readerIdentity{}, nil, false
 	}
-	// A reconstrução soberana EXIGE o gate composto: sem ele não há credencial soberana a impor, e
-	// devolver conteúdo decifrado seria abrir uma via sem gate. Fail-closed: 501 (desligado).
+	// A leitura de conteúdo EXIGE o gate composto: sem ele não há credencial soberana a impor, e
+	// decifrar conteúdo seria abrir uma via sem gate. Fail-closed: 501 (desligado).
 	if h.readGov == nil {
-		writeError(w, http.StatusNotImplemented, "reconstrucao desligada (governanca soberana nao composta)")
-		return
+		writeError(w, http.StatusNotImplemented, l.desligada+" (governanca soberana nao composta)")
+		return readerIdentity{}, nil, false
 	}
 	// O opener por-titular + o Event Store têm de estar compostos (num nó real, sempre — defensivo).
 	if h.node.EventStore == nil || h.node.contentOpener == nil {
-		writeError(w, http.StatusNotImplemented, "reconstrucao desligada (cifra por-titular nao composta)")
-		return
+		writeError(w, http.StatusNotImplemented, l.desligada+" (cifra por-titular nao composta)")
+		return readerIdentity{}, nil, false
+	}
+	if l.composta != nil && !l.composta(w) {
+		return readerIdentity{}, nil, false
 	}
 
 	// (2) POSSE (não-enumerável). Confirma que esta réplica hospeda/reteve o run ANTES de selar ou
@@ -122,28 +149,42 @@ func (h *apiHandler) handleReconstruct(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(rerr, eventstore.ErrStreamNotFound) {
 			if !h.runKnown(runID) {
 				writeError(w, http.StatusNotFound, "not found")
-				return
+				return readerIdentity{}, nil, false
 			}
 		} else {
-			writeError(w, streamSetupErrorStatus(rerr), "reconstrucao indisponivel")
-			return
+			writeError(w, streamSetupErrorStatus(rerr), l.indisponivel)
+			return readerIdentity{}, nil, false
 		}
 	}
 	if len(events) == 0 && !h.runKnown(runID) {
-		// Stream vazio e run desconhecido ⇒ 404 uniforme (não abre uma reconstrução vazia).
+		// Stream vazio e run desconhecido ⇒ 404 uniforme (não abre uma leitura vazia).
 		writeError(w, http.StatusNotFound, "not found")
-		return
+		return readerIdentity{}, nil, false
 	}
 	// AOS-426: O STREAM EXISTE, MAS NÃO É DE UM RUN. A mesma trava da trajectória, e por mais
-	// razão: esta rota DECIFRA conteúdo por-titular. Ver streams_internos.go.
+	// razão: estas rotas DECIFRAM conteúdo por-titular. Ver streams_internos.go.
 	if len(events) > 0 && !streamDeRun(runID, events) && !h.runKnown(runID) {
 		writeError(w, http.StatusNotFound, "not found")
-		return
+		return readerIdentity{}, nil, false
 	}
 
-	// (3) SELO WORM DE LEITURA SENSÍVEL (D6) como PRÉ-CONDIÇÃO — a reconstrução decifra conteúdo
+	// (3) SELO WORM DE LEITURA SENSÍVEL (D6) como PRÉ-CONDIÇÃO — a leitura decifra conteúdo
 	// sensível e não pode ser silenciosa. Se o WORM não selar, NEGA fail-closed (503).
-	if !h.sealSensitiveRead(w, r, reader, residency, runID, capReadReconstruct) {
+	if !h.sealSensitiveRead(w, r, reader, residency, runID, l.capability) {
+		return readerIdentity{}, nil, false
+	}
+	return reader, events, true
+}
+
+// handleReconstruct serve GET /runs/{id}/reconstruct: a reconstrução soberana do conteúdo selado de
+// um run para um leitor autorizado (AOS-214). Ordem deliberada de portas fail-closed — ver o
+// cabeçalho do ficheiro e [apiHandler.portasDaLeituraDeConteudo].
+func (h *apiHandler) handleReconstruct(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("id")
+	reader, _, ok := h.portasDaLeituraDeConteudo(w, r, runID, leituraDeConteudo{
+		desligada: "reconstrucao desligada", indisponivel: "reconstrucao indisponivel", capability: capReadReconstruct,
+	})
+	if !ok {
 		return
 	}
 

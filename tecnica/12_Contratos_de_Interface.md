@@ -190,6 +190,35 @@ preocupações de camadas acima entrem neste contrato (AOS-340).
 
 **Versionamento SemVer.** Novos `event.type` são *MINOR* (consumidores desconhecidos ignoram tipos não reconhecidos por *forward-compat*). Remover um campo do envelope de evento ou mudar a semântica de `expected_seq` é *MAJOR*. O `payload` interno de cada evento tem o seu próprio schema versionado, desacoplado da versão da porta.
 
+### 5.1 A leitura soberana de um run selado: `/reconstruct` e `/replay` (AOS-214, AOS-533)
+
+O read/replay de C2 tem duas superfícies HTTP no nó `aos`, ambas no plano de dados e ambas atrás das **mesmas portas, pela mesma ordem** (`portasDaLeituraDeConteudo`, `packages/cmd/aos/sovereign_replay.go`): (1) autorização soberana do leitor (D7: board → região, igual à residência do run) — leitor de outro board ou run inexistente ⇒ o **mesmo** `404` não-enumerável, credencial que não verifica ⇒ `401`; (2) composição — sem o gate soberano ou sem a cifra por-titular ⇒ `501`; (3) posse, com a trava dos streams internos (AOS-426) ⇒ `404` uniforme; (4) **selo WORM de leitura sensível** (D6) na partição `gov.read/<run>`, sem PII, como pré-condição — se o WORM não selar ⇒ `503`. Só depois o motor de replay é composto com o opener por-titular.
+
+| Rota | Selo D6 | Devolve | Não devolve |
+|---|---|---|---|
+| `GET /runs/{id}/reconstruct` | `read:reconstruct` | os turnos **decifrados**: `turn`, `step_id`, `text`, `final`, `tool_outputs` | — (é o conteúdo do run, para o leitor autorizado) |
+| `GET /runs/{id}/replay` | `read:replay` | o **veredicto de fidelidade**: `run_id`, `fidelity{value, matched, verified, turns_recorded}`, `turns[]{turn, step_id, prompt_hash, recorded_prompt_hash, matched}`, `diverged`, `divergence{turn, step_id, reason, expected_hash, actual_hash}`, `anchors_verified`, `anchors_not_verified`, `final_state_hash`, `verdict` (AOS-493), `spec_origin`, `retomado`, `nota`, `sli_amostrado` | o texto do modelo, os resultados das tools, o objectivo, a memória e os inputs |
+
+**O `/replay` re-materializa os prompts** (`ReplayEngine.Replay`): sem modelo, sem tools, sem escrever no Event Store. A spec (os inputs determinísticos que não vivem no log) vem do **registo de retoma** do run (`spec_origin: "resume_record"`): system, objectivo (o já redigido que o run hospedou), memory_context, inputs do plano e aviso da nova tentativa; o tool set é o `manifest.tools` do primeiro turno. As âncoras não-prompt (`model`, `assembly_version`, `step_id`, `authority`) **não correm** e vêm em `anchors_not_verified`: o `manifest.model.params` funde os params do perfil da rota, e compará-lo com o registo daria falsos `model`. Vêm lá também, sempre, `tools_from_log` — o tool set é o do próprio log, pelo que o replay prova a coerência do prompt com o log e não que esse tool set era o do nó — e `projection_version` — a versão da projecção nativa (AOS-513) não tem âncora. Uma divergência **não é erro**: é `200` com `diverged: true`. **Retomado** só quando as duas fontes concordam: a cadeia de `run.state.transition` é a que a máquina de estados escreve (produtor dela, `state-1…N` sem buracos, `from` = `to` anterior, arestas válidas, nada depois de um terminal) **e** cada claim de token k ≥ 2 do stream de lease (`lease:<run>`) tem par na cadeia — por ordem, a (k−1)-ésima transição de retoma (`waiting_on_human → running` ou `paused → running`, que não levam token), ou, sem ela (re-hospedagem por crash), a transição que leve o token k. Uma linha forjada no stream do run não chega; um erro a ler o lease é `503` `lease_indisponivel`, sem amostra. A divergência só é desculpada — `nota`, e sem amostra no SLI — se cair no **primeiro turno gravado depois (por seq) do par de uma vida corroborada** (ADR-037 §5; medido no nó composto: um run retomado por aprovação diverge no turno 2 por `prompt_hash`). Noutro turno é divergência normal, mesmo com `retomado: true`. **Resíduo:** o motor pára na divergência desculpada, pelo que os turnos seguintes de um run retomado ficam por verificar — e uma captura adulterada a partir do turno desculpado fica silenciada nessa chamada. A resposta torna-o visível (`fidelity.turns_recorded` ao lado de `fidelity.verified`, e a nota diz que os turnos depois do desculpado não foram verificados); a correcção estrutural (captura da re-execução sob uma chave por vida, ou o `applied_result` do step-ledger) é de ticket próprio. Uma vida de crash que acaba em `waiting_on_human → killed` não leva token e não é corroborada (`retomado: false`, com amostra).
+
+**Recusas do `/replay`**, com o corpo `{"error": "replay indisponivel", "code": <causa>}` e nunca conteúdo:
+
+| Status | `code` | Quando |
+|---|---|---|
+| `501` | `registo_de_retoma_nao_composto` | nó sem four-eyes (o registo de retoma não é composto); não sela |
+| `422` | `sem_registo_de_retoma` | o run não tem registo (run sem titular, ou anterior ao registo de arranque) |
+| `422` | `registo_de_retoma_recusado` | o registo não é o que o nó escreveria (AOS-069) |
+| `422` | `captura_incompleta`, `captura_corrompida`, `layout_desconhecido`, `aviso_desconhecido` | o motor recusa a trajectória antes de reproduzir |
+| `501` | `payload_store_nao_composto` | captura de referência (mode 3) num nó que não compõe o PayloadStore — limitação do nó, não defeito do run |
+| `410` | `conteudo_apagado` | depois do `/dsar/erase` |
+| `503` | `conteudo_indisponivel`, `registo_de_retoma_indisponivel` | custódia das KEK ou Event Store sem resposta |
+| `403` | `acesso_negado` | o opener negou (defesa em profundidade) |
+| `503` | `lease_indisponivel` | o stream de lease não se lê (sem ele não se decide se o run foi retomado) |
+
+Cada chamada ao `/replay` emite o span `replay` (`aos.replay.fidelity`) pelo tracer do nó — é o produtor, **a pedido**, do SLI `replay_fidelity`: uma amostra por chamada, não por run, e nenhuma quando a divergência é a desculpada de um run retomado.
+
+**Custo por pedido.** O `ResumeRecords.Get` lê o stream das aprovações **inteiro** a cada chamada — O(nº de aprovações do nó) — e decifra o registo do run. A rota está no balde de leituras do plano de dados (AOS-458), que limita a taxa; não há índice nem cache.
+
 ---
 
 ## 6. Contrato C3 — RM ↔ BRK (Token JIT Scoped)
@@ -409,3 +438,4 @@ Cada contrato é *fail-closed* na fronteira: C1 nega sem `permit` explícito, C3
 | Versão | Data | Descrição | Autor |
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
+| 1.1 | 2026-10-18 | §5.1: as rotas de leitura soberana `GET /runs/{id}/reconstruct` (AOS-214) e `GET /runs/{id}/replay` (AOS-533) — portas, selos, forma da resposta e recusas | Equipa AOS |

@@ -280,6 +280,11 @@ func (h *apiHandler) tabelaDeRotas() []rota {
 		// cifrado por-titular (AOS-093) de um run para um leitor autorizado por soberania (D7+D6).
 		// Desligado (501) sem o gate soberano composto. Ver sovereign_replay.go.
 		{"GET /runs/{id}/reconstruct", h.handleReconstruct, planoDados},
+		// Plano de DADOS — REPLAY VERIFICÁVEL (AOS-533): as MESMAS portas do /reconstruct, pela
+		// mesma ordem, com selo próprio (`read:replay`); re-materializa os prompts do run com a spec
+		// do registo de retoma e devolve o veredicto de fidelidade, SEM conteúdo. Desligado (501)
+		// sem o gate soberano ou sem o registo de retoma composto. Ver replay_verificavel.go.
+		{"GET /runs/{id}/replay", h.handleReplay, planoDados},
 
 		// Plano de CONTROLO TRUSTED (cada um autenticado na fronteira real do nó: a admissão e o
 		// mTLS vêm do invólucro; a assinatura ed25519 do corpo, que é quem DECIDE, fica no handler).

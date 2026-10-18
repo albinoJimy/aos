@@ -40,7 +40,8 @@ package main
 //     ADULTERAÇÃO (o SLI vai a 0 e o alerta encaminha para PROC-DR); um WORM opaco ou um erro de
 //     I/O NÃO é — fica sem amostra. Ver [sloEvaluator.probeWORM].
 //
-// O que NÃO tem produtor no nó (headroom do scheduler, fidelidade de replay) fica sem amostras e,
+// O que NÃO tem produtor no nó (headroom do scheduler) — ou só o tem a pedido (fidelidade de
+// replay, AOS-533: uma amostra por chamada a `GET /runs/{id}/replay`) — fica sem amostras e,
 // pela regra anti-vacuidade de AOS-085 (`Samples == 0` ⇒ nem breach nem cumprimento afirmado),
 // NÃO dispara e NÃO se declara cumprido. Injectar um valor plausível para "preencher o painel"
 // seria exactamente o alerta sintético que o critério de aceitação proíbe.
@@ -556,8 +557,9 @@ func (e *sloEvaluator) evaluate(ctx context.Context, probe func(context.Context)
 
 	// (5) OPERACIONAL (AOS-104/105) — 7 SLIs canónicos, sobre os MESMOS spans/events. Os três
 	// fallbacks injectáveis (cold-start, headroom, fidelidade de replay) ficam a nil DE
-	// PROPÓSITO: o nó não tem produtor para eles, e um valor inventado seria o alerta sintético
-	// que o critério de aceitação recusa.
+	// PROPÓSITO: um valor inventado seria o alerta sintético que o critério de aceitação recusa.
+	// A fidelidade de replay tem produtor A PEDIDO desde o AOS-533 — o span `replay` do
+	// `GET /runs/{id}/replay` chega aqui pelos spans, não pelo fallback.
 	opsSnap := e.catalog.Render(otelgenai.OperationalInputs{
 		Events:                   events,
 		Spans:                    spans,
@@ -712,7 +714,8 @@ func (h *apiHandler) writeSLOMetrics(b *strings.Builder) {
 	// motor de replay vivem noutro processo), pelo que nunca terão amostra e a regra é
 	// ESTRUTURALMENTE incapaz de disparar. Medido em produção: `aos_slo_samples` a 0 para ambos,
 	// e o `firing` a 0 — indistinguível do `audit_worm_integrity_broken`, que TEM amostra e
-	// reporta 0 legitimamente.
+	// reporta 0 legitimamente. (Desde o AOS-533 o `replay_fidelity` tem produtor A PEDIDO — o
+	// `GET /runs/{id}/replay` —, e sai `produtor="1"` com a torneira composta: ver [produtorNoNo].)
 	//
 	// Um painel todo a verde não distinguia «avaliado e bem» de «nunca poderá ficar vermelho», e
 	// três dos cinco runbooks canónicos estavam desse lado.
@@ -861,6 +864,16 @@ func sloEvaluatorBanner(node *Node, interval, window time.Duration) string {
 	if node.sloTap != nil {
 		derivados = "LIGADOS pela torneira de spans (os MESMOS spans que saem para o colector OTLP): overhead de mediacao p95 dos execute_tool, custo por trajectoria dos chat, override-rate das decisoes; cache-hit-rate e cold-start entram se o gateway/pool partilharem o tracer. A escrita do selo de mediacao sai a parte, sem SLO, em aos_mediation_audit_write_* (AOS-402), e a politica partida por hook em aos_mediation_hook_* (AOS-405)"
 	}
-	return fmt.Sprintf("avaliador de SLOs (AOS-274): LIGADO — avalia de %s em %s sobre uma janela de %s, compondo os 4 SLIs da MEDIACAO (AOS-085/086) e os 7 CANONICOS operacionais (AOS-104/105) na MESMA passagem, com janela sustentada (um pico transitorio nao alerta); cada alerta disparado e ligado ao registo de runbooks (AOS-106) no log estruturado e exposto em GET /metrics (aos_slo_*/aos_alert_firing). FONTES SEMPRE ACTIVAS: %s. SLIs derivados de spans: %s. Sem produtor no no e SEM valor inventado (anti-vacuidade de AOS-085): headroom do scheduler e fidelidade de replay. FAIL-OPEN DECLARADO — ao contrario de todo o resto do no, a observabilidade NUNCA o derruba: panico contido, sem propagacao ao caminho de execucao, sondas com prazo, e o laco NAO para nem quando deteta adulteracao (nao destroi nada, e e quando o sinal mais faz falta)",
-		interval, interval, window, fontes, derivados)
+	return fmt.Sprintf("avaliador de SLOs (AOS-274): LIGADO — avalia de %s em %s sobre uma janela de %s, compondo os 4 SLIs da MEDIACAO (AOS-085/086) e os 7 CANONICOS operacionais (AOS-104/105) na MESMA passagem, com janela sustentada (um pico transitorio nao alerta); cada alerta disparado e ligado ao registo de runbooks (AOS-106) no log estruturado e exposto em GET /metrics (aos_slo_*/aos_alert_firing). FONTES SEMPRE ACTIVAS: %s. SLIs derivados de spans: %s. Sem produtor no no e SEM valor inventado (anti-vacuidade de AOS-085): headroom do scheduler. Fidelidade de replay: %s. FAIL-OPEN DECLARADO — ao contrario de todo o resto do no, a observabilidade NUNCA o derruba: panico contido, sem propagacao ao caminho de execucao, sondas com prazo, e o laco NAO para nem quando deteta adulteracao (nao destroi nada, e e quando o sinal mais faz falta)",
+		interval, interval, window, fontes, derivados, replayFidelidadeNoBanner(node))
+}
+
+// replayFidelidadeNoBanner declara o produtor do SLI `replay_fidelity` (AOS-533). A amostragem é
+// POR CHAMADA do `GET /runs/{id}/replay`, não por run: um nó em que ninguém pede um replay fica
+// sem amostras, e isso é o normal, não uma avaria.
+func replayFidelidadeNoBanner(node *Node) string {
+	if node.sloTap == nil {
+		return "SEM PRODUTOR (observabilidade OTLP desligada: o span replay do GET /runs/{id}/replay nao chega ao avaliador)"
+	}
+	return "A PEDIDO — uma amostra por chamada a GET /runs/{id}/replay (AOS-533), nao por run; um run retomado nao amostra (diverge por desenho, ADR-037 §5); sem chamadas a janela fica vazia, e isso e o normal"
 }

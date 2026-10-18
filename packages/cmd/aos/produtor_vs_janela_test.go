@@ -39,7 +39,8 @@ func TestProdutor_ClassificaPorSLIENaoPorTrafego(t *testing.T) {
 		// SEM PRODUTOR NESTE BINARIO, com ou sem torneira. Para estes o rotulo antigo estava
 		// certo — e continua a estar.
 		{otelgenai.SLIHeadroomTokens, false, false},
-		{otelgenai.SLIReplayFidelity, false, false},
+		// AOS-533: A PEDIDO — o span `replay` do GET /runs/{id}/replay, pela torneira.
+		{otelgenai.SLIReplayFidelity, true, false},
 		{otelgenai.SLICacheHitRate, false, false},
 		{otelgenai.SLISandboxColdStartP95, false, false},
 	}
@@ -124,7 +125,7 @@ func TestProdutor_RotuloSaiNoMetricsComOHelpCorrigido(t *testing.T) {
 	// E OS TRES CRITICAL DERIVADOS DE SPANS, NUM NO SEM TRAFEGO: `avaliavel="0"` (a janela
 	// esta mesmo vazia) mas `produtor="1"` — vivos, nao mortos. Era exactamente isto que o
 	// HELP antigo negava.
-	for _, alerta := range []string{"mediation_overhead_high", "cost_per_trajectory_high", "mediation_overhead_p95_high"} {
+	for _, alerta := range []string{"mediation_overhead_high", "cost_per_trajectory_high", "mediation_overhead_p95_high", "replay_fidelity_low"} {
 		if !linhaDoAlerta(t, corpo, alerta, `avaliavel="0"`) {
 			t.Fatalf("PRECONDICAO: %s devia estar sem amostras num no sem trafego", alerta)
 		}
@@ -133,7 +134,7 @@ func TestProdutor_RotuloSaiNoMetricsComOHelpCorrigido(t *testing.T) {
 		}
 	}
 	// CONTROLO: os que NAO tem produtor continuam a diz-lo.
-	for _, alerta := range []string{"headroom_budget_exhaustion", "replay_fidelity_low"} {
+	for _, alerta := range []string{"headroom_budget_exhaustion"} {
 		if !linhaDoAlerta(t, corpo, alerta, `produtor="0"`) {
 			t.Fatalf("CONTROLO: %s nao tem produtor neste binario e devia continuar a declara-lo", alerta)
 		}

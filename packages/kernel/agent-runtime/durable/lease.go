@@ -42,6 +42,11 @@ const leaseStreamPrefix = "lease:"
 // leaseStream devolve o stream_id do log de lease de um run.
 func leaseStream(runID string) string { return leaseStreamPrefix + runID }
 
+// LeaseStreamID devolve o stream_id do log de lease de um run, para LEITORES que precisam de
+// corroborar as vidas de um run sem mintar nada (o `GET /runs/{id}/replay` do AOS-533 conta os
+// claims para distinguir um run retomado de um que só o afirma no seu stream).
+func LeaseStreamID(runID string) string { return leaseStream(runID) }
+
 // leaseClaimStepPrefix / leaseRenewStepPrefix namespaceiam o step_id dos eventos de
 // lease. Cada evento leva um NONCE globalmente único (crypto/rand) para que a sua
 // idempotency_key NUNCA colida na dedup GLOBAL do Event Store — dois workers a

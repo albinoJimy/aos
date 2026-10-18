@@ -41,8 +41,13 @@ import (
 //     são as duas únicas que ficam estáveis a `avaliavel="1"` num nó ocioso.
 //   - DERIVADOS DOS SPANS DO PRÓPRIO NÓ — o produtor é este binário, e existe se a torneira
 //     estiver composta: `execute_tool` (o ponto ÚNICO de mediação), `chat` e `aos.decision`.
-//   - SEM PRODUTOR NESTE BINÁRIO — headroom e fidelidade de replay ficam explicitamente a `nil`
-//     no avaliador («o nó não tem produtor para eles»); cache-hit-rate e cold-start entrariam
+//   - A PEDIDO — a fidelidade de replay (AOS-533). O produtor é o span `replay` que o
+//     `GET /runs/{id}/replay` emite pelo tracer do nó: existe com a torneira composta, mas só há
+//     amostra quando alguém chama a rota — UMA POR CHAMADA, não por run (um run verificado duas
+//     vezes conta duas, e um run retomado não conta nenhuma, porque diverge por desenho).
+//     `produtor="1" avaliavel="0"` é o estado normal de um nó em que ninguém pediu um replay.
+//   - SEM PRODUTOR NESTE BINÁRIO — o headroom fica explicitamente a `nil` no avaliador («o nó
+//     não tem produtor para ele»); cache-hit-rate e cold-start entrariam
 //     se o Model Gateway ou o pool de sandbox partilhassem o tracer, e nenhum dos dois é
 //     composto aqui — o recorder do cache-hit-rate não tem UM ÚNICO call site de produção.
 //
@@ -65,8 +70,11 @@ func produtorNoNo(sli string, torneiraLigada bool) bool {
 		return true
 	case otelgenai.SLIMediationOverheadP95, otelgenai.SLICostPerTrajectory, otelgenai.SLIOverrideRate:
 		return torneiraLigada
+	case otelgenai.SLIReplayFidelity:
+		// AOS-533: A PEDIDO — o span `replay` do `GET /runs/{id}/replay`, pelo tracer do nó.
+		return torneiraLigada
 	default:
-		// cache_hit_rate, sandbox_cold_start_p95, headroom_tokens, replay_fidelity — e
+		// cache_hit_rate, sandbox_cold_start_p95, headroom_tokens — e
 		// qualquer SLI que venha a ser acrescentado ao catálogo sem produtor cablado aqui.
 		// O default é `false` de propósito: um SLI novo nasce declarado como SEM produtor
 		// até alguém o ligar, que é a direcção segura — o inverso anunciaria uma regra viva
