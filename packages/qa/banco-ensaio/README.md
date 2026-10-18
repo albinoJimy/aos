@@ -1014,6 +1014,29 @@ runbook.
 `reasoning`), e se valida as assinaturas como o falso não valida. O falso emite a forma
 documentada, escrita à mão.
 
+### As partes do `content` e o vídeo pelo proxy (AOS-534)
+
+O falso do estado regista também as **partes** do `content` das mensagens que recebe
+(`partes_do_content` e `media_no_content` na forma, só quando alguma mensagem as traz): o `type`
+de cada parte e as chaves do objecto interior, por listas fechadas (fora delas, `outra`), e,
+numa parte com uma data URL (`video_url.url`, `image_url.url`, `file.file_data`), a classe da URL
+(`data_url_video_mp4`, `data_url_video_outro`, `data_url_outra`, `data_url_base64_invalido`,
+`url_remota`, `outra`), o sha256 e o tamanho dos bytes descodificados. Os bytes, a URL e o texto
+não se gravam. Um `content` em texto com uma data URL de vídeo lá dentro conta como
+`content_texto_com_data_url_de_video`. O tecto de corpo do falso é de 32 MiB, e um corpo acima
+conta como `corpo_acima_do_tecto_do_falso`.
+
+O spike da sub-fase A6.1, `TestAOS534_ProxyReal_VideoPeloProxy`, manda directamente ao proxy
+real, pelas rotas `openrouter/…` e `openai/…`, um pedido com texto e uma parte `video_url` com um
+MP4 **sintético** (válido como contentor, não como vídeo), pequeno e de 4 MiB, e diz por rota e
+por tamanho se a parte chegou `intacta`, `alterada_pelo_proxy`, `recusada_pelo_proxy` ou
+`recusada_pelo_falso` (`AOS_BANCO_VIDEO_REPORT`). Mede, não julga; não corre no gate
+`banco-ensaio-proxy.sh`:
+
+```bash
+AOS_BANCO_PROXY=1 AOS_BANCO_FALSO_BIN=<binário linux do banco> go test -run '^TestAOS534_ProxyReal_VideoPeloProxy$' -v -count=1 .
+```
+
 ## A qualificação do modelo (AOS-518)
 
 A experiência `qualificacao` é a única em que o banco dá um **veredicto**: `qualificado`,

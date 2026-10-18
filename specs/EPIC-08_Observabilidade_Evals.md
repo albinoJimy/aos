@@ -2656,6 +2656,121 @@ correr nas mesmas condições em que a tool vai correr.
 
 ---
 
+## AOS-534 — Spike A6.1: a parte `video_url` atravessa o proxy LiteLLM fixado intacta, nas duas rotas da OpenRouter?
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa nem emenda ADR nenhum: muda o banco de ensaio, que vive fora da imagem do nó. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-08 — Observabilidade e Evals |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A6 (multimodal), sub-fase A6.1 «vídeo como tool»; rótulo do desenho «A6-video» |
+| Tipo | spike |
+| Prioridade | P2: o primeiro de três elos por verificar antes de haver código no nó; nada em produção depende dele |
+| Estimativa | S |
+| Dependências | AOS-512 (o banco de ensaio), AOS-516 (o falso na forma da OpenRouter e as duas rotas do proxy), feitos. Decisão do dono de 2026-10-18 (opção A, vídeo nativo) |
+| Bloqueia | AOS-535, AOS-536 (a seguir) |
+| Responsável sugerido | Engenheiro de Qualidade |
+| Documentos de referência | `docs/reports/desenho-a5-a6-multimodal-2026-10-14.md` (§5.4, §5.5), `packages/qa/banco-ensaio/README.md`, `scripts/ci/banco-ensaio-proxy.sh`, a página de vídeo da OpenRouter (`https://openrouter.ai/docs/guides/overview/multimodal/videos`) |
+
+### Contexto
+
+**A decisão do dono (2026-10-18).** A sub-fase A6.1 segue a **opção A — vídeo nativo**: o ficheiro
+de vídeo (MP4) vai inteiro ao modelo, como uma parte `{"type":"video_url","video_url":{"url":"data:video/mp4;base64,…"}}`
+ao lado do texto numa mensagem `user`, pela OpenRouter, através do proxy LiteLLM de produção
+(`ghcr.io/berriai/litellm@sha256:154e23bb…`, versão 1.96.2). É a forma que a página de vídeo da
+OpenRouter documenta.
+
+**A discovery: três elos por verificar** antes de escrever código no nó:
+
+1. **O proxy.** O LiteLLM fixado, nas duas formas de rota que tem para a OpenRouter
+   (`openrouter/<autor>/<modelo>`, o adaptador próprio, e `openai/<autor>/<modelo>` com a base da
+   OpenRouter), entrega ao fornecedor a parte `video_url` intacta — o tipo, a data URL, os mesmos
+   bytes —, recusa-a, ou estraga-a (troca-lhe o tipo, re-codifica, corta)? Uma parte que o proxy
+   não conhece pode ser descartada pelo `drop_params`, convertida noutra (`file`, `image_url`) ou
+   rejeitada antes de sair. E tem um tecto de corpo?
+2. **Os modelos.** Que modelos aceitam vídeo pela OpenRouter, e com que preço por segundo ou por
+   token de vídeo. Por medir, com custo — não é deste ticket.
+3. **Os limites.** O tamanho e a duração máximos que a OpenRouter e cada modelo aceitam numa data
+   URL. Por medir, com custo — não é deste ticket.
+
+O primeiro elo mede-se sem custo: o banco de ensaio já põe a imagem de produção do proxy entre um
+cliente e um fornecedor falso num contentor (AOS-512, AOS-516), e o falso regista a forma do que
+recebe, nunca o conteúdo.
+
+### Objectivo
+
+Dizer, com uma medida, o que o proxy fixado faz a uma parte `video_url` em cada rota da
+OpenRouter, sem modelo real e sem custo.
+
+### Âmbito
+
+Só o elo do proxy.
+
+- **O falso do estado regista as partes do `content`** das mensagens que recebe: o `type` de cada
+  parte (vocabulário fechado; um tipo fora dele conta como `outra`), as chaves do objecto da parte,
+  e, numa parte com uma data URL (`video_url.url`, `image_url.url`, `file.file_data`), a classe da
+  URL (`data:video/mp4;base64,`, outra data URL, URL remota, outra), o sha256 e o tamanho dos
+  bytes descodificados. Os bytes não se gravam. O tecto de corpo do falso sobe para 32 MiB e um
+  corpo acima dele conta-se com causa própria, para o tecto do falso não se confundir com o do
+  proxy.
+- **O cenário `TestAOS534_ProxyReal_VideoPeloProxy`**, no padrão das medições directas do
+  AOS-516: um pedido directo ao proxy real, pelas duas rotas, com texto e uma parte `video_url`
+  com um MP4 **sintético**, válido como contentor (caixas `ftyp`, `moov`/`mvhd` com duração
+  conhecida e `mdat`) e não descodificável; um caso pequeno e um de 3 a 6 MB. Confere no rasto do
+  falso o tipo, a data URL e o sha256. **Mede, não julga:** uma recusa ou uma alteração do proxy é
+  um resultado, que o relatório do teste diz por rota.
+- **Testes do registo do falso** que correm sem Docker.
+
+### Critérios de Aceitação
+
+- [x] O falso regista, por parte do `content`, o tipo, as chaves e, numa data URL, a classe, o
+      sha256 e o tamanho; nenhum byte do media nem texto da mensagem aparece no que regista; um
+      tipo ou uma chave fora do vocabulário conta como `outra`; um corpo acima do tecto do falso
+      conta-se com causa própria. Com testes que correm sem Docker.
+- [x] O cenário com o proxy real corre pelas duas rotas, com o MP4 pequeno e o de 3 a 6 MB, e o
+      seu relatório (`AOS_BANCO_VIDEO_REPORT`) diz, por rota e por tamanho, o código HTTP do proxy,
+      os tipos de parte que chegaram ao fornecedor e se o sha256 é o enviado. Fica vermelho só se o
+      ensaio não se montar, se o proxy não chegar ao falso ou se uma chave aparecer numa saída.
+- [x] A medida registada neste ticket, numa nota com a data, com a conclusão para o elo 1.
+      *(Medido a 2026-10-19 no posto, com Docker, `TestAOS534_ProxyReal_VideoPeloProxy`, proxy
+      `ghcr.io/berriai/litellm@sha256:154e23bb…` (1.96.2) contra o falso na forma da OpenRouter,
+      modelo `google/gemini-2.5-flash`: nas duas rotas (`openrouter/…` e `openai/…`), o MP4 pequeno
+      (4 248 bytes) e o grande (4 194 456 bytes, pedido de 5 592 829 bytes) chegaram ao fornecedor
+      como `video_url` com data URL `video/mp4` e o **sha256 igual ao enviado** — `intacta` em 4 de 4;
+      o controlo só com texto chegou com 200 nas duas. **Conclusão para o elo 1: o proxy fixado
+      passa o vídeo nativo intacto, sem tecto de corpo até 5,6 MB.** Ficam os elos 2 (que modelos
+      aceitam vídeo pela OpenRouter, a medir com o modelo real) e 3 (limites do fornecedor).)*
+
+### Fora de âmbito
+
+- Os elos 2 e 3 (que modelos aceitam vídeo pela OpenRouter, e os limites de tamanho e duração):
+  precisam do modelo real e de custo.
+- Qualquer mudança no nó, no gateway, no perfil de rota ou no `tools.json`.
+- A porta 1.13.0 e a capacidade `video` (AOS-535) e a tool de vídeo (AOS-536), a seguir.
+
+### Notas
+
+- O MP4 sintético tem a magia e o tamanho certos, não imagem: o proxy não o descodifica, por isso
+  basta para medir o que ele faz aos bytes. Um fornecedor real recusá-lo-ia.
+- O cenário é opcional e precisa de Docker e da imagem já descarregada; não descarrega nada.
+  Corre-se com `AOS_BANCO_PROXY=1 AOS_BANCO_FALSO_BIN=<binário linux do banco> go test -run '^TestAOS534_ProxyReal_VideoPeloProxy$' -v -count=1 .`
+  em `packages/qa/banco-ensaio`.
+
+---
+
+## AOS-535 — A porta do gateway 1.13.0 com a parte de vídeo e a capacidade `video` no perfil da rota
+
+A seguir, por detalhar depois do AOS-534: o pedido do Model Gateway passa a levar uma parte de vídeo, e uma rota sem a capacidade `video` recusa-o antes de sair.
+
+---
+
+## AOS-536 — A tool de vídeo: um vídeo da pasta semeada descrito por um modelo capaz de vídeo, pelo Model Gateway do nó
+
+A seguir, por detalhar depois do AOS-535: a tool, mediada pelo Reference Monitor, manda o vídeo inteiro ao modelo como parte `video_url` (opção A do dono, 2026-10-18).
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -2689,3 +2804,4 @@ correr nas mesmas condições em que a tool vai correr.
 | 1.26 | 2026-10-15 | +AOS-529 (fase A5, «A5-ocr-medição»): o banco de ensaio mede um motor de OCR — bateria de imagens sintéticas com e sem acentos (PNG limpo, com ruído e rotação, de meia resolução, JPEG, PDF digitalizado e uma tabela), a experiência `ocr` com o motor plugável (o Tesseract num contentor fixado pelo digest nas condições do gVisor, e um falso), factos pela regra do banco e com acentos exactos, tempo e memória por imagem; sem veredicto. Implementado e provado com o motor falso; a medição real espera por uma imagem do Tesseract | Equipa AOS |
 | 1.27 | 2026-10-15 | AOS-529: correcções da revisão adversarial (um falso que erra factos, o zero sem barra, a pasta montada legível pelo uid do contentor, a falha do PDF classificada por estágio e pelo pico, `--pull never`, os limites dizem runc e chamada isolada) e duas decisões do dono: a imagem do Tesseract construída no posto (`ocr/Dockerfile`, aceite pelo ID) e o braço do modelo de visão pelo proxy do banco, com as chaves, os tectos e o custo do fornecedor dele. A medição real fica para depois do PR | Equipa AOS |
 | 1.28 | 2026-10-15 | AOS-529 medido: o Tesseract local com 82,5% dos factos (76,2% com acentos), ~0,9 s e custo zero por imagem; o Claude Haiku 5.5 pela OpenRouter com 100% (100%), 2 a 9 s e ~0,0001 USD por imagem; o Gemini 3.8 Flash com 89,2% e ~0,0034 USD, com a resposta cortada (provavelmente o limite de tokens de saída do adaptador, por confirmar). Imagens sintéticas, doze no braço de visão. A medição levou o dono a mudar a D2: OCR por um modelo de visão através de uma tool (ADR-042, proposto; AOS-530 reescrito) | Equipa AOS |
+| 1.29 | 2026-10-18 | +AOS-534 (fase A6, sub-fase A6.1, spike): a parte `video_url` com uma data URL de MP4 atravessa o proxy LiteLLM fixado intacta, nas duas rotas da OpenRouter? O falso do estado regista as partes do `content` (tipo, chaves, classe da data URL, sha256 e tamanho, sem bytes) e um cenário opcional com o proxy real mede-o sem custo, com um MP4 sintético pequeno e outro de 3 a 6 MB. AOS-535 e AOS-536 abertos só com o título, a seguir | Equipa AOS |
