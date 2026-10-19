@@ -21,7 +21,8 @@
       "models": [
         "gpt-4o",
         "gpt-4o-mini",
-        "ocr-visao"
+        "ocr-visao",
+        "video-visao"
       ],
       "regions": [
         "eu",
