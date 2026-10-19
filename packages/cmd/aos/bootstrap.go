@@ -1075,6 +1075,9 @@ type Node struct {
 	// ocr é a tool `ocr_read` composta (AOS-530), para o `/metrics` (`aos_ocr_read_total`). nil
 	// sem a tool no registo — e a família não é publicada. Ver ocr_tool.go.
 	ocr *ligacaoOCR
+	// video é a tool `video_read` composta (AOS-536), para o `/metrics` (`aos_video_read_total`).
+	// nil sem a tool no registo — e a família não é publicada. Ver video_tool.go.
+	video *ligacaoVideo
 
 	// estadoDoProvider conta os turnos ao vivo cuja resposta trouxe estado opaco do provider, pelo
 	// resultado da captura (AOS-514), para o `/metrics`. nil com a captura desligada — a família
@@ -2400,23 +2403,36 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// arranca: o efeito dela é uma chamada a ESSE gateway e não há outro caminho.
 	ocrLigada := ocrDoCliente(cfg.Model)
 	// Uma falha de arranque daqui para baixo fecha a pasta da tool (o os.Root aberto); com o nó
-	// devolvido, quem a fecha é o Node.Close.
+	// devolvido, quem a fecha é o Node.Close. A flag vale para as duas tools de modelo (AOS-536).
 	ocrEntregue := false
 	defer func() {
 		if !ocrEntregue {
 			ocrLigada.fechar()
 		}
 	}()
-	ocrDeclarada, err := ocrDeclaradaNoRegisto()
+	// AOS-536 (parte 2): a tool `video_read`, pelo mesmo caminho.
+	videoLigada := videoDoCliente(cfg.Model)
+	defer func() {
+		if !ocrEntregue {
+			videoLigada.fechar()
+		}
+	}()
+	ocrDeclarada, videoDeclarada, err := toolsDeModeloNoRegisto()
 	if err != nil {
 		return nil, err
 	}
 	if ocrDeclarada && ocrLigada == nil {
 		return nil, ErrOCRSemGateway
 	}
-	var ocrRewriter func(referencemonitor.Call) (referencemonitor.Call, error)
+	if videoDeclarada && videoLigada == nil {
+		return nil, ErrVideoSemGateway
+	}
+	var ocrRewriter, videoRewriter func(referencemonitor.Call) (referencemonitor.Call, error)
 	if ocrLigada != nil {
 		ocrRewriter = newOCREffectRewriter()
+	}
+	if videoLigada != nil {
+		videoRewriter = newEfeitoDeModeloRewriter(videoToolName, videoInputSchema)
 	}
 	// (7-ante) ORÇAMENTO POR-RUN (AOS-008, ligado em AOS-256/AOS-257). nil ⇒ AOS_BUDGET_MAX_TOKENS
 	// não está definida ⇒ o ponto de injecção "budget" da cadeia fica com o stub neutro. É ESTE
@@ -2515,7 +2531,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	runtimeOpts = append(runtimeOpts, agentruntime.WithModelAdmission(modelAdmission.port()))
 
 	sec, err := integration.NewSecuredRuntime(integration.SecuredConfig{
-		EffectRewriter: comporReescritas(newSandboxEffectRewriter(sandboxBindings), ocrRewriter), // AOS-005: args→ExecRequest; AOS-530: args→entrada da ocr_read; nil ⇒ sem reescrita
+		EffectRewriter: comporReescritas(newSandboxEffectRewriter(sandboxBindings), juntarReescritasDeModelo(ocrRewriter, videoRewriter)), // AOS-005: args→ExecRequest; AOS-530/536: args→entrada da ocr_read/video_read; nil ⇒ sem reescrita
 		Model:          model,
 		Recorder:       agentruntime.NewTurnRecorder(es),
 		Catalog:        catalog,
@@ -2576,6 +2592,11 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// run antes de cada chamada e o evento durável do custo depois.
 	ocrLigada.ligarCusto(runBudget, registoDeCustoDeTool(es, producerDoCustoDeTool()), log)
 	if err := registarOCR(sec, ocrLigada, log); err != nil {
+		return nil, err
+	}
+	// (7-quater) A TOOL `video_read` (AOS-536 parte 2), no mesmo molde.
+	videoLigada.ligarCusto(runBudget, registoDeCustoDeTool(es, producerDoCustoDeTool()), log)
+	if err := registarVideo(sec, videoLigada, log); err != nil {
 		return nil, err
 	}
 
@@ -3380,6 +3401,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		formaDaResposta:         formaDoCliente(cfg.Model),     // AOS-507: turnos pela forma da resposta, para o /metrics (nil ⇒ desligada)
 		respostasRecusadas:      rejeicoesDoCliente(cfg.Model), // AOS-509: respostas recusadas por causa, para o /metrics
 		ocr:                     ocrLigada,                     // AOS-530: a tool ocr_read, para o /metrics (nil ⇒ sem a tool)
+		video:                   videoLigada,                   // AOS-536: a tool video_read, para o /metrics (nil ⇒ sem a tool)
 		estadoDoProvider:        estadoDoCliente(cfg.Model),    // AOS-514: estado opaco do provider por resultado, para o /metrics (nil ⇒ desligada)
 		completionVerdict:       completionVerdict,             // AOS-493: modo do veredicto de conclusão dos runs novos
 		stateGates:              stateGates,                    // AOS-218: fonte do StateGate durável por-run para o steer
@@ -3430,6 +3452,7 @@ func (n *Node) Close() error {
 	}
 	// AOS-530: a pasta semeada da `ocr_read`, aberta com os.Root no arranque. Nil-safe sem a tool.
 	n.ocr.fechar()
+	n.video.fechar() // AOS-536: a pasta da `video_read`, idem.
 	return firstErr
 }
 

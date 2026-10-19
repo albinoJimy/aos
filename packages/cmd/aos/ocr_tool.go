@@ -10,7 +10,8 @@ package main
 //     bloco de ligação próprio, `"modelo": {"alias": "..."}`, trusted e exclusivo do bloco
 //     `sandbox`. O modelo que pede a tool escolhe só o nome dela e o `doc_id`; o alias, a
 //     instrução e os limites vêm do registo e deste ficheiro, nunca dos args. Só a tool
-//     `ocr_read` pode ter o bloco: o efeito (ler uma imagem e transcrevê-la) é código, não config.
+//     `ocr_read` e a `video_read` (AOS-536, video_tool.go) podem ter o bloco: o efeito (ler uma
+//     imagem e transcrevê-la) é código, não config.
 //   - A MEDIAÇÃO (§2.1). A tool é uma [referencemonitor.CostingToolFunc] registada no RM do nó
 //     com `RegisterCosting`, pela raiz de composição ([registarOCR], chamado pelo Bootstrap). O RM
 //     decide como para qualquer tool — identidade, `cap:fs.read`, recurso `doc://{doc_id}`,
@@ -38,10 +39,13 @@ package main
 //   - AS FALHAS (§2.8). Causas de vocabulário fechado ([ocrCausas]) no erro da tool e na métrica
 //     `aos_ocr_read_total`; nenhuma leva texto do modelo nem o corpo do provider. Sem nova
 //     tentativa e sem failover.
+//   - O QUE É PARTILHADO com a `video_read` (AOS-536) está em tool_de_modelo.go: a ligação, o
+//     arranque, a chamada ao gateway e as falhas dela; a leitura confinada ([lerConfinado]) fica
+//     aqui e o custo em ocr_custo.go, generalizados ao mínimo.
 //   - O CUSTO (§2.6; peça 3b, em ocr_custo.go). Antes do pedido, a reserva do máximo por chamada no
-//     tecto do run ([ligacaoOCR.reservar]); depois da resposta — aceite ou recusada, pela tool ou
+//     tecto do run ([ligacaoDeModelo.reservar]); depois da resposta — aceite ou recusada, pela tool ou
 //     pelo gateway —, o saldo pelo medido e o evento durável [EventTypeToolModelCost], que soma ao
-//     consumo durável do run ([ligacaoOCR.fecharPago]). O custo volta também pelo canal do
+//     consumo durável do run ([ligacaoDeModelo.fecharPago]). O custo volta também pelo canal do
 //     `RegisterCosting`, ao span `aos.activity`, como o de qualquer tool.
 //
 // OS BYTES DA IMAGEM nunca entram num evento, span, métrica ou log: o resultado leva o digest, o
@@ -60,23 +64,20 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	budget "github.com/aos-ref/control-plane/budget"
-	"github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
-	audit "github.com/aos-ref/platform/audit"
 	modelgateway "github.com/aos-ref/platform/model-gateway"
 	"github.com/aos-ref/platform/model-gateway/policy/allowlist"
 	"github.com/aos-ref/platform/model-gateway/port"
-	"github.com/aos-ref/platform/model-gateway/pricing"
 )
 
 // Constantes da tool. São do código, não do registo: mudá-las muda o que a tool faz.
 const (
-	// ocrToolName é o nome da tool — o único que pode ter o bloco `modelo` no registo.
+	// ocrToolName é o nome da tool — uma das duas que podem ter o bloco `modelo` no registo (a outra
+	// é a `video_read`, AOS-536).
 	ocrToolName = "ocr_read"
 	// ocrResultSchema é a forma do resultado ([resultadoOCR]).
 	ocrResultSchema = "aos-ocr/v1"
@@ -173,19 +174,9 @@ func ocrCausas() []string {
 	}
 }
 
-// falhaOCR é o erro da tool: só a causa.
-type falhaOCR struct{ causa string }
-
-func (f *falhaOCR) Error() string { return "ocr_read: falha=" + f.causa }
-
-// causaDaFalhaOCR devolve a causa de um erro da tool, ou "" se não é uma falha da tool.
-func causaDaFalhaOCR(err error) string {
-	var f *falhaOCR
-	if errors.As(err, &f) {
-		return f.causa
-	}
-	return ""
-}
+// causaDaFalhaOCR devolve a causa de um erro da tool, ou "" se não é uma falha da tool. O erro é o
+// das tools de modelo ([falhaDeTool]), `ocr_read: falha=<causa>`.
+func causaDaFalhaOCR(err error) string { return causaDaFalhaDeTool(err) }
 
 // Erros de ARRANQUE da tool. Fail-closed: com a `ocr_read` no registo de tools, o nó não arranca
 // sem cada uma das condições (ADR-042 §2.3, §2.4; critério «Recusa sem o alias autorizado»).
@@ -212,7 +203,8 @@ type modeloMapping struct {
 
 // validarLigacaoModelo confere, na leitura do registo, uma entrada com o bloco `modelo`. Sem o
 // bloco não confere nada. A forma do recurso e a capability são as da tool, fixas: o que o RM
-// decide e o WORM sela tem de ser o que a tool lê.
+// decide e o WORM sela tem de ser o que a tool lê. Só as tools `ocr_read` e `video_read` (AOS-536)
+// podem ter o bloco, e as duas com a MESMA capability e o MESMO recurso (video_tool.go).
 func validarLigacaoModelo(s modelToolSpec) error {
 	if s.Modelo == nil {
 		return nil
@@ -222,8 +214,8 @@ func validarLigacaoModelo(s modelToolSpec) error {
 	}
 	nome := strings.TrimSpace(s.Name)
 	switch {
-	case nome != ocrToolName:
-		return fmt.Errorf("%w: tool %q tem o bloco `modelo`, que so a tool %q pode ter (o efeito e codigo do no, nao configuracao)", ErrBadModelTools, nome, ocrToolName)
+	case nome != ocrToolName && nome != videoToolName:
+		return fmt.Errorf("%w: tool %q tem o bloco `modelo`, que so as tools %q e %q podem ter (o efeito e codigo do no, nao configuracao)", ErrBadModelTools, nome, ocrToolName, videoToolName)
 	case strings.TrimSpace(s.Modelo.Alias) == "":
 		return fmt.Errorf("%w: tool %q tem o bloco `modelo` sem `alias`", ErrBadModelTools, nome)
 	case strings.TrimSpace(s.Capability) != ocrCapability:
@@ -234,23 +226,28 @@ func validarLigacaoModelo(s modelToolSpec) error {
 	return nil
 }
 
-// specDoOCR devolve a entrada do registo de tools com o bloco `modelo`, ou nil sem ela.
-func specDoOCR(specs []modelToolSpec) *modelToolSpec {
+// specDoOCR devolve a entrada do registo de tools `ocr_read` com o bloco `modelo`, ou nil sem ela.
+func specDoOCR(specs []modelToolSpec) *modelToolSpec { return specDaToolDeModelo(specs, ocrToolName) }
+
+// specDaToolDeModelo devolve a entrada do registo de tools com o nome dado e o bloco `modelo`, ou
+// nil sem ela. Os nomes são únicos no registo ([readModelToolSpecs] recusa os repetidos).
+func specDaToolDeModelo(specs []modelToolSpec, nome string) *modelToolSpec {
 	for i := range specs {
-		if specs[i].Modelo != nil {
+		if specs[i].Modelo != nil && strings.TrimSpace(specs[i].Name) == nome {
 			return &specs[i]
 		}
 	}
 	return nil
 }
 
-// ocrDeclaradaNoRegisto diz se o registo de tools do ambiente declara a tool com o bloco `modelo`.
-func ocrDeclaradaNoRegisto() (bool, error) {
+// toolsDeModeloNoRegisto diz se o registo de tools do ambiente declara a `ocr_read` e a
+// `video_read` com o bloco `modelo`.
+func toolsDeModeloNoRegisto() (ocr, video bool, err error) {
 	specs, err := readModelToolSpecs()
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
-	return specDoOCR(specs) != nil, nil
+	return specDoOCR(specs) != nil, specDaToolDeModelo(specs, videoToolName) != nil, nil
 }
 
 // gatewayDoOCR é o que a tool usa do gateway: uma chamada de chat. É o [*modelgateway.Gateway]
@@ -259,95 +256,38 @@ type gatewayDoOCR interface {
 	Chat(context.Context, port.ChatRequest) (port.ChatResponse, error)
 }
 
-// ligacaoOCR é a tool composta: o alias, a fronteira de soberania, o perfil assinado, a pasta e o
-// gateway do nó.
+// ligacaoOCR é a tool composta: a parte comum das tools de modelo ([ligacaoDeModelo]: o alias, a
+// fronteira de soberania, o perfil assinado, a pasta, o gateway do nó e o custo), com as constantes
+// da `ocr_read`. A reserva por chamada é sempre o máximo ([reservaMaxDoOCR]).
 type ligacaoOCR struct {
-	alias, region, board string
-	// perfilDigest é o digest do perfil do registo assinado de uso `tool` do alias.
-	perfilDigest string
-	// raiz é a pasta semeada, aberta com [os.Root] no arranque ([raizOS]); pasta é o caminho, para
-	// o arranque. raizAberta é o [os.Root] que [ligacaoOCR.fechar] fecha.
-	raiz       raizDoOCR
-	raizAberta *os.Root
-	pasta      string
-	// gw é o gateway do nó — o mesmo dos turnos. Ligado na composição do gateway.
-	gw gatewayDoOCR
-	// govAudit é o audit de governação desse gateway: onde a chamada da tool fica selada (o selo
-	// por chamada da allowlist, com o principal, o run e o passo). Ligado com o gateway.
-	govAudit audit.Store
-	// prazo é o prazo da chamada ao gateway; [ocrPrazo] na composição.
-	prazo time.Duration
-	// digestDaInstrucao é o digest de [ocrInstrucaoSistema] + [ocrInstrucaoPedido].
-	digestDaInstrucao string
-	// contagem é a métrica `aos_ocr_read_total`, por resultado.
-	contagem map[string]*atomic.Int64
-	// reservaMax é o máximo que uma chamada pode custar ([reservaMaxDoOCR]), composto no arranque.
-	reservaMax budget.Amount
-	// orcamento é o orçamento por-run do nó (nil ⇒ sem orçamento composto, sem reserva) e
-	// registarCusto a escrita durável do custo (nil ⇒ sem Event Store). Ligados no Bootstrap
-	// ([ligacaoOCR.ligarCusto]); logf é o log do nó para as degradações declaradas.
-	orcamento     *integration.RunBudget
-	registarCusto func(context.Context, string, custoDeToolPayload) error
-	logf          func(string, ...any)
+	ligacaoDeModelo
+}
+
+// errosDoOCR são os erros de arranque da `ocr_read`.
+var errosDoOCR = errosDeArranque{
+	foraDaAllowlist: ErrOCRAliasForaDaAllowlist, semRegisto: ErrOCRSemRegistoTool, semPreco: ErrOCRSemPreco, semPasta: ErrOCRSemPasta,
 }
 
 // comporLigacaoOCR confere as condições de ARRANQUE da tool e compõe a ligação, sem o gateway
 // (que só existe depois). Corre na fronteira de ambiente ([parseModelFromEnv]), com o que lá já
 // foi lido: a allowlist em vigor (externa, ou nil ⇒ a embebida), os perfis assinados, a fronteira
 // de soberania e se a contabilidade de custo está composta. A ordem é a das conferências sem
-// efeito primeiro; a pasta abre-se por último.
+// efeito primeiro ([conferirArranqueDeModelo]: a allowlist, um registo de uso `tool` DE IMAGEM, o
+// preço); a pasta abre-se por último.
 func comporLigacaoOCR(spec *modelToolSpec, assinados *perfisAssinados, externa *allowlist.Policy, region, board string, comCusto bool) (*ligacaoOCR, error) {
-	alias := strings.TrimSpace(spec.Modelo.Alias)
-	// 1. O alias na allowlist EM VIGOR — a mesma que o gateway vai aplicar a cada pedido.
-	emVigor := externa
-	if emVigor == nil {
-		var err error
-		if emVigor, err = allowlist.LoadPolicy(); err != nil {
-			return nil, fmt.Errorf("%w: %w", ErrBadModelAllowlist, err)
-		}
+	alias, perfilDigest, tabela, err := conferirArranqueDeModelo(spec, modelgateway.CapabilityImage, assinados, externa, region, board, comCusto, errosDoOCR)
+	if err != nil {
+		return nil, err
 	}
-	if emVigor.Evaluate(allowlist.Input{Board: board, Model: alias, Region: region}) != allowlist.EffectAllow {
-		return nil, fmt.Errorf("%w: alias %q, board %q, regiao %q", ErrOCRAliasForaDaAllowlist, alias, board, region)
-	}
-	// 2. Um registo assinado de uso `tool` DE IMAGEM para o alias. Um registo de uso `tool` de vídeo
-	// (AOS-536) cita uma medida de vídeo, não de OCR: não liga a `ocr_read`.
-	perfilDigest := ""
-	if assinados != nil {
-		for _, e := range assinados.entradas {
-			if e.ForTool() && e.Media == modelgateway.CapabilityImage && e.Profile.Requested == alias {
-				perfilDigest = e.ProfileDigest
-				break
-			}
-		}
-	}
-	if perfilDigest == "" {
-		return nil, fmt.Errorf("%w: alias %q", ErrOCRSemRegistoTool, alias)
-	}
-	// 3. Com a contabilidade composta, o preço do par (alias, região) — e é dele que sai o custo
-	// máximo por chamada que a tool reserva no tecto do run (peça 3b).
-	var tabela *pricing.Table
-	if comCusto {
-		t, postura, err := resolveModelPricing(alias, region)
-		if err != nil {
-			return nil, err
-		}
-		if !postura.Armed {
-			return nil, fmt.Errorf("%w: alias %q, regiao %q", ErrOCRSemPreco, alias, region)
-		}
-		tabela = t
-	}
+	// O custo máximo por chamada que a tool reserva no tecto do run (peça 3b).
 	reservaMax, err := reservaMaxDoOCR(tabela, alias, region)
 	if err != nil {
 		return nil, err
 	}
-	// 4. A pasta semeada, aberta e confinada.
-	pasta := strings.TrimSpace(os.Getenv("AOS_OCR_SEED_DIR")) // o literal: o gate da superficie de ambiente le-o daqui
-	if pasta == "" {
-		return nil, ErrOCRSemPasta
-	}
-	raiz, err := os.OpenRoot(pasta)
+	// A pasta semeada, aberta e confinada.
+	raiz, pasta, err := abrirPastaSemeada(ErrOCRSemPasta)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrOCRSemPasta, err)
+		return nil, err
 	}
 	l := novaLigacaoOCR(alias, region, board, perfilDigest, pasta, raiz)
 	l.reservaMax = reservaMax
@@ -356,46 +296,25 @@ func comporLigacaoOCR(spec *modelToolSpec, assinados *perfisAssinados, externa *
 
 // novaLigacaoOCR monta a ligação com as constantes da tool, sem o gateway.
 func novaLigacaoOCR(alias, region, board, perfilDigest, pasta string, raiz *os.Root) *ligacaoOCR {
-	l := &ligacaoOCR{
-		alias: alias, region: region, board: board, perfilDigest: perfilDigest,
-		raiz: raizOS{raiz}, raizAberta: raiz, pasta: pasta, prazo: ocrPrazo,
-		digestDaInstrucao: ocrDigestDaInstrucao(ocrInstrucaoSistema, ocrInstrucaoPedido),
-		contagem:          map[string]*atomic.Int64{},
-		reservaMax:        budget.Amount{Tokens: ocrTokensDeEntradaMax + ocrMaxTokens},
-		logf:              func(string, ...any) {},
-	}
-	for _, r := range ocrCausas() {
-		l.contagem[r] = new(atomic.Int64)
-	}
+	l := &ligacaoOCR{novaLigacaoDeModelo(ocrToolName, "ocr_read (AOS-530)", alias, region, board, perfilDigest, pasta, raiz,
+		ocrPrazo, ocrDigestDaInstrucao(ocrInstrucaoSistema, ocrInstrucaoPedido), ocrCausas())}
+	l.reservaMax = budget.Amount{Tokens: ocrTokensDeEntradaMax + ocrMaxTokens}
 	return l
 }
 
 // fechar liberta a pasta. Idempotente e nil-safe.
 func (l *ligacaoOCR) fechar() {
-	if l != nil && l.raizAberta != nil {
-		_ = l.raizAberta.Close()
+	if l != nil {
+		l.ligacaoDeModelo.fechar()
 	}
 }
 
-// contar soma um ao resultado dado. Um resultado fora do vocabulário não é contado.
-func (l *ligacaoOCR) contar(resultado string) {
-	if n := l.contagem[resultado]; n != nil {
-		n.Add(1)
-	}
-}
-
-// lido devolve o total de um resultado.
+// lido devolve o total de um resultado. Nil-safe.
 func (l *ligacaoOCR) lido(resultado string) int64 {
-	if l == nil || l.contagem[resultado] == nil {
+	if l == nil {
 		return 0
 	}
-	return l.contagem[resultado].Load()
-}
-
-// falhar conta a causa e devolve o erro da tool, com o custo medido (zero antes do provider).
-func (l *ligacaoOCR) falhar(causa string, custo int64) ([]byte, int64, error) {
-	l.contar(causa)
-	return nil, custo, &falhaOCR{causa: causa}
+	return l.ligacaoDeModelo.lido(resultado)
 }
 
 // entradaOCR é o input da tool DEPOIS da reescrita do efeito: o `doc_id` que o modelo escolheu,
@@ -425,30 +344,36 @@ type resultadoOCR struct {
 	InstrucaoDigest string `json:"instrucao_digest"`
 }
 
-// newOCREffectRewriter devolve a reescrita do efeito da `ocr_read`: os args do modelo — SÓ o
-// `doc_id` — passam a [entradaOCR], com o RunID e o StepID REAIS da Call (que só existem aqui).
-// Como em [newSandboxEffectRewriter], não toca na decisão (principal, capability, recurso,
-// taint); um erro vira Deny fail-closed no loop. Uma Call de outra tool passa inalterada.
+// newOCREffectRewriter devolve a reescrita do efeito da `ocr_read` ([newEfeitoDeModeloRewriter]).
 func newOCREffectRewriter() func(referencemonitor.Call) (referencemonitor.Call, error) {
+	return newEfeitoDeModeloRewriter(ocrToolName, ocrInputSchema)
+}
+
+// newEfeitoDeModeloRewriter devolve a reescrita do efeito de uma tool de modelo: os args do modelo
+// — SÓ o `doc_id` — passam a [entradaOCR] com o schema da tool, com o RunID e o StepID REAIS da
+// Call (que só existem aqui). Como em [newSandboxEffectRewriter], não toca na decisão (principal,
+// capability, recurso, taint); um erro vira Deny fail-closed no loop. Uma Call de outra tool passa
+// inalterada.
+func newEfeitoDeModeloRewriter(tool, schema string) func(referencemonitor.Call) (referencemonitor.Call, error) {
 	return func(call referencemonitor.Call) (referencemonitor.Call, error) {
-		if call.ToolID != ocrToolName {
+		if call.ToolID != tool {
 			return call, nil
 		}
 		var args map[string]json.RawMessage
 		if err := json.Unmarshal(call.Input, &args); err != nil {
-			return referencemonitor.Call{}, errors.New("ocr_read: argumentos ilegiveis")
+			return referencemonitor.Call{}, errors.New(tool + ": argumentos ilegiveis")
 		}
 		if len(args) != 1 {
-			return referencemonitor.Call{}, fmt.Errorf("ocr_read: o unico argumento e %q", ocrDocArg)
+			return referencemonitor.Call{}, fmt.Errorf("%s: o unico argumento e %q", tool, ocrDocArg)
 		}
 		var doc string
 		if err := json.Unmarshal(args[ocrDocArg], &doc); err != nil || doc == "" {
-			return referencemonitor.Call{}, fmt.Errorf("ocr_read: %q tem de ser texto nao vazio", ocrDocArg)
+			return referencemonitor.Call{}, fmt.Errorf("%s: %q tem de ser texto nao vazio", tool, ocrDocArg)
 		}
 		if call.RunID == "" || call.StepID == "" {
-			return referencemonitor.Call{}, errors.New("ocr_read: tool call sem run ou passo")
+			return referencemonitor.Call{}, errors.New(tool + ": tool call sem run ou passo")
 		}
-		raw, err := json.Marshal(entradaOCR{Schema: ocrInputSchema, RunID: call.RunID, StepID: call.StepID, DocID: doc})
+		raw, err := json.Marshal(entradaOCR{Schema: schema, RunID: call.RunID, StepID: call.StepID, DocID: doc})
 		if err != nil {
 			return referencemonitor.Call{}, err
 		}
@@ -457,20 +382,47 @@ func newOCREffectRewriter() func(referencemonitor.Call) (referencemonitor.Call, 
 	}
 }
 
-// comporReescritas junta a reescrita da sandbox e a da `ocr_read`. As duas tocam em tools
-// diferentes (os blocos são exclusivos): a da `ocr_read` só reescreve a `ocr_read`, e a da
-// sandbox só as tools com binding. Qualquer uma nil ⇒ a outra; as duas nil ⇒ nil (sem reescrita,
-// comportamento byte-idêntico).
-func comporReescritas(sandboxRw, ocrRw func(referencemonitor.Call) (referencemonitor.Call, error)) func(referencemonitor.Call) (referencemonitor.Call, error) {
-	switch {
-	case ocrRw == nil:
-		return sandboxRw
-	case sandboxRw == nil:
-		return ocrRw
+// juntarReescritasDeModelo junta as reescritas das tools de modelo compostas (a `ocr_read` e a
+// `video_read`): cada uma só reescreve a sua tool e deixa as outras inalteradas, pelo que se aplicam
+// em sequência. As nil saem; nenhuma ⇒ nil.
+func juntarReescritasDeModelo(rws ...func(referencemonitor.Call) (referencemonitor.Call, error)) func(referencemonitor.Call) (referencemonitor.Call, error) {
+	var as []func(referencemonitor.Call) (referencemonitor.Call, error)
+	for _, rw := range rws {
+		if rw != nil {
+			as = append(as, rw)
+		}
+	}
+	switch len(as) {
+	case 0:
+		return nil
+	case 1:
+		return as[0]
 	}
 	return func(call referencemonitor.Call) (referencemonitor.Call, error) {
-		if call.ToolID == ocrToolName {
-			return ocrRw(call)
+		for _, rw := range as {
+			var err error
+			if call, err = rw(call); err != nil {
+				return referencemonitor.Call{}, err
+			}
+		}
+		return call, nil
+	}
+}
+
+// comporReescritas junta a reescrita da sandbox e a das tools de modelo (a `ocr_read` e a
+// `video_read`, [juntarReescritasDeModelo]). Tocam em tools diferentes (os blocos são exclusivos):
+// a das tools de modelo só reescreve essas, e a da sandbox só as tools com binding. Qualquer uma nil
+// ⇒ a outra; as duas nil ⇒ nil (sem reescrita, comportamento byte-idêntico).
+func comporReescritas(sandboxRw, modeloRw func(referencemonitor.Call) (referencemonitor.Call, error)) func(referencemonitor.Call) (referencemonitor.Call, error) {
+	switch {
+	case modeloRw == nil:
+		return sandboxRw
+	case sandboxRw == nil:
+		return modeloRw
+	}
+	return func(call referencemonitor.Call) (referencemonitor.Call, error) {
+		if call.ToolID == ocrToolName || call.ToolID == videoToolName {
+			return modeloRw(call)
 		}
 		return sandboxRw(call)
 	}
@@ -528,13 +480,14 @@ func causaDoErroDeFicheiro(err error) string {
 	}
 }
 
-// conferirFicheiro é a decisão sobre um FileInfo: regular, até ao tecto, e uma só ligação física.
-func conferirFicheiro(info fs.FileInfo) string {
+// conferirFicheiro é a decisão sobre um FileInfo: regular, até ao tecto de bytes da media, e uma só
+// ligação física.
+func conferirFicheiro(info fs.FileInfo, maximo int64) string {
 	switch {
 	case !info.Mode().IsRegular():
 		// Inclui as ligações simbólicas: no nível de topo não se seguem, nem para dentro da raiz.
 		return ocrCausaNaoRegular
-	case info.Size() > port.MaxImageBytes:
+	case info.Size() > maximo:
 		return ocrCausaGrande
 	case ligacoesMultiplas(info):
 		return ocrCausaVariasLigacoes
@@ -544,60 +497,10 @@ func conferirFicheiro(info fs.FileInfo) string {
 
 // lerImagem lê a imagem `doc` da pasta, com os limites do ADR-042 §2.4, e devolve a parte de
 // imagem e o formato, ou a causa da recusa. Nada aqui chama o modelo.
-//
-// A DECISÃO FINAL É SOBRE O DESCRITOR. O Lstat do nome é um filtro barato (recusa cedo uma ligação
-// simbólica, uma pasta, um ficheiro grande); mas entre ele e a abertura o nome pode ser trocado. Por
-// isso, depois de abrir, o Stat do DESCRITOR volta a conferir tudo — regular, tamanho, ligações — e
-// a leitura é limitada ao tecto. O que se lê é o que se conferiu.
 func (l *ligacaoOCR) lerImagem(doc string) (port.ImagePart, string, string) {
-	// SÓ O NÍVEL DE TOPO. Um separador, `..`, um caminho absoluto, uma unidade ou um `:` nunca
-	// nomeiam um ficheiro do topo da pasta: recusados antes de tocar no disco. O [os.Root] recusa
-	// de novo o que sair da raiz.
-	if doc == "." || doc == ".." || strings.ContainsAny(doc, `/\:`+"\x00") || filepath.IsAbs(doc) || filepath.VolumeName(doc) != "" {
-		return port.ImagePart{}, "", ocrCausaForaDaRaiz
-	}
-	// UM NOME QUE O SISTEMA NORMALIZA lê outro ficheiro que o selado: no Windows, `fatura.png.` e
-	// `fatura.png ` abrem `fatura.png`. Recusados em todos os sistemas (nenhum nome legítimo da pasta
-	// acaba assim). A diferença de maiúsculas num sistema que não as distingue fica declarada no
-	// README do nó.
-	if len(doc) > ocrMaxNome {
-		return port.ImagePart{}, "", ocrCausaEntrada
-	}
-	if strings.HasSuffix(doc, ".") || strings.HasSuffix(doc, " ") {
-		return port.ImagePart{}, "", ocrCausaNomeNaoCanonico
-	}
-	info, err := l.raiz.Lstat(doc)
-	if err != nil {
-		return port.ImagePart{}, "", causaDoErroDeFicheiro(err)
-	}
-	if causa := conferirFicheiro(info); causa != "" {
+	dados, causa := lerConfinado(l.raiz, doc, port.MaxImageBytes)
+	if causa != "" {
 		return port.ImagePart{}, "", causa
-	}
-	f, err := l.raiz.abrir(doc)
-	if err != nil {
-		return port.ImagePart{}, "", causaDoErroDeFicheiro(err)
-	}
-	defer f.Close()
-	noDescritor, err := f.Stat()
-	if err != nil {
-		return port.ImagePart{}, "", ocrCausaIlegivel
-	}
-	if causa := conferirFicheiro(noDescritor); causa != "" {
-		return port.ImagePart{}, "", causa
-	}
-	// O MESMO FICHEIRO que o Lstat viu. O [os.Root] segue ligações simbólicas que fiquem dentro da
-	// raiz, e o O_NOFOLLOW não o impede: trocar o nome por uma ligação para OUTRO ficheiro da raiz
-	// entre o Lstat e a abertura faria transcrever outra imagem que não a selada.
-	if !l.raiz.mesmoFicheiro(info, noDescritor) {
-		return port.ImagePart{}, "", ocrCausaTrocado
-	}
-	// O tamanho volta a ser limitado na LEITURA: o ficheiro pode crescer depois do Stat.
-	dados, err := io.ReadAll(io.LimitReader(f, port.MaxImageBytes+1))
-	if err != nil {
-		return port.ImagePart{}, "", ocrCausaIlegivel
-	}
-	if len(dados) > port.MaxImageBytes {
-		return port.ImagePart{}, "", ocrCausaGrande
 	}
 	// O FORMATO PELOS PRIMEIROS BYTES, nunca pela extensão. PDF e tudo o resto ficam de fora.
 	for _, c := range []struct{ tipo, formato string }{{port.ImageMediaPNG, "png"}, {port.ImageMediaJPEG, "jpeg"}} {
@@ -607,6 +510,67 @@ func (l *ligacaoOCR) lerImagem(doc string) (port.ImagePart, string, string) {
 		}
 	}
 	return port.ImagePart{}, "", ocrCausaFormato
+}
+
+// lerConfinado lê os bytes do ficheiro `doc` da pasta semeada, até `maximo` bytes, com as regras
+// do ADR-042 §2.4 — as mesmas para as duas tools de modelo —, ou devolve a causa da recusa. O
+// formato é da tool que chama. Nada aqui chama o modelo.
+//
+// A DECISÃO FINAL É SOBRE O DESCRITOR. O Lstat do nome é um filtro barato (recusa cedo uma ligação
+// simbólica, uma pasta, um ficheiro grande); mas entre ele e a abertura o nome pode ser trocado. Por
+// isso, depois de abrir, o Stat do DESCRITOR volta a conferir tudo — regular, tamanho, ligações — e
+// a leitura é limitada ao tecto. O que se lê é o que se conferiu.
+func lerConfinado(raiz raizDoOCR, doc string, maximo int) ([]byte, string) {
+	// SÓ O NÍVEL DE TOPO. Um separador, `..`, um caminho absoluto, uma unidade ou um `:` nunca
+	// nomeiam um ficheiro do topo da pasta: recusados antes de tocar no disco. O [os.Root] recusa
+	// de novo o que sair da raiz.
+	if doc == "." || doc == ".." || strings.ContainsAny(doc, `/\:`+"\x00") || filepath.IsAbs(doc) || filepath.VolumeName(doc) != "" {
+		return nil, ocrCausaForaDaRaiz
+	}
+	// UM NOME QUE O SISTEMA NORMALIZA lê outro ficheiro que o selado: no Windows, `fatura.png.` e
+	// `fatura.png ` abrem `fatura.png`. Recusados em todos os sistemas (nenhum nome legítimo da pasta
+	// acaba assim). A diferença de maiúsculas num sistema que não as distingue fica declarada no
+	// README do nó.
+	if len(doc) > ocrMaxNome {
+		return nil, ocrCausaEntrada
+	}
+	if strings.HasSuffix(doc, ".") || strings.HasSuffix(doc, " ") {
+		return nil, ocrCausaNomeNaoCanonico
+	}
+	info, err := raiz.Lstat(doc)
+	if err != nil {
+		return nil, causaDoErroDeFicheiro(err)
+	}
+	if causa := conferirFicheiro(info, int64(maximo)); causa != "" {
+		return nil, causa
+	}
+	f, err := raiz.abrir(doc)
+	if err != nil {
+		return nil, causaDoErroDeFicheiro(err)
+	}
+	defer f.Close()
+	noDescritor, err := f.Stat()
+	if err != nil {
+		return nil, ocrCausaIlegivel
+	}
+	if causa := conferirFicheiro(noDescritor, int64(maximo)); causa != "" {
+		return nil, causa
+	}
+	// O MESMO FICHEIRO que o Lstat viu. O [os.Root] segue ligações simbólicas que fiquem dentro da
+	// raiz, e o O_NOFOLLOW não o impede: trocar o nome por uma ligação para OUTRO ficheiro da raiz
+	// entre o Lstat e a abertura faria ler outro ficheiro que não o selado.
+	if !raiz.mesmoFicheiro(info, noDescritor) {
+		return nil, ocrCausaTrocado
+	}
+	// O tamanho volta a ser limitado na LEITURA: o ficheiro pode crescer depois do Stat.
+	dados, err := io.ReadAll(io.LimitReader(f, int64(maximo)+1))
+	if err != nil {
+		return nil, ocrCausaIlegivel
+	}
+	if len(dados) > maximo {
+		return nil, ocrCausaGrande
+	}
+	return dados, ""
 }
 
 // executar é a [referencemonitor.CostingToolFunc] da `ocr_read`. Só o despacho do RM a chama,
@@ -627,87 +591,26 @@ func (l *ligacaoOCR) executar(ctx context.Context, input []byte) ([]byte, int64,
 	}
 	// A RESERVA (ADR-042 §2.6): com a imagem lida e antes do pedido, o máximo por chamada no tecto
 	// do run. Não cabe ⇒ negada sem chamar o modelo.
-	reserva, causa := l.reservar(ctx, in.RunID)
+	reserva, causa := l.reservar(ctx, in.RunID, l.reservaMax)
 	if causa != "" {
 		return l.falhar(causa, 0)
 	}
-	// A reserva que não for saldada volta ao run: é o caminho de uma chamada sem resposta (erro antes
-	// do provider, prazo, cancelamento) e de um panic dentro do gateway. Depois de saldada, libertar
-	// é um no-op (a reserva resolve-se uma vez).
-	defer l.libertar(ctx, reserva, in)
-	cctx, cancel := context.WithTimeout(ctx, l.prazo)
-	defer cancel()
-	resp, err := l.gw.Chat(cctx, port.ChatRequest{
-		Model: l.alias,
-		Messages: []port.Message{
+	return l.chamar(ctx, in, credencial, reserva, tectoDaChamada{entrada: ocrTokensDeEntradaMax, saida: ocrMaxTokens},
+		[]port.Message{
 			{Role: port.RoleSystem, Content: ocrInstrucaoSistema},
 			{Role: port.RoleUser, Content: ocrInstrucaoPedido, Images: []port.ImagePart{parte}},
-		},
-		MaxTokens:  ocrMaxTokens,
-		Principal:  credencial,
-		Region:     l.region,
-		Board:      l.board,
-		RunID:      in.RunID,
-		StepID:     in.StepID,
-		OriginTool: ocrToolName,
-	})
-	if err != nil {
-		switch {
-		case errors.Is(err, modelgateway.ErrRouteVariance):
-			causa = ocrCausaModeloServido
-		case ctx.Err() != nil:
-			causa = ocrCausaCancelado
-		case cctx.Err() != nil || errors.Is(err, context.DeadlineExceeded):
-			causa = ocrCausaTempo
-		default:
-			causa = ocrCausaGateway
-		}
-		// Uma recusa DEPOIS de o provider responder (o modelo servido diferente em `enforce`, uma
-		// resposta sem usage ou ilegível) custou dinheiro: o gateway devolve o custo — ou a marca de
-		// não medido — com o erro ([modelgateway.PaidRejectionError]), e grava-se. Sem resposta não há
-		// custo conhecido e a reserva volta ao run (o `defer` acima).
-		if usage, servido, pago := modelgateway.PaidRejectionOf(err); pago {
-			return l.falhar(causa, l.fecharPago(ctx, reserva, in, usage, servido, causa))
-		}
-		return l.falhar(causa, 0)
-	}
-	// O custo medido pelo gateway (tabela de preços; zero sem contabilidade composta). Volta pelo
-	// canal do RegisterCosting e grava-se no evento durável — também quando a tool recusa a
-	// resposta: o provider respondeu.
-	servido := resp.Route.Model
-	if servido == "" {
-		// Sem a governação da rota o gateway não guarda o cabeçalho do proxy: fica o modelo que o
-		// corpo da resposta declara.
-		servido = port.SanitizeServedModel(resp.Model)
-	}
-	out, resultado := l.interpretar(resp, parte, formato, servido)
-	custo := l.fecharPago(ctx, reserva, in, resp.Usage, servido, resultado)
-	if resultado != ocrResultadoTranscrito {
-		return l.falhar(resultado, custo)
-	}
-	l.contar(ocrResultadoTranscrito)
-	return out, custo, nil
+		}, ocrMaxTokens, ocrResultadoTranscrito,
+		func(resp port.ChatResponse, servido string) ([]byte, string) {
+			return l.interpretar(resp, parte, formato, servido)
+		})
 }
 
 // interpretar decide o que uma resposta do modelo é: o resultado `aos-ocr/v1` e `transcrito`, ou a
-// causa da recusa.
+// causa da recusa ([textoDaResposta]: vazia, cortada, com uma tool call).
 func (l *ligacaoOCR) interpretar(resp port.ChatResponse, parte port.ImagePart, formato, servido string) ([]byte, string) {
-	if len(resp.Choices) == 0 {
-		return nil, ocrCausaVazio
-	}
-	escolha := resp.Choices[0]
-	if len(escolha.Message.ToolCalls) > 0 {
-		// O modelo de visão não tem tools oferecidas; uma tool call é uma resposta que não é a de
-		// uma transcrição.
-		return nil, ocrCausaRespostaForma
-	}
-	if escolha.FinishReason == port.FinishLength {
-		// Cortado não é completo (ADR-037; a lição do Gemini na medição).
-		return nil, ocrCausaCortado
-	}
-	texto := escolha.Message.Content
-	if strings.TrimSpace(texto) == "" {
-		return nil, ocrCausaVazio
+	texto, causa := textoDaResposta(resp, ocrCausaCortado, ocrCausaVazio)
+	if causa != "" {
+		return nil, causa
 	}
 	out, err := json.Marshal(resultadoOCR{
 		Schema: ocrResultSchema, Motor: ocrMotorModelo, Texto: texto,
@@ -748,19 +651,8 @@ func (l *ligacaoOCR) linhaDoArranque() string {
 
 // posturaDoCusto declara, no arranque, o que acontece ao custo de cada chamada (ADR-042 §2.6).
 func (l *ligacaoOCR) posturaDoCusto() string {
-	evento := "o custo medido pelo gateway grava-se no evento duravel " + EventTypeToolModelCost + " do run, por (run_id, step_id), tambem quando a resposta e recusada, e soma ao consumo duravel do run ao lado dos turnos"
-	if l.registarCusto == nil {
-		evento = "SEM Event Store composto o custo medido NAO se grava no run (vai so ao span aos.activity)"
-	}
-	if l.orcamento == nil {
-		return evento + "; SEM orcamento por-run composto (AOS_BUDGET_MAX_TOKENS por definir) NAO ha reserva no tecto, como para os turnos"
-	}
-	dolares := "a dimensao em dolares e medida e nao nega (AOS_BUDGET_MAX_COST_MICRO_USD por definir)"
-	if tecto, ok := l.orcamento.MaxCostMicroUSDPerRun(); ok {
-		dolares = fmt.Sprintf("tecto em dolares %d micro-USD por run", tecto)
-	}
-	return fmt.Sprintf("%s; antes de cada chamada reserva no tecto do run o maximo por chamada — %d tokens (%d de entrada + %d de saida) e %d micro-USD pela tabela de precos —, e sem folga a tool e negada com %s sem pedido ao provider (%s)",
-		evento, l.reservaMax.Tokens, ocrTokensDeEntradaMax, ocrMaxTokens, l.reservaMax.CostMicroUSD, ocrCausaTecto, dolares)
+	return l.ligacaoDeModelo.posturaDoCusto(fmt.Sprintf("o maximo por chamada — %d tokens (%d de entrada + %d de saida) e %d micro-USD pela tabela de precos —",
+		l.reservaMax.Tokens, ocrTokensDeEntradaMax, ocrMaxTokens, l.reservaMax.CostMicroUSD))
 }
 
 // ocrDoCliente devolve a ligação da `ocr_read` do cliente de modelo dado, ou nil.

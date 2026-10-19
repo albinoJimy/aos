@@ -24,7 +24,7 @@ package main
 //
 // Uma chamada SEM RESPOSTA (erro antes do provider, prazo, cancelamento, panic no gateway) liberta
 // a reserva. Uma resposta NÃO MEDIDA (sem `usage`, custo não calculável, corpo que o adaptador não
-// interpreta) cobra a reserva inteira — ver [ligacaoOCR.fecharPago].
+// interpreta) cobra a reserva inteira — ver [ligacaoDeModelo.fecharPago].
 //
 // # O evento durável
 //
@@ -116,7 +116,7 @@ type custoDeToolPayload struct {
 	OutputTokens int64 `json:"output_tokens"`
 	CostMicroUSD int64 `json:"cost_micro_usd"`
 	// UsageAusente marca uma resposta paga e NÃO medida (sem usage, custo não calculável, corpo
-	// ilegível): os números acima não são uma medição, são o que se cobrou ([ligacaoOCR.fecharPago]).
+	// ilegível): os números acima não são uma medição, são o que se cobrou ([ligacaoDeModelo.fecharPago]).
 	UsageAusente bool `json:"usage_ausente,omitempty"`
 }
 
@@ -168,9 +168,13 @@ func reservaMaxDoOCR(tabela *pricing.Table, alias, region string) (budget.Amount
 // ligarCusto liga a ligação ao orçamento por-run do nó e à escrita durável do custo. Corre no
 // Bootstrap, depois de o Event Store e o orçamento existirem (fase 2, como o AOS-287). Nil-safe.
 func (l *ligacaoOCR) ligarCusto(rb *integration.RunBudget, registar func(context.Context, string, custoDeToolPayload) error, logf func(string, ...any)) {
-	if l == nil {
-		return
+	if l != nil {
+		l.ligacaoDeModelo.ligarCusto(rb, registar, logf)
 	}
+}
+
+// ligarCusto é a parte comum de ligar o custo de uma tool de modelo.
+func (l *ligacaoDeModelo) ligarCusto(rb *integration.RunBudget, registar func(context.Context, string, custoDeToolPayload) error, logf func(string, ...any)) {
 	l.orcamento = rb
 	l.registarCusto = registar
 	if logf != nil {
@@ -180,11 +184,11 @@ func (l *ligacaoOCR) ligarCusto(rb *integration.RunBudget, registar func(context
 
 // reservar reserva o máximo da chamada no tecto do run. Devolve a reserva (nil sem orçamento
 // composto) ou a causa da recusa.
-func (l *ligacaoOCR) reservar(ctx context.Context, runID string) (*integration.ReservaDeEfeito, string) {
+func (l *ligacaoDeModelo) reservar(ctx context.Context, runID string, maximo budget.Amount) (*integration.ReservaDeEfeito, string) {
 	if l.orcamento == nil {
 		return nil, ""
 	}
-	r, err := l.orcamento.ReservarEfeitoDeTool(ctx, runID, l.reservaMax)
+	r, err := l.orcamento.ReservarEfeitoDeTool(ctx, runID, maximo)
 	switch {
 	case err == nil:
 		return r, ""
@@ -204,24 +208,24 @@ func (l *ligacaoOCR) reservar(ctx context.Context, runID string) (*integration.R
 // ou a resposta não se interpretou —, cobra-se a RESERVA INTEIRA, o molde da admissão do turno
 // (`integration/model_admission.go`, «usage a zero ⇒ fica a provisão cobrada»): saldar por zero
 // faria uma chamada paga não descer o tecto. O evento leva então `usage_ausente` e os valores
-// cobrados (os tectos de tokens da tool e o custo reservado), para que o consumo durável os some.
-// Sem orçamento composto não houve reserva: o evento sai com `usage_ausente` e zeros.
-func (l *ligacaoOCR) fecharPago(ctx context.Context, reserva *integration.ReservaDeEfeito, in entradaOCR, usage port.Usage, servido, resultado string) int64 {
+// cobrados (os tectos de tokens da chamada, `cobrar`, e o custo reservado), para que o consumo
+// durável os some. Sem orçamento composto não houve reserva: o evento sai com `usage_ausente` e zeros.
+func (l *ligacaoDeModelo) fecharPago(ctx context.Context, reserva *integration.ReservaDeEfeito, in entradaOCR, cobrar tectoDaChamada, usage port.Usage, servido, resultado string) int64 {
 	ctx = context.WithoutCancel(ctx)
 	p := custoDeToolPayload{
-		Tool: ocrToolName, StepID: in.StepID, Alias: l.alias, ModeloServido: servido, Resultado: resultado,
+		Tool: l.tool, StepID: in.StepID, Alias: l.alias, ModeloServido: servido, Resultado: resultado,
 		InputTokens: usage.PromptTokens, OutputTokens: usage.CompletionTokens, CostMicroUSD: usage.CostMicroUSD,
 	}
 	if !usage.Definido() {
 		p.UsageAusente = true
 		p.InputTokens, p.OutputTokens, p.CostMicroUSD = 0, 0, 0
 		if reserva != nil {
-			p.InputTokens, p.OutputTokens, p.CostMicroUSD = ocrTokensDeEntradaMax, ocrMaxTokens, reserva.Reservado().CostMicroUSD
+			p.InputTokens, p.OutputTokens, p.CostMicroUSD = cobrar.entrada, cobrar.saida, reserva.Reservado().CostMicroUSD
 		}
 	}
 	real := budget.Amount{Tokens: p.InputTokens + p.OutputTokens, CostMicroUSD: p.CostMicroUSD}
 	if _, err := reserva.Saldar(ctx, real); err != nil {
-		l.logf("[aos] ocr_read (AOS-530): saldar a reserva do passo %q do run %q FALHOU (%v) — o tecto do run nesta incarnacao pode nao refletir o custo; o evento duravel do custo segue", in.StepID, in.RunID, err)
+		l.logf("[aos] %s: saldar a reserva do passo %q do run %q FALHOU (%v) — o tecto do run nesta incarnacao pode nao refletir o custo; o evento duravel do custo segue", l.rotulo, in.StepID, in.RunID, err)
 	}
 	if l.registarCusto == nil {
 		return p.CostMicroUSD
@@ -229,15 +233,33 @@ func (l *ligacaoOCR) fecharPago(ctx context.Context, reserva *integration.Reserv
 	if err := l.registarCusto(ctx, in.RunID, p); err != nil {
 		// FAIL-SOFT DECLARADO, a escolha do AOS-287: o efeito já aconteceu e foi pago; falhar a tool
 		// agora trocaria um custo por gravar por um run partido. Não se degrada em silêncio.
-		l.logf("[aos] ocr_read (AOS-530): gravar o custo do passo %q do run %q FALHOU (%v) — a chamada foi paga (%d micro-USD) e a incarnacao seguinte NAO o vera no consumo duravel. Degradacao declarada, nao silenciosa", in.StepID, in.RunID, err, p.CostMicroUSD)
+		l.logf("[aos] %s: gravar o custo do passo %q do run %q FALHOU (%v) — a chamada foi paga (%d micro-USD) e a incarnacao seguinte NAO o vera no consumo duravel. Degradacao declarada, nao silenciosa", l.rotulo, in.StepID, in.RunID, err, p.CostMicroUSD)
 	}
 	return p.CostMicroUSD
 }
 
 // libertar devolve a reserva de uma chamada que não teve resposta (erro antes do provider, prazo,
 // cancelamento, panic no gateway). Sobre uma reserva já saldada não faz nada.
-func (l *ligacaoOCR) libertar(ctx context.Context, reserva *integration.ReservaDeEfeito, in entradaOCR) {
+func (l *ligacaoDeModelo) libertar(ctx context.Context, reserva *integration.ReservaDeEfeito, in entradaOCR) {
 	if err := reserva.Libertar(context.WithoutCancel(ctx)); err != nil {
-		l.logf("[aos] ocr_read (AOS-530): libertar a reserva do passo %q do run %q FALHOU (%v)", in.StepID, in.RunID, err)
+		l.logf("[aos] %s: libertar a reserva do passo %q do run %q FALHOU (%v)", l.rotulo, in.StepID, in.RunID, err)
 	}
+}
+
+// posturaDoCusto declara, no arranque, o que acontece ao custo de cada chamada (ADR-042 §2.6), com
+// a descrição da reserva da tool.
+func (l *ligacaoDeModelo) posturaDoCusto(reserva string) string {
+	evento := "o custo medido pelo gateway grava-se no evento duravel " + EventTypeToolModelCost + " do run, por (run_id, step_id), tambem quando a resposta e recusada, e soma ao consumo duravel do run ao lado dos turnos"
+	if l.registarCusto == nil {
+		evento = "SEM Event Store composto o custo medido NAO se grava no run (vai so ao span aos.activity)"
+	}
+	if l.orcamento == nil {
+		return evento + "; SEM orcamento por-run composto (AOS_BUDGET_MAX_TOKENS por definir) NAO ha reserva no tecto, como para os turnos"
+	}
+	dolares := "a dimensao em dolares e medida e nao nega (AOS_BUDGET_MAX_COST_MICRO_USD por definir)"
+	if tecto, ok := l.orcamento.MaxCostMicroUSDPerRun(); ok {
+		dolares = fmt.Sprintf("tecto em dolares %d micro-USD por run", tecto)
+	}
+	return fmt.Sprintf("%s; antes de cada chamada reserva no tecto do run %s, e sem folga a tool e negada com %s sem pedido ao provider (%s)",
+		evento, reserva, ocrCausaTecto, dolares)
 }

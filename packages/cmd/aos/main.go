@@ -2498,6 +2498,17 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 		// O registo `tool` existe (conferido acima), pelo que a pasta de perfis também.
 		assinados.ocr, ocrPorEntregar = ligacao, ligacao
 	}
+	// A TOOL `video_read` (AOS-536 parte 2): as mesmas condições, com um registo de uso `tool` DE
+	// VÍDEO para o alias dela. Sem o bloco na `video_read`, nada.
+	var videoPorEntregar *ligacaoVideo
+	defer func() { videoPorEntregar.fechar() }()
+	if spec := specDaToolDeModelo(specs, videoToolName); spec != nil {
+		ligacao, verr := comporLigacaoVideo(spec, assinados, pol, region, board, costRec != nil)
+		if verr != nil {
+			return nil, nil, verr
+		}
+		assinados.video, videoPorEntregar = ligacao, ligacao
+	}
 	// CUTOVER DURO (AOS-278): o gateway compõe-se com um verifier LIGADO TARDIAMENTE. Nasce a
 	// negar fail-closed; o Bootstrap liga-o (via o binder devolvido) ao verifier REAL do nó —
 	// o MESMO que verifica as tool calls. NÃO há stub allow-all no caminho.
@@ -2562,7 +2573,8 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	// replay-then-continue valha para QUALQUER modelo — incluindo um cfg.Model injectado,
 	// que por este caminho a perdia em silêncio. O decorador continua a ser o outermost:
 	// Bootstrap envolve o que quer que saia daqui, incluindo o enriquecedor de tools.
-	ocrPorEntregar = nil // entregue no cliente: quem a fecha passa a ser o nó (Node.Close)
+	ocrPorEntregar = nil   // entregue no cliente: quem a fecha passa a ser o nó (Node.Close)
+	videoPorEntregar = nil // idem para a video_read (AOS-536)
 	return client, modelVerifier.bind, nil
 }
 

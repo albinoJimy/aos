@@ -3049,7 +3049,7 @@ tool `video_read` no nó.
   da experiência `video` aceita um perfil com `video` (e o relatório deixa de dizer que o perfil
   não a declara quando a declara).
 
-### Âmbito — parte 2 (a tool `video_read` no nó), por fazer
+### Âmbito — parte 2 (a tool `video_read` no nó)
 
 - A tool `video_read`, mediada pelo Reference Monitor, no molde da `ocr_read`: um vídeo da pasta
   semeada, por referência, lido pelo nó, conferido como MP4 (as regras do AOS-535) e mandado inteiro
@@ -3087,7 +3087,33 @@ tool `video_read` no nó.
       `vale_para_producao`, que a repete; sozinha, o nó recusa o pacote na terceira).
 - [ ] Parte 1: a qualificação real do `video-visao` (pelo dono, com a allowlist externa do nó), o
       pacote assinado e conferido.
-- [ ] Parte 2: a tool `video_read` no nó, com os critérios a detalhar ao abri-la.
+- [x] Parte 2: a tool `video_read` no nó, no molde da `ocr_read` e com o código dela partilhado
+      (`tool_de_modelo.go`: a ligação, o arranque, a leitura confinada, a reserva e o evento de custo,
+      a chamada ao gateway e as suas falhas; os testes do AOS-530 passam sem alteração). Mediada
+      pelo RM com `cap:fs.read` e `doc://{doc_id}` — os da `ocr_read`: a mesma leitura por run —; a
+      pasta é a da `ocr_read` (`AOS_OCR_SEED_DIR`, sem variável nova: `doc://x` nomeia o mesmo
+      ficheiro nas duas tools); só MP4 pela porta (`ftyp`, `moov` antes da `mdat`, ≤ 4 MiB), a
+      duração da `mvhd` com tecto de 60 s (`video_longo`), tudo antes do modelo e sem custo; a
+      instrução 1.0.0 do AOS-537 copiada com o digest provado contra o código do banco (a fórmula do
+      banco); `max_tokens` 8192, prazo 120 s, `Tools` vazio, `OriginTool: "video_read"`; resultado
+      `aos-video/v1` `untrusted`; a reserva é função da duração (2 × (segundos × 300 + 512) tokens de
+      entrada + 8192 de saída, e o seu custo pela tabela), o mesmo evento `budget.toolcall.model_cost`
+      e a resposta não medida a cobrar a reserva dessa chamada; o replay não chama o modelo; o
+      arranque fail-closed (`ErrVideoSemPasta`, `ErrVideoAliasForaDaAllowlist`, `ErrVideoSemRegistoTool`
+      — também só com um registo de imagem —, `ErrVideoSemPreco`, `ErrVideoSemGateway`); só a
+      `ocr_read` e a `video_read` podem ter o bloco `modelo`; métrica `aos_video_read_total`.
+      *Nota de 2026-10-19:* `packages/cmd/aos/aos536_video_read_test.go`,
+      `aos536_video_read_no_test.go` (nó composto com o gateway real e um provider `httptest`: a
+      data URL `video/mp4` com os bytes exactos, o selo com a tool de origem, o titular sem vídeo,
+      nenhum byte nem texto em claro nos registos, o custo no run igual ao do gateway, a reserva
+      negada pelo tecto para 50 s e não para 2 s, a não medida e a sem resposta, o replay, a
+      `ocr_read` intacta ao lado e a leitura única partilhada) e `aos536_video_instrucao_test.go`.
+      Catorze mutações à mão (o tecto de duração, o filtro da media no arranque, a reserva por
+      duração, a tool de origem, a validação MP4, a duração zero, o tecto de bytes, os tectos da não
+      medida, a reescrita, o registo no RM, a composição, as causas do vídeo, a métrica, o gateway
+      ligado) avermelham cada uma. **Não** está no `tools.json` de produção: a `video_read` tem
+      egress externo e oferecê-la em produção pede a decisão do dono de estender a excepção do
+      ADR-034 §2.7 (por decidir; `deploy/server/README.md`, «Ligar o vídeo»).
 
 ### Fora de âmbito
 
@@ -3135,3 +3161,4 @@ tool `video_read` no nó.
 | 1.30 | 2026-10-19 | +AOS-537 (fase A6, sub-fase A6.1): o banco mede o vídeo — a bateria sintética de oito vídeos com 34 factos (texto, contagens, cores, ordem e uma instrução no fotograma), fotogramas em Go e MP4 pelo ffmpeg fixado pelo digest num contentor sem rede, e a experiência `video` com o motor falso e o modelo pelo proxy do banco, com veredicto contra 90% dos factos. As regras do modo real do braço de visão do OCR passam a `rota_paga.go`, partilhadas. Implementado e provado com falsos; o ffmpeg real e a medição dos três candidatos ficam para o dono | Equipa AOS |
 | 1.31 | 2026-10-19 | AOS-537: correcções da revisão independente — os factos de contagem e de cor lêem-se das linhas rotuladas, tolerantes ao markdown e sem contradições (relatório versão 2); a bateria de vídeo 1.1.0 com um par de ordem contra a ordem alfabética; a pasta montada do ffmpeg em 0733 e o MP4 lido só como ficheiro regular; o custo antes do registo no contador | Equipa AOS |
 | 1.32 | 2026-10-19 | AOS-536 escrito por inteiro (fase A6, sub-fase A6.1), em duas partes. Parte 1 feita: o registo de uso `tool` aceita um perfil de vídeo (exactamente uma capacidade de media) e cita um relatório `video` versão 2; o banco ganha o `aos-ensaio qualificar-video`. Parte 2 (a tool `video_read` no nó) por fazer | Equipa AOS |
+| 1.33 | 2026-10-19 | AOS-536 parte 2 feita no ramo: a tool `video_read` no nó, no molde da `ocr_read` e com o código dela partilhado; a pasta, a capability e o recurso são os da `ocr_read`; tecto de 60 s; reserva função da duração. Fora do `tools.json` de produção até à decisão do dono sobre o ADR-034 §2.7 | Equipa AOS |
