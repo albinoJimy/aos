@@ -124,6 +124,11 @@ type CallContext struct {
 	// resolvida — ex.: um permit gray auto-aprovado por maturidade vs confirmado por
 	// humano deixam de ser indistinguíveis no log (SAROC-05).
 	RiskDecisionMode string
+	// TaintPrivilege é o PORQUÊ da classificação do [TaintGate] para esta call (AOS-538): uma das
+	// constantes TaintPrivilege* — `local_read` diz que a tool se declara leitura local e por isso
+	// não foi tratada como privilegiada. Escrita SÓ pelo gate (que a reescreve sempre), vazia com
+	// o gate fora da cadeia, desarmado, ou sem o destino das tools. Não decide nada: é registo.
+	TaintPrivilege string
 }
 
 // PortVersion é a versão SemVer da porta C1 (contrato de mediação) que este RM

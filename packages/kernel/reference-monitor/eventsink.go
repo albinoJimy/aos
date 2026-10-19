@@ -188,6 +188,10 @@ type contextDTO struct {
 	// RiskDecisionMode é a natureza da decisão HITL: auto/batch/human/timeout/denied
 	// (SAROC-05) — torna atribuível "quem aprovou e por que via".
 	RiskDecisionMode string `json:"risk_decision_mode,omitempty"`
+	// TaintPrivilege é o porquê da classificação do gate de taint (AOS-538): `local_read`,
+	// `capability_not_listed`, `capability` ou `declared_effect`. OPCIONAL (`omitempty`): sem o
+	// destino das tools composto o payload fica byte-a-byte o de antes — MINOR no `port_version`.
+	TaintPrivilege string `json:"taint_privilege,omitempty"`
 }
 
 type principalDTO struct {
@@ -258,6 +262,7 @@ func (s *eventStoreSink) RecordMediation(ctx context.Context, rec MediationRecor
 			RiskClass:        rec.Context.RiskClass,
 			RiskApprover:     rec.Context.RiskApprover,
 			RiskDecisionMode: rec.Context.RiskDecisionMode,
+			TaintPrivilege:   rec.Context.TaintPrivilege,
 		},
 		LatencyNanos: rec.Latency.Nanoseconds(),
 		Principal: principalDTO{

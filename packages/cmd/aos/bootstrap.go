@@ -2397,6 +2397,16 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	// O DESTINO DAS TOOLS (AOS-538, emenda de 2026-10-19 ao ADR-034): os eixos egress/mutação/
+	// reversibilidade que AOS_MODEL_TOOLS declara. O gate de taint deixa passar, com o contexto
+	// untrusted, uma tool que se declara leitura local; as outras ficam com a regra da capability
+	// e são privilegiadas também quando declaram um efeito. Só com o gate armado
+	// (AOS_PRIVILEGED_CAPS não-vazia): desarmado, nada muda. Ver [privilegedComDestinos].
+	toolDests, err := toolDestinationsFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	privileged := privilegedComDestinos(cfg.Privileged, toolDests)
 	// A TOOL `ocr_read` (AOS-530, ADR-042): composta na fronteira de ambiente com o gateway do nó
 	// e encontrada no cliente de modelo, como os perfis assinados. Declarada no registo de tools
 	// e sem ligação (sem AOS_MODEL_ENDPOINT, ou com um cliente de modelo injectado) ⇒ o nó não
@@ -2549,7 +2559,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		Verifier:        verifier, // <-- REAL (AOS-156): nunca o IdentityStub nem o default sem anchors
 		Authority:       cfg.Authority,
 		PDP:             cfg.PDP,
-		Privileged:      cfg.Privileged, // AOS-363: nil ⇒ TaintGate inerte (retro-compat); não-vazio ⇒ via endurecida
+		Privileged:      privileged, // AOS-363: nil ⇒ TaintGate inerte (retro-compat); não-vazio ⇒ via endurecida. AOS-538: com o destino das tools
 		ToolSetStore:    toolSetStore,
 		Checkpointer:    checkpointer,
 		Capturer:        capturer,
@@ -3060,7 +3070,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// (Monitor.HasActiveTaintGate), nunca da intenção de config — a mesma disciplina de AOS-203.
 	// É o único chamador não-teste de HasActiveTaintGate: sem ele, o predicado de eficácia que
 	// AOS-219 exportou ficava exportado-mas-não-consultado (o residual que EPIC-18 §5 registava).
-	for _, line := range taintGatePostureBanner(sec.Monitor().HasActiveTaintGate()) {
+	for _, line := range taintGatePostureBanner(sec.Monitor().HasActiveTaintGate(), destinosDoClassificador(privileged)) {
 		log("%s", line)
 	}
 	// AOS-379: postura do CANAL DE EVENTOS DE MEDIAÇÃO. O argumento deriva do que foi REALMENTE

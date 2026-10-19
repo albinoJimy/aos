@@ -31,6 +31,7 @@ import (
 	"strings"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 	modelgateway "github.com/aos-ref/platform/model-gateway"
 	"github.com/aos-ref/platform/model-gateway/port"
 )
@@ -308,6 +309,55 @@ func loadModelToolsFromEnv() ([]port.Tool, map[string]toolBinding, error) {
 		}
 	}
 	return tools, bindings, nil
+}
+
+// toolDestinationsFromEnv lê os eixos de DESTINO que AOS_MODEL_TOOLS declara para cada tool —
+// `egress`, `mutation` e `reversibility`, TAL COMO ESCRITOS — para o gate de taint e o
+// classificador de risco do Reference Monitor (AOS-538, emenda de 2026-10-19 ao ADR-034).
+//
+// PORQUE NÃO SE REUSA O [toolBinding]. O binding guarda o valor já RESOLVIDO (a mutação ausente
+// vale "mutates", o egress ausente vale "none" no contrato do digest), e a regra nova precisa de
+// saber o que foi DECLARADO: só uma tool com os três eixos explícitos é leitura local. E o
+// binding vive no decorador do cliente de modelo, que só escreve na ToolInvocation — passar os
+// eixos por ali obrigava a um campo novo na Activity durável, a classe de defeito do ADR-034 §2.8.
+// O RM classifica pelo ToolID, que já atravessa as duas vias.
+//
+// FAIL-CLOSED como os irmãos: um `egress` fora do vocabulário ABORTA o arranque (o catálogo do
+// AOS-441 já o recusava, mas só com AOS_MODEL_ENDPOINT); uma `mutation` ou `reversibility` fora do
+// vocabulário já aborta em [readModelToolSpecs] e [loadModelToolsFromEnv]. Sem AOS_MODEL_TOOLS ⇒
+// destinos vazios, e o gate fica com a regra de antes.
+func toolDestinationsFromEnv() (referencemonitor.ToolDestinations, error) {
+	specs, err := readModelToolSpecs()
+	if err != nil {
+		return referencemonitor.ToolDestinations{}, err
+	}
+	m := make(map[string]referencemonitor.ToolDestination, len(specs))
+	for _, s := range specs {
+		name := strings.TrimSpace(s.Name)
+		if _, err := parseEgressClass(s.Egress); err != nil {
+			return referencemonitor.ToolDestinations{}, fmt.Errorf("%w: tool %q com egress %q — tem de ser none|internal|external", ErrBadModelTools, name, s.Egress)
+		}
+		if _, err := validateReversibility(s.Reversibility); err != nil {
+			return referencemonitor.ToolDestinations{}, fmt.Errorf("tool %q: %w", name, err)
+		}
+		m[name] = referencemonitor.ToolDestination{
+			Capability:    strings.TrimSpace(s.Capability),
+			Egress:        s.Egress,
+			Mutation:      s.Mutation,
+			Reversibility: s.Reversibility,
+		}
+	}
+	return referencemonitor.NewToolDestinations(m), nil
+}
+
+// privilegedComDestinos compõe o classificador do gate de taint com o destino das tools
+// (AOS-538). Só embrulha um classificador que exista: sem AOS_PRIVILEGED_CAPS o gate continua
+// desarmado (nil) e nada muda; sem tools declaradas, a regra é a de antes.
+func privilegedComDestinos(base referencemonitor.PrivilegedAuthorizer, dests referencemonitor.ToolDestinations) referencemonitor.PrivilegedAuthorizer {
+	if base == nil || dests.Len() == 0 {
+		return base
+	}
+	return referencemonitor.NewDestinationPrivileged(base, dests)
 }
 
 // toolEnrichingClient decora um [agentruntime.ModelClient]: quando o modelo escolhe uma tool pelo
