@@ -238,9 +238,8 @@ func (v *MotorDeVideoVisao) Descrever(ctx context.Context, vp VideoPronto) (Resp
 		} `json:"usage"`
 	}
 	legivel := json.Unmarshal(lido, &doc) == nil
-	if uerr := v.contador.RegistarUso(doc.Usage.PromptTokens, doc.Usage.CompletionTokens); uerr != nil {
-		return RespostaDoVideo{}, &ParagemDoVideo{Causa: TerminouContador}
-	}
+	// O CUSTO CONTA-SE ANTES DO REGISTO NO CONTADOR: o pedido foi pago, e um registo que falhe
+	// pára a corrida mas não tira o pedido do custo dela.
 	r := RespostaDoVideo{ComCusto: true, TokensDeEntrada: doc.Usage.PromptTokens, TokensDeSaida: doc.Usage.CompletionTokens, CustoMicroUSD: -1}
 	if v.preco != nil {
 		r.CustoMicroUSD = custoMicroUSD(*v.preco, doc.Usage.PromptTokens, doc.Usage.CompletionTokens)
@@ -248,6 +247,9 @@ func (v *MotorDeVideoVisao) Descrever(ctx context.Context, vp VideoPronto) (Resp
 		v.custo += r.CustoMicroUSD
 		v.comCusto = true
 		v.mu.Unlock()
+	}
+	if uerr := v.contador.RegistarUso(doc.Usage.PromptTokens, doc.Usage.CompletionTokens); uerr != nil {
+		return r, &ParagemDoVideo{Causa: TerminouContador}
 	}
 	if legivel && len(doc.Choices) > 0 {
 		if doc.Choices[0].FinishReason == "length" {

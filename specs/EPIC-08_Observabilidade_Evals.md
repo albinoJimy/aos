@@ -2833,8 +2833,8 @@ fotograma, com tempo, tokens e custo por vídeo, e um veredicto contra o limiar 
 - [x] A bateria de vídeo carrega com digest próprio e estável, cobre os cinco tipos de facto, as
       dimensões e os ritmos pedidos e um vídeo de 30 s; a validação é fail-closed; as baterias de
       antes mantêm os digests.
-      *Nota de 2026-10-19:* `TestAOS537_BateriaVideo_TemDigestProprioECobreOPedido` (digest
-      `sha256:341418db…1a22`), `…_OCarregamentoEFailClosed` (21 defeitos, cada um pela sua razão) e
+      *Nota de 2026-10-19:* `TestAOS537_BateriaVideo_TemDigestProprioECobreOPedido` (bateria 1.1.0,
+      digest `sha256:6a52cb40…9b97`), `…_OCarregamentoEFailClosed` (21 defeitos, cada um pela sua razão) e
       `TestAOS537_Fotogramas_DesenhamOQueOCasoDiz` (fundos, texto e as formas contadas nos píxeis).
 - [x] Os MP4 conferem-se antes de ir ao modelo, e o ffmpeg corre nas condições fixadas.
       *Nota de 2026-10-19:* sem Docker, `TestAOS537_MP4_LeAFormaERecusaOQueNaoEOVideo`,
@@ -2872,6 +2872,16 @@ fotograma, com tempo, tokens e custo por vídeo, e um veredicto contra o limiar 
   posto, a única montada, que o banco lê e apaga.
 - As contagens e as cores verificam-se nas linhas que a instrução pede (`COUNT`, `BACKGROUND`): um
   modelo que vê certo e escreve noutra forma perde esses factos. É um limite declarado no relatório.
+- **Revisão independente (2026-10-19), corrigida no mesmo ramo; relatório versão 2, bateria 1.1.0.**
+  Um `qualificado` era de confiança, mas um `recusado` podia vir da formatação: uma resposta perfeita
+  em negrito (`**COUNT:** 4 red circles`) dava 18 de 34. Os factos de contagem e de cor passaram a
+  ler-se das linhas rotuladas com uma dobra própria do vídeo (sem `*`, `_`, crases nem `|`, sem o
+  espaço antes de `:`, várias contagens numa linha), e uma contradição (duas cores para a mesma cena,
+  hipóteses, dois números para a mesma forma e cor) falha o facto; a regra comum dos factos, a do OCR
+  e dos degraus, não mudou. O vídeo mais longo passou a contagem decrescente, para o par de ordem
+  contrariar a ordem alfabética e a numérica. A pasta montada passou de 0777 a 0733, e o MP4 lê-se só
+  como ficheiro regular, sem seguir ligações; o custo de um pedido soma-se antes do registo no
+  contador. Regressões: `aos537_revisao_test.go`.
 
 ---
 
@@ -2922,3 +2932,4 @@ A seguir, por detalhar depois do AOS-535: a tool, mediada pelo Reference Monitor
 | 1.28 | 2026-10-15 | AOS-529 medido: o Tesseract local com 82,5% dos factos (76,2% com acentos), ~0,9 s e custo zero por imagem; o Claude Haiku 5.5 pela OpenRouter com 100% (100%), 2 a 9 s e ~0,0001 USD por imagem; o Gemini 3.8 Flash com 89,2% e ~0,0034 USD, com a resposta cortada (provavelmente o limite de tokens de saída do adaptador, por confirmar). Imagens sintéticas, doze no braço de visão. A medição levou o dono a mudar a D2: OCR por um modelo de visão através de uma tool (ADR-042, proposto; AOS-530 reescrito) | Equipa AOS |
 | 1.29 | 2026-10-18 | +AOS-534 (fase A6, sub-fase A6.1, spike): a parte `video_url` com uma data URL de MP4 atravessa o proxy LiteLLM fixado intacta, nas duas rotas da OpenRouter? O falso do estado regista as partes do `content` (tipo, chaves, classe da data URL, sha256 e tamanho, sem bytes) e um cenário opcional com o proxy real mede-o sem custo, com um MP4 sintético pequeno e outro de 3 a 6 MB. AOS-535 e AOS-536 abertos só com o título, a seguir | Equipa AOS |
 | 1.30 | 2026-10-19 | +AOS-537 (fase A6, sub-fase A6.1): o banco mede o vídeo — a bateria sintética de oito vídeos com 34 factos (texto, contagens, cores, ordem e uma instrução no fotograma), fotogramas em Go e MP4 pelo ffmpeg fixado pelo digest num contentor sem rede, e a experiência `video` com o motor falso e o modelo pelo proxy do banco, com veredicto contra 90% dos factos. As regras do modo real do braço de visão do OCR passam a `rota_paga.go`, partilhadas. Implementado e provado com falsos; o ffmpeg real e a medição dos três candidatos ficam para o dono | Equipa AOS |
+| 1.31 | 2026-10-19 | AOS-537: correcções da revisão independente — os factos de contagem e de cor lêem-se das linhas rotuladas, tolerantes ao markdown e sem contradições (relatório versão 2); a bateria de vídeo 1.1.0 com um par de ordem contra a ordem alfabética; a pasta montada do ffmpeg em 0733 e o MP4 lido só como ficheiro regular; o custo antes do registo no contador | Equipa AOS |

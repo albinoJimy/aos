@@ -943,7 +943,15 @@ banco (sem acentos nem maiúsculas):
 | `ordem` | duas linhas de texto, a primeira numa cena anterior: presente se as duas estão na resposta e a primeira aparece antes | `PORTA ABERTA` antes de `ALARME 3` |
 
 As linhas `COUNT` e `BACKGROUND` são as que a instrução do motor de visão pede no fim da resposta,
-numa secção `FACTS`. A validação é fail-closed: dimensões pares e dentro dos limites, ritmo,
+numa secção `FACTS`. **Os factos de contagem e de cor lêem-se dessas linhas rotuladas** (regra 2 do
+relatório, `video_rotulos.go`), com uma dobra própria do vídeo — a regra comum dos factos, a do OCR
+e dos degraus, não muda: a pontuação de markdown (`*`, `_`, `` ` ``, `|`) não conta, um espaço antes
+de `:` também não, uma fila de tabela (`| BACKGROUND 1 | white |`) lê-se como a linha, e uma linha
+`COUNT` pode ter várias contagens (separadas por vírgula, «and» ou «e»). **Uma contradição falha o
+facto**: duas cores para a mesma cena, ou uma cor com hipóteses (`red/blue`, `red or blue`); dois
+números para a mesma forma e cor. Responder com todas as cores ou todos os números não acerta nada.
+O par de ordem do vídeo mais longo é uma contagem decrescente (`PASSO 5` antes de `PASSO 2`): quem
+ordena os textos pela ordem alfabética ou numérica, e não pelo tempo, falha-o. A bateria é a 1.1.0. A validação é fail-closed: dimensões pares e dentro dos limites, ritmo,
 duração, vocabulário, texto e formas que caibam, cada facto ser do seu vídeo, nenhuma forma e cor
 repetida no mesmo vídeo, e os cinco tipos cobertos.
 
@@ -954,8 +962,9 @@ imagem fixada pelo digest (`ImagemDoFFmpeg`, `jrottenberg/ffmpeg@sha256:8ec1ee1f
 --pull never --network none --read-only --cap-drop ALL --security-opt no-new-privileges`, uid
 65532, 1 GiB, 512 processos e 120 s por vídeo. **O banco não descarrega a imagem**: sem ela no
 posto, recusa (sai 6) e diz o `docker pull <digest>` a fazer. Os fotogramas entram pelo stdin, em
-RGBA cru; o MP4 sai para uma pasta temporária do posto, a única montada (`/out`), que o banco lê e
-apaga — não sai pelo stdout porque o `+faststart` reescreve o ficheiro no fim, e o muxer de MP4
+RGBA cru; o MP4 sai para uma pasta temporária do posto, a única montada (`/out`, em 0733: o uid do
+contentor escreve nela mas não a lista), que o banco lê — só se for um ficheiro regular, sem seguir
+ligações e conferindo que o ficheiro aberto é o que viu — e apaga — não sai pelo stdout porque o `+faststart` reescreve o ficheiro no fim, e o muxer de MP4
 recusa uma saída sem `seek`. Antes de usar um MP4, o banco confere-o (`video_mp4.go`): `ftyp` à
 cabeça, `moov` antes da `mdat`, a duração da `mvhd` (com a folga de um fotograma) e as dimensões
 da `tkhd`, até 4 MiB (o que o AOS-534 provou passar o proxy). Os MP4 ficam em cache por processo,

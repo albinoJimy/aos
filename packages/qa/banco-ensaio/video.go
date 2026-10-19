@@ -36,10 +36,12 @@ const (
 	// LimiarDeFactosDoVideo é o limiar do OCR (D7 do dono, 2026-10-15), que o dono fixou também
 	// para o vídeo (2026-10-18). A opção `--limiar-de-factos` só o aperta.
 	LimiarDeFactosDoVideo = LimiarDeFactosDoOCR
-	// VersaoDoRelatorioVideo é a versão do formato do relatório `video`.
-	VersaoDoRelatorioVideo = "1"
+	// VersaoDoRelatorioVideo é a versão do formato do relatório `video`. A 2 (revisão do AOS-537)
+	// mudou a medida: os factos de contagem e de cor lêem-se das linhas rotuladas, tolerantes ao
+	// markdown e sem contradições, e a bateria ganhou um par de ordem contra a ordem alfabética.
+	VersaoDoRelatorioVideo = "2"
 	// RegraDoVeredictoVideo é a regra, em texto fixo, que vai no relatório.
-	RegraDoVeredictoVideo = "qualificado se a corrida completou, pelo menos um video com factos entrou nas contas, TODOS os videos foram descritos (nenhum falhou: tempo, erro do motor ou resposta cortada) e a fraccao de factos presentes pela regra do banco (sem acentos nem maiusculas; um facto de ordem exige as duas linhas e a primeira antes da segunda) e pelo menos o limiar; senao recusado. So um qualificado do modo real e a medida de um modelo"
+	RegraDoVeredictoVideo = "qualificado se a corrida completou, pelo menos um video com factos entrou nas contas, TODOS os videos foram descritos (nenhum falhou: tempo, erro do motor ou resposta cortada) e a fraccao de factos presentes pela regra do banco (sem acentos nem maiusculas; um facto de ordem exige as duas linhas e a primeira antes da segunda; os de contagem e de cor leem-se das linhas COUNT e BACKGROUND, sem a pontuacao de markdown, e falham se a resposta disser dois valores para a mesma cena ou para a mesma forma e cor) e pelo menos o limiar; senao recusado. So um qualificado do modo real e a medida de um modelo"
 )
 
 // MotorDeVideo é um motor que descreve um vídeo. Descrever devolve o texto da descrição, ou um
@@ -208,10 +210,14 @@ type LinhaPorTipoDeFacto struct {
 	CustoMicroUSD       *int64 `json:"custo_micro_usd_estimado,omitempty"`
 }
 
-// factoDoVideoNaSaida diz se o facto está na descrição, pela dobra dada: um de uma linha, se a
-// linha ocorre; o de ordem, se as duas ocorrem e a primeira ocorrência de `antes` vem antes da
-// primeira de `depois`.
+// factoDoVideoNaSaida diz se o facto está na descrição. Os de `texto` e `injeccao` pela dobra dada
+// (a regra comum dos factos): a linha ocorre. O de `ordem`, se as duas linhas ocorrem e a primeira
+// ocorrência de `antes` vem antes da primeira de `depois`. Os de `contagem` e `cor` pelas linhas
+// rotuladas, com a dobra própria do vídeo e sem contradições (video_rotulos.go).
 func factoDoVideoNaSaida(saida string, f FactoDoVideo, dobra func(string) string) bool {
+	if f.Tipo == FactoContagem || f.Tipo == FactoCor {
+		return factoDeRotuloNaSaida(lerRotulos(saida), f)
+	}
 	s := dobra(saida)
 	if f.Tipo != FactoOrdem {
 		d := dobra(f.Valor)

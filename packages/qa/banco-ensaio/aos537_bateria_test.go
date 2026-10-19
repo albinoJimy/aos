@@ -16,9 +16,10 @@ import (
 	"testing/fstest"
 )
 
-// aos537DigestDaBateriaVideo é o digest da bateria de vídeo 1.0.0: o ficheiro dos casos e os
+// aos537DigestDaBateriaVideo é o digest da bateria de vídeo 1.1.0 (a 1.0.0 nunca se mediu: a
+// revisão do AOS-537 pôs-lhe um par de ordem contra a alfabética): o ficheiro dos casos e os
 // píxeis das cenas. Mudar um caso, uma cor, a fonte ou o desenho das formas muda-o.
-const aos537DigestDaBateriaVideo = "sha256:341418dbc9d283ab1363190d832896a87eba56988b6eec08f0bdfdb014d91a22"
+const aos537DigestDaBateriaVideo = "sha256:6a52cb40c87763c1acc4abf3db98b7f1b084322f8caa1f12dd5e5453e8339b97"
 
 func aos537Bateria(t *testing.T) *BateriaVideo {
 	t.Helper()
@@ -31,7 +32,7 @@ func aos537Bateria(t *testing.T) *BateriaVideo {
 
 func TestAOS537_BateriaVideo_TemDigestProprioECobreOPedido(t *testing.T) {
 	b := aos537Bateria(t)
-	if b.Versao != "1.0.0" || b.Digest() != aos537DigestDaBateriaVideo {
+	if b.Versao != "1.1.0" || b.Digest() != aos537DigestDaBateriaVideo {
 		t.Errorf("bateria de video: versao %s, digest %s (quer %s)", b.Versao, b.Digest(), aos537DigestDaBateriaVideo)
 	}
 	// O determinismo prova-se desenhando outra vez, por fora da cache.
@@ -160,7 +161,7 @@ func TestAOS537_BateriaVideo_OCarregamentoEFailClosed(t *testing.T) {
 		{"dimensao grande", `"largura": 320, "altura": 240, "fps": 2`, `"largura": 1280, "altura": 240, "fps": 2`, "fora de"},
 		{"fps a mais", `"largura": 320, "altura": 240, "fps": 2`, `"largura": 320, "altura": 240, "fps": 5`, "fps fora"},
 		{"curto de mais", `{"segundos": 6, "fundo": "white", "formas"`, `{"segundos": 4, "fundo": "white", "formas"`, "4 s fora"},
-		{"longo de mais", `{"segundos": 5, "fundo": "white", "texto": ["PASSO 6"]}`, `{"segundos": 6, "fundo": "white", "texto": ["PASSO 6"]}`, "31 s fora"},
+		{"longo de mais", `{"segundos": 5, "fundo": "white", "texto": ["PASSO 1"]}`, `{"segundos": 6, "fundo": "white", "texto": ["PASSO 1"]}`, "31 s fora"},
 		{"fundos seguidos iguais", `{"segundos": 3, "fundo": "yellow", "texto": ["PARTIDA 14:35"]}`, `{"segundos": 3, "fundo": "white", "texto": ["PARTIDA 14:35"]}`, "mesmo fundo"},
 		{"cor fora do vocabulario", `{"segundos": 3, "fundo": "red"}`, `{"segundos": 3, "fundo": "pink"}`, "fundo fora do vocabulario"},
 		{"forma da cor do fundo", `{"forma": "triangle", "cor": "yellow", "quantas": 3}`, `{"forma": "triangle", "cor": "blue", "quantas": 3}`, "igual ao fundo"},

@@ -1,5 +1,5 @@
 {
-  "versao": "1.0.0",
+  "versao": "1.1.0",
   "videos": [
     {
       "id": "placas-de-texto",
@@ -114,20 +114,20 @@
     },
     {
       "id": "passos-longo",
-      "descricao": "o video mais longo: seis passos de 5 s, fundos alternados e uma contagem a meio",
+      "descricao": "o video mais longo: seis passos de 5 s em contagem decrescente (a ordem certa contraria a alfabetica e a numerica), fundos alternados e uma contagem a meio",
       "largura": 320, "altura": 240, "fps": 1,
       "cenas": [
-        {"segundos": 5, "fundo": "black", "texto": ["PASSO 1"]},
-        {"segundos": 5, "fundo": "white", "texto": ["PASSO 2"]},
-        {"segundos": 5, "fundo": "black", "texto": ["PASSO 3"]},
-        {"segundos": 5, "fundo": "white", "texto": ["PASSO 4"], "formas": [{"forma": "square", "cor": "green", "quantas": 3}]},
-        {"segundos": 5, "fundo": "black", "texto": ["PASSO 5"]},
-        {"segundos": 5, "fundo": "white", "texto": ["PASSO 6"]}
+        {"segundos": 5, "fundo": "black", "texto": ["PASSO 6"]},
+        {"segundos": 5, "fundo": "white", "texto": ["PASSO 5"]},
+        {"segundos": 5, "fundo": "black", "texto": ["PASSO 4"]},
+        {"segundos": 5, "fundo": "white", "texto": ["PASSO 3"], "formas": [{"forma": "square", "cor": "green", "quantas": 3}]},
+        {"segundos": 5, "fundo": "black", "texto": ["PASSO 2"]},
+        {"segundos": 5, "fundo": "white", "texto": ["PASSO 1"]}
       ],
       "factos": [
         {"tipo": "texto", "valor": "PASSO 1"},
         {"tipo": "texto", "valor": "PASSO 6"},
-        {"tipo": "ordem", "antes": "PASSO 2", "depois": "PASSO 5"},
+        {"tipo": "ordem", "antes": "PASSO 5", "depois": "PASSO 2"},
         {"tipo": "contagem", "valor": "COUNT: 3 green squares"},
         {"tipo": "cor", "valor": "BACKGROUND 6: white"}
       ]

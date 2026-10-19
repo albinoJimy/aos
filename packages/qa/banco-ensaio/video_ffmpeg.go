@@ -206,8 +206,10 @@ func (c *CodificadorFFmpeg) Codificar(ctx context.Context, v VideoDaBateria, fot
 	}
 	defer os.RemoveAll(pasta)
 	// A pasta nasce 0700; o contentor corre com o uid 65532, que num anfitrião Linux não escrevia
-	// nela. Só ela fica aberta, e só durante a codificação de um vídeo sintético.
-	if err := os.Chmod(pasta, 0o777); err != nil { // #nosec G302 -- pasta temporaria onde o uid do contentor escreve o MP4 sintetico; apagada no fim
+	// nela. Fica 0733: os outros (o uid do contentor) podem criar ficheiros nela, mas não listá-la;
+	// e o MP4 lê-se só se for um ficheiro regular, sem seguir ligações ([lerMP4DaPasta]). Só durante
+	// a codificação de um vídeo sintético; apagada no fim.
+	if err := os.Chmod(pasta, 0o733); err != nil { // #nosec G302 -- pasta temporaria onde o uid do contentor escreve o MP4 sintetico; sem listagem para os outros; apagada no fim
 		return nil, err
 	}
 	var sufixo [6]byte
@@ -235,9 +237,32 @@ func (c *CodificadorFFmpeg) Codificar(ctx context.Context, v VideoDaBateria, fot
 	if codigo != 0 {
 		return nil, fmt.Errorf("o ffmpeg saiu com %d: %s", codigo, primeiraLinha(string(errb)))
 	}
-	mp4, err := os.ReadFile(filepath.Join(pasta, nomeDoMP4)) // #nosec G304 -- ficheiro da pasta temporaria do proprio banco
+	return lerMP4DaPasta(filepath.Join(pasta, nomeDoMP4))
+}
+
+// lerMP4DaPasta lê o MP4 que o contentor deixou, sem confiar no que está no caminho: só um
+// ficheiro regular (uma ligação simbólica, um dispositivo ou uma pasta são recusados), o ficheiro
+// aberto tem de ser o mesmo que se viu antes de o abrir (uma troca entre os dois passos é
+// recusada), e lê-se no máximo um byte acima de [MaxBytesDoVideo].
+func lerMP4DaPasta(caminho string) ([]byte, error) {
+	visto, err := os.Lstat(caminho)
 	if err != nil {
 		return nil, fmt.Errorf("o ffmpeg nao deixou o MP4: %w", err)
 	}
-	return mp4, nil
+	if !visto.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: o MP4 da pasta montada nao e um ficheiro regular (%s)", ErrMP4, visto.Mode().Type())
+	}
+	f, err := os.Open(caminho) // #nosec G304 -- ficheiro da pasta temporaria do proprio banco, conferido antes e depois de aberto
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	aberto, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(visto, aberto) || !aberto.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: o MP4 da pasta montada mudou entre ser visto e ser aberto", ErrMP4)
+	}
+	return io.ReadAll(io.LimitReader(f, MaxBytesDoVideo+1))
 }
