@@ -216,14 +216,18 @@ type mensagemComPartes struct {
 // houver) e cada imagem como `image_url` numa data URL em base64. As imagens voltam a ser
 // validadas aqui: um pedido que não passou por [ChatRequest.Normalize] não escreve uma imagem
 // inválida no wire.
+//
+// Com uma parte de vídeo (AOS-535) é o mesmo: o texto primeiro e o vídeo a seguir, como
+// `video_url` ([parteDeVideo]). O vídeo e as regras do pedido inteiro (um vídeo, nunca com imagens)
+// já foram conferidos por [ChatRequest.MarshalWire], o único chamador, antes de chegar aqui.
 func mensagemNoWire(m Message) ([]byte, error) {
-	if len(m.Images) == 0 {
+	if len(m.Images) == 0 && len(m.Videos) == 0 {
 		return json.Marshal(m)
 	}
 	if err := validarImagens(m); err != nil {
 		return nil, err
 	}
-	partes := make([]any, 0, len(m.Images)+1)
+	partes := make([]any, 0, len(m.Images)+len(m.Videos)+1)
 	if m.Content != "" {
 		partes = append(partes, parteDeTextoNoPedido{Type: "text", Text: m.Content})
 	}
@@ -232,6 +236,9 @@ func mensagemNoWire(m Message) ([]byte, error) {
 			Type:     "image_url",
 			ImageURL: urlDaImagem{URL: "data:" + p.MediaType + ";base64," + base64.StdEncoding.EncodeToString(p.Data)},
 		})
+	}
+	for _, p := range m.Videos {
+		partes = append(partes, parteDeVideo(p))
 	}
 	return json.Marshal(mensagemComPartes{
 		Role:       m.Role,

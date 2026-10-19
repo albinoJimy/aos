@@ -38,7 +38,10 @@ import (
 // 1.12.0 (AOS-530, ADR-042): uma mensagem `user` de um pedido pode levar partes de imagem
 // ([Message.Images]); as respostas continuam só texto; e o pedido leva a tool que o fez
 // ([ChatRequest.OriginTool]), metadado de plataforma que entra nos selos de atribuição e de governação.
-const Version = "1.12.0"
+//
+// 1.13.0 (AOS-535, A6.1): uma mensagem `user` de um pedido pode levar uma parte de vídeo MP4
+// ([Message.Videos]), no máximo uma por pedido e nunca com imagens; as respostas continuam só texto.
+const Version = "1.13.0"
 
 // Role é o papel de uma mensagem na conversa (forma OpenAI).
 type Role string
@@ -110,6 +113,11 @@ type Message struct {
 	// (`json:"-"`): só [ChatRequest.MarshalWire] as escreve, com `content` em lista de partes. nil
 	// em todas as mensagens de uma resposta, e em todas as de um pedido de um turno do executor.
 	Images []ImagePart `json:"-"`
+	// Videos são as partes de vídeo de uma mensagem `user` de um PEDIDO (AOS-535; campo aditivo,
+	// MINOR 1.13.0): ver [VideoPart]. Não se lê de JSON nem se serializa por si (`json:"-"`): só
+	// [ChatRequest.MarshalWire] as escreve, com `content` em lista de partes. nil em todas as
+	// mensagens de uma resposta, e em todas as de um pedido de um turno do executor.
+	Videos []VideoPart `json:"-"`
 }
 
 // UnmarshalJSON lê uma mensagem do wire. É a leitura de sempre, campo a campo, com três

@@ -127,10 +127,20 @@ func (r ChatRequest) Normalize() (ChatRequest, error) {
 		if err := validarImagens(m); err != nil {
 			return ChatRequest{}, err
 		}
+		// AOS-535: uma parte de vídeo só numa mensagem `user`, só MP4 com o índice à cabeça, não
+		// vazia e até [MaxVideoBytes].
+		if err := validarVideos(m); err != nil {
+			return ChatRequest{}, err
+		}
 		out.Messages[i] = m
 	}
 	// AOS-530: e a soma das partes de imagem do pedido inteiro, depois de cada parte validada.
 	if err := tectoDoPedido(out.Messages); err != nil {
+		return ChatRequest{}, err
+	}
+	// AOS-535: e as regras do vídeo no pedido inteiro — o tecto agregado, um vídeo no máximo, e
+	// nunca com imagens.
+	if err := videosDoPedido(out.Messages); err != nil {
 		return ChatRequest{}, err
 	}
 	if len(r.Tools) > 0 {
@@ -202,7 +212,19 @@ func (r ChatRequest) MarshalWire(stream bool) ([]byte, error) {
 			return nil, err
 		}
 	}
-	if temEstadoParaSair(w.Messages) || temImagens(w.Messages) {
+	// AOS-535 — A PARTE DE VÍDEO, pelo mesmo caminho e com a mesma re-verificação: a parte e as
+	// regras do pedido inteiro, pela ordem de [Normalize]. Sem vídeo, nada muda.
+	if temVideos(w.Messages) {
+		for _, m := range w.Messages {
+			if err := validarVideos(m); err != nil {
+				return nil, err
+			}
+		}
+		if err := videosDoPedido(w.Messages); err != nil {
+			return nil, err
+		}
+	}
+	if temEstadoParaSair(w.Messages) || temImagens(w.Messages) || temVideos(w.Messages) {
 		return marshalComEstado(w)
 	}
 	return json.Marshal(w)

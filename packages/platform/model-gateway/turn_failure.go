@@ -52,7 +52,8 @@ const (
 	TurnFailureRouteUnreported = "rota_nao_reportada"
 	// TurnFailurePinnedProfile — o run está fixado num perfil de rota que este nó não tem em vigor,
 	// a rota exige um estado que não há para devolver, ou o pedido leva imagens para uma rota cujo
-	// perfil não declara `imagem` (AOS-530): configuração do nó, e o pedido não saiu.
+	// perfil não declara `imagem` (AOS-530) ou um vídeo para uma que não declara `video` (AOS-535),
+	// ou em streaming: configuração do nó, e o pedido não saiu.
 	TurnFailurePinnedProfile = "perfil_do_run"
 )
 
@@ -79,7 +80,9 @@ func ClassifyTurnFailure(err error) string {
 		fixado    *PinnedRouteProfileError
 		estado    *StateReturnError
 		semImagem *RouteWithoutImageError
+		semVideo  *RouteWithoutVideoError
 		imagem    *port.ImagePartError
+		video     *port.VideoPartError
 		estagio   *pipeline.StageError
 		rede      net.Error
 		pedido    *url.Error
@@ -105,11 +108,11 @@ func ClassifyTurnFailure(err error) string {
 	case errors.As(err, &custo), errors.As(err, &atribuido):
 		// Depois de o provider responder: não é uma exclusão.
 		return ""
-	case errors.As(err, &fixado), errors.As(err, &estado), errors.As(err, &semImagem):
+	case errors.As(err, &fixado), errors.As(err, &estado), errors.As(err, &semImagem), errors.As(err, &semVideo):
 		return TurnFailurePinnedProfile
-	case errors.As(err, &estagio), errors.As(err, &imagem), errors.Is(err, port.ErrBadOriginTool):
-		// Um pedido mal formado (parte de imagem, tool de origem) é recusado pelo gateway antes de
-		// sair (AOS-530): não depende do que o modelo fez.
+	case errors.As(err, &estagio), errors.As(err, &imagem), errors.As(err, &video), errors.Is(err, port.ErrBadOriginTool):
+		// Um pedido mal formado (parte de imagem, parte de vídeo, tool de origem) é recusado pelo
+		// gateway antes de sair (AOS-530, AOS-535): não depende do que o modelo fez.
 		return TurnFailureGatewayDenied
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded), errors.As(err, &pedido), errors.As(err, &rede):
 		return TurnFailureTransport

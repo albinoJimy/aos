@@ -53,6 +53,12 @@ func TestAOS521_ClassifyTurnFailure(t *testing.T) {
 		{"imagem em streaming", embrulhar(&RouteWithoutImageError{Cause: "imagem_em_streaming"}), TurnFailurePinnedProfile},
 		{"parte de imagem invalida", embrulhar(&port.ImagePartError{Cause: port.ImageCauseTotalTooLarge}), TurnFailureGatewayDenied},
 		{"tool de origem invalida", embrulhar(port.ErrBadOriginTool), TurnFailureGatewayDenied},
+		// AOS-535: as recusas de video tambem nunca contam como falha do modelo.
+		{"video para rota sem a capacidade", embrulhar(&RouteWithoutVideoError{Cause: VideoCauseProfileWithout}), TurnFailurePinnedProfile},
+		{"video para rota sem perfil", embrulhar(&RouteWithoutVideoError{Cause: VideoCauseNoProfile}), TurnFailurePinnedProfile},
+		{"video em streaming", embrulhar(&RouteWithoutVideoError{Cause: VideoCauseStreaming}), TurnFailurePinnedProfile},
+		{"parte de video invalida", embrulhar(&port.VideoPartError{Cause: port.VideoCauseNotFastStart}), TurnFailureGatewayDenied},
+		{"dois videos no pedido", embrulhar(&port.VideoPartError{Cause: port.VideoCauseMoreThanOne}), TurnFailureGatewayDenied},
 		// SEM CLASSE E SEM EXCLUSAO: quem conta trata como falha nao classificada.
 		{"um texto que parece um status nao e um status", embrulhar(errors.New("adapters: provider openai devolveu status 500: x")), ""},
 		{"200 sem usage", embrulhar(&costError{err: ErrUsageAusente}), ""},

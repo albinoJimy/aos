@@ -95,8 +95,8 @@ func (p RouteProfile) Validate() error {
 		return fmt.Errorf("%w: wire_class desconhecida (aceite: %s)", ErrBadRouteProfile, WireOpenAIChat)
 	}
 	for _, c := range p.Capabilities {
-		if c != CapabilityTools && c != CapabilityImage {
-			return fmt.Errorf("%w: capacidade desconhecida (aceites: %s, %s)", ErrBadRouteProfile, CapabilityTools, CapabilityImage)
+		if c != CapabilityTools && c != CapabilityImage && c != CapabilityVideo {
+			return fmt.Errorf("%w: capacidade desconhecida (aceites: %s, %s, %s)", ErrBadRouteProfile, CapabilityTools, CapabilityImage, CapabilityVideo)
 		}
 	}
 	if p.Params != nil {

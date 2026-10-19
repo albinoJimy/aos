@@ -96,6 +96,10 @@ const (
 	// ADR-042 §2.4). Um pedido com uma imagem para uma rota que não a declare é recusado pelo
 	// gateway antes de sair ([ErrRouteWithoutImage]). Nenhum perfil da tabela em código a declara.
 	CapabilityImage = "imagem"
+	// CapabilityVideo — a rota aceita a parte de vídeo MP4 numa mensagem `user` do pedido
+	// (AOS-535). Um pedido com vídeo para uma rota que não a declare é recusado pelo gateway antes
+	// de sair ([ErrRouteWithoutVideo]). Nenhum perfil da tabela em código a declara.
+	CapabilityVideo = "video"
 )
 
 // RouteProfile é o PERFIL MÍNIMO de uma rota: o que o nó espera de um nome que pede ao proxy.
