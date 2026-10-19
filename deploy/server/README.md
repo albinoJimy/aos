@@ -2232,6 +2232,100 @@ o `pdftoppm` se houver PDF; o resultado `aos-ocr/v1` com `motor: local`, a vers�
 modelo servido e com custo zero declarado. Usá-la quando os documentos não puderem ir ao fornecedor
 do modelo; nesse caso a ligação `modelo` não se usa.
 
+### Ligar o vídeo — a tool `video_read` (AOS-536, parte 2; molde ADR-042) — no código; NÃO está no `tools.json` de produção
+
+A `video_read` lê um vídeo **MP4** da pasta semeada e devolve a descrição factual feita por um
+**modelo capaz de vídeo**, por **uma** chamada ao Model Gateway do nó — o mesmo dos turnos —, no
+molde exacto da `ocr_read` (secção anterior): mediada pelo RM com **`cap:fs.read`** e o recurso
+**`doc://{doc_id}`** (os mesmos da `ocr_read`: a mesma leitura por run, partilhada com a `doc_read`
+e a `ocr_read` com `cap:fs.read` armada), o **token NHI do run**, o run e o passo da tool call,
+`OriginTool: "video_read"` no selo de governação, `Tools` vazio, sem nova tentativa. O vídeo vai
+**inteiro** numa parte `video_url` (data URL `video/mp4` em base64) só desse pedido; o titular nunca
+vê vídeo. O resultado é JSON `aos-video/v1` (texto, `sha256`, tamanho e duração do vídeo, alias,
+modelo servido, digest do perfil, digest da instrução), `untrusted`. O replay usa o resultado
+capturado e **não** volta a chamar o modelo.
+
+**Sem a entrada `video_read` no `tools.json`, o nó é o de antes.** O código está no nó; a entrada
+**não** está no `tools.json` de produção, e pô-la é um acto do dono (passo 8).
+
+**O que a tool aceita, antes de qualquer custo.** A leitura é a da `ocr_read` (nível de topo, sem
+ligações simbólicas, ficheiro regular conferido no descritor, `ficheiro_trocado`, `nome_nao_canonico`,
+`ficheiro_ilegivel`, uma só ligação física em unix), até **4 MiB** (`port.MaxVideoBytes`). Depois:
+só **MP4** pelas regras da porta 1.13.0 (AOS-535: `ftyp` com marca MP4, caixas de topo íntegras,
+**`moov` antes da `mdat`** — o `+faststart`), a **duração** lida da `mvhd` (um MP4 sem ela legível,
+ou com duração zero, sai `formato_nao_aceite`) e o **tecto de duração de 60 s** (`video_longo`; a
+bateria medida no AOS-537 tinha vídeos de 5 a 30 s). Tudo isto **antes** de chamar o modelo, sem
+custo. A duração é a que o ficheiro **declara** (ninguém descodifica o vídeo); a pasta é do dono.
+
+**A pasta é a da `ocr_read`: `AOS_OCR_SEED_DIR`, sem variável nova.** O recurso selado é
+`doc://{doc_id}` nas duas tools; com duas pastas, `doc://x` nomearia ficheiros diferentes conforme a
+tool. Assim nomeia sempre o mesmo ficheiro, e o formato decide qual das tools o aceita (PNG/JPEG
+numa, MP4 na outra). Os vídeos põem-se na mesma `/opt/aos/gvisor/seed/`.
+
+**O custo no run** é o da `ocr_read` — o mesmo evento durável `budget.toolcall.model_cost`
+(`"tool":"video_read"`), a resposta não medida a cobrar a reserva inteira, a chamada sem resposta a
+libertá-la —, com uma diferença: **a reserva é função da duração**. Tokens de entrada reservados =
+**2 × (segundos, arredondados para cima, × 300 + 512)** — 300 tokens por segundo é a ordem de
+grandeza que o Gemini documenta (258 por fotograma a 1 fps + 32 de áudio), 512 a instrução, e o
+factor 2 a folga para um fornecedor que amostre mais —, mais os **8192** do `max_tokens` (o do banco),
+e o custo desses tokens pela tabela de preços do par (`video-visao`, região do nó). Para o vídeo
+mais longo (60 s): 37 024 + 8192 = **45 216 tokens**. Não é uma medição: o `usage` de um vídeo pelo
+proxy fica por confirmar na série de produção; um custo medido acima da reserva grava-se como foi.
+
+**Quantas `video_read` cabem num run** com os tectos de produção (`AOS_BUDGET_MAX_TOKENS=200000`,
+`AOS_BUDGET_MAX_COST_MICRO_USD=100000`): pelos tokens, 4 vídeos de 60 s (200 000 / 45 216) ou 19 de
+2 s (200 000 / 10 416), menos o que os turnos gastaram; os dólares dependem do preço do par (passo 3).
+Com `cap:fs.read` armada há, de qualquer modo, uma leitura por run.
+
+**O prazo** da chamada é 120 s (a medição do AOS-537 deu até 45 s nos cinco modelos, 11,7 s no
+escolhido); o efectivo é o MENOR entre ele e `AOS_MODEL_EGRESS_TIMEOUT` (120 s em produção).
+
+**Passos do dono, por ordem.** Cada um sem o seguinte é inerte.
+
+1. **A allowlist** com o alias `video-visao` no board do nó: um bundle externo assinado
+   (`AOS_MODEL_ALLOWLIST_BUNDLE_DIR` + `AOS_MODEL_ALLOWLIST_TRUST_ANCHOR`) ou a embebida re-assinada
+   numa release. A embebida **não** o autoriza hoje e não foi alterada.
+2. **O registo de entrada assinado de uso `tool` de VÍDEO** para `video-visao` (AOS-536 parte 1):
+   `aos-ensaio qualificar-video` no modo real prepara o pacote, o dono assina-o
+   (`aos-issuer route-profile-sign`) e põe-no em `/opt/aos/perfis-de-rota/`. Um registo de
+   **imagem** para o alias não liga a `video_read` (nem um de vídeo liga a `ocr_read`).
+3. **O preço do par** (`video-visao`, região do nó) na tabela do operador, se
+   `AOS_MODEL_PRICING_PATH` estiver definida — o do modelo atrás da rota do passo 4
+   (`google/gemini-3.5-flash-lite` pela OpenRouter), lido no dia.
+4. **A rota no proxy**: o bloco `video-visao` no `litellm/config.yaml` do servidor, com o modelo
+   escolhido pelo dono e a mesma variável de chave que a rota do titular; o `expected_model` do
+   registo assinado tem de ser esse `model`.
+5. **Os vídeos** MP4 com `+faststart` em `/opt/aos/gvisor/seed/` (a pasta da `ocr_read`), no nível
+   de topo, ficheiros regulares legíveis pelo uid 65532, até 4 MiB e 60 s.
+6. **A variável** `AOS_OCR_SEED_DIR=/etc/aos/ocr-seed` — já posta para a `ocr_read`.
+7. **A excepção do ADR-034 §2.7 — DECIDIDA (2026-10-19).** A `video_read` tem **egress externo**: o
+   vídeo sai do servidor para o fornecedor do modelo. O dono estendeu-lhe a excepção da `ocr_read`
+   (emenda de 2026-10-19 do ADR-034 §2.7), por nome e forma: `modelo.alias`, `cap:fs.read`,
+   `doc://{doc_id}`. Com outra forma, `TestAOS069_ManifestoDeProducaoNaoOfereceEgressExterno`
+   continua a avermelhar.
+8. **A entrada no `tools.json` — por PR ao repositório e uma release, NUNCA editando o servidor**,
+   só depois do passo 7. Na forma da da `ocr_read`, com `"name": "video_read"`, `"egress": "external"`
+   e `"modelo": { "alias": "video-visao" }`; a `capability` e o `resource_value` têm de ser
+   exactamente `cap:fs.read` e `doc://{doc_id}`. Para um plano do `aos-orq` a usar, a entrada também
+   no `orq/snapshot.json` (como a `ocr_read`).
+9. **Recriar o nó** e confirmar a linha `tool video_read LIGADA (EPIC-08/AOS-536, molde ADR-042)`
+   (com o alias, o digest do perfil e a postura do custo) e `aos_video_read_total{resultado="..."}`
+   no `/metrics`.
+
+**O que o arranque recusa**, com a `video_read` no `tools.json`: sem `AOS_OCR_SEED_DIR` ou com a
+pasta ilegível (`ErrVideoSemPasta`); o alias fora da allowlist em vigor (`ErrVideoAliasForaDaAllowlist`);
+sem um registo assinado de uso `tool` **de vídeo** para o alias (`ErrVideoSemRegistoTool`); com a
+contabilidade composta, sem preço para o par (`ErrVideoSemPreco`); sem o gateway composto a partir
+do ambiente (`ErrVideoSemGateway`); um bloco `modelo` noutra tool que não a `ocr_read` ou a
+`video_read`, ou com outra capability ou outro recurso.
+
+**As falhas da tool** (`aos_video_read_total`, vocabulário fechado): `descrito`, ou as da
+`ocr_read` para a entrada, a leitura, o custo e a chamada (`entrada_invalida`, `sem_credencial`,
+`ficheiro_*`, `nome_nao_canonico`, `formato_nao_aceite`, `tecto_do_run`, `orcamento_indisponivel`,
+`tempo_esgotado`, `cancelado`, `erro_do_gateway`, `modelo_servido_diferente`, `resposta_invalida`),
+mais `video_longo` (acima de 60 s, sem custo), `video_cortado` (`finish_reason` `length`) e
+`video_vazio`.
+
 ### A forma da resposta do provider — `AOS_MODEL_RESPONSE_SHAPE` (AOS-507)
 
 Uma resposta que gasta tokens de saída e chega com o texto vazio fecha `empty_output`, e o registo

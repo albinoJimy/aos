@@ -120,6 +120,10 @@ type perfisAssinados struct {
 	// tool chama o alias de um registo de uso `tool` desta pasta, pelo MESMO gateway. nil ⇒ sem a
 	// tool. O gateway liga-se-lhe na composição ([newGatewayModelClientComPerfis]).
 	ocr *ligacaoOCR
+	// video é a tool `video_read` composta (AOS-536 parte 2), quando o registo de tools a declara: a
+	// tool chama o alias de um registo de uso `tool` de VÍDEO desta pasta, pelo MESMO gateway. nil ⇒
+	// sem a tool. Como a `ocr`, o gateway liga-se-lhe na composição.
+	video *ligacaoVideo
 }
 
 // perfis devolve o conjunto de perfis do nó: a tabela em código (nil) sem pasta ou sem registos.

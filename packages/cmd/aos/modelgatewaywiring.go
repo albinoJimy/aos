@@ -369,6 +369,10 @@ func newGatewayModelClientComPerfis(verifier authn.Verifier, baseURL, model, api
 	if assinados != nil && assinados.ocr != nil {
 		assinados.ocr.gw, assinados.ocr.govAudit = gw, govAudit
 	}
+	// AOS-536 (parte 2): o mesmo para a tool `video_read`.
+	if assinados != nil && assinados.video != nil {
+		assinados.video.gw, assinados.video.govAudit = gw, govAudit
+	}
 	titular := modelgateway.NewModelClient(gw, model, opts...)
 	// AOS-520 (ADR-041 §2.5): UM GATEWAY, UM ADAPTADOR POR ALIAS. Com um perfil assinado para um
 	// alias que NÃO é o do titular, o cliente de modelo passa a ser um despachante: o adaptador do

@@ -63,9 +63,10 @@ const toolsJSONComWebPost = "../../../deploy/node/dev-hardened/model-tools/tools
 // obrigar a uma decisão escrita — com a opção C, um efeito externo pedido em contexto limpo já não
 // morre no taint.
 //
-// A ÚNICA EXCEPÇÃO é a da emenda de 2026-10-18 ao ADR-034 §2.7 (decisão do dono, AOS-530): a
-// `ocr_read` do ADR-042, e só com a forma que a decisão cobre — ver [excepcaoOCRDaEmenda]. Uma
-// entrada com o mesmo nome e outra forma volta a avermelhar.
+// AS ÚNICAS EXCEPÇÕES são as das emendas ao ADR-034 §2.7 (decisões do dono): a `ocr_read` do
+// ADR-042 (2026-10-18, AOS-530) e a `video_read` (2026-10-19, AOS-536), e só com a forma que as
+// decisões cobrem — ver [excepcaoOCRDaEmenda]. Uma entrada com o mesmo nome e outra forma volta a
+// avermelhar.
 func TestAOS069_ManifestoDeProducaoNaoOfereceEgressExterno(t *testing.T) {
 	t.Setenv("AOS_MODEL_TOOLS", toolsJSONProducao)
 	specs, err := readModelToolSpecs()
@@ -80,14 +81,14 @@ func TestAOS069_ManifestoDeProducaoNaoOfereceEgressExterno(t *testing.T) {
 	}
 }
 
-// excepcaoOCRDaEmenda diz se a entrada é EXACTAMENTE a excepção da emenda de 2026-10-18 ao
-// ADR-034 §2.7: a `ocr_read` com `modelo.alias`, `cap:fs.read` e `doc://{doc_id}`. É por nome E
-// forma: o que o dono aceitou foi uma leitura por run (a `cap:fs.read`, armada em produção) de
+// excepcaoOCRDaEmenda diz se a entrada é EXACTAMENTE uma das excepções das emendas ao ADR-034
+// §2.7: a `ocr_read` (2026-10-18) ou a `video_read` (2026-10-19), com `modelo.alias`,
+// `cap:fs.read` e `doc://{doc_id}`. É por nome E forma: o que o dono aceitou foi uma leitura por run (a `cap:fs.read`, armada em produção) de
 // uma imagem que ele semeou (`doc://{doc_id}`), por um modelo de visão sem tools (o bloco
 // `modelo`). Os literais estão aqui, e não as constantes do código, para que mudar a forma da
 // tool não alargue a excepção em silêncio.
 func excepcaoOCRDaEmenda(s modelToolSpec) bool {
-	return s.Name == "ocr_read" &&
+	return (s.Name == "ocr_read" || s.Name == "video_read") &&
 		s.Modelo != nil && strings.TrimSpace(s.Modelo.Alias) != "" &&
 		s.Capability == "cap:fs.read" &&
 		s.ResourceValue == "doc://{doc_id}"
@@ -103,7 +104,7 @@ func violacoesDoADR034Seccao27(specs []modelToolSpec) []string {
 			v = append(v, fmt.Sprintf("o manifesto de producao voltou a oferecer %q (%s) — retirado por decisao do dono a 2026-09-26 (ADR-034 §2.7); reintroduzir é decisao explicita", s.Name, s.Capability))
 		}
 		if s.Egress != "none" && !excepcaoOCRDaEmenda(s) {
-			v = append(v, fmt.Sprintf("o manifesto de producao oferece %q com egress %q — so tools sem egress externo ate a fase 2 / opcao A do ADR-034 (§2.7); a unica excepcao e a ocr_read com modelo.alias, cap:fs.read e doc://{doc_id} (emenda de 2026-10-18)", s.Name, s.Egress))
+			v = append(v, fmt.Sprintf("o manifesto de producao oferece %q com egress %q — so tools sem egress externo ate a fase 2 / opcao A do ADR-034 (§2.7); as unicas excepcoes sao a ocr_read e a video_read com modelo.alias, cap:fs.read e doc://{doc_id} (emendas de 2026-10-18 e 2026-10-19)", s.Name, s.Egress))
 		}
 	}
 	return v
@@ -178,6 +179,24 @@ func TestAOS069_ExcepcaoDaOCRNaoCobreOutraTool(t *testing.T) {
 	}
 	if v := violacoesDoADR034Seccao27([]modelToolSpec{outra}); len(v) != 1 {
 		t.Errorf("uma ocr_read com outro recurso tinha de avermelhar; deu %q", v)
+	}
+	// A emenda de 2026-10-19 (AOS-536): a `video_read` com a forma está coberta; com outro recurso,
+	// sem o bloco `modelo` ou com outra capability, não. Outro nome com a mesma forma também não.
+	video := modelToolSpec{Name: "video_read", Capability: "cap:fs.read", ResourceValue: "doc://{doc_id}", Egress: "external", Modelo: &modeloMapping{Alias: "video-visao"}}
+	if !excepcaoOCRDaEmenda(video) {
+		t.Error("a emenda de 2026-10-19 nao cobriu a video_read com a forma decidida")
+	}
+	for nome, muda := range map[string]func(*modelToolSpec){
+		"outro recurso":    func(s *modelToolSpec) { s.ResourceValue = "doc://outra/{doc_id}" },
+		"sem modelo":       func(s *modelToolSpec) { s.Modelo = nil },
+		"outra capability": func(s *modelToolSpec) { s.Capability = "cap:http.get" },
+		"outro nome":       func(s *modelToolSpec) { s.Name = "audio_read" },
+	} {
+		m := video
+		muda(&m)
+		if excepcaoOCRDaEmenda(m) {
+			t.Errorf("a excepcao cobriu uma video_read com %s", nome)
+		}
 	}
 }
 

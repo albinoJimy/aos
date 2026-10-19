@@ -2436,6 +2436,21 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// AOS-536 (parte 2) — A TOOL `video_read`, POR RESULTADO, no molde da `ocr_read`: só com a tool
+	// no registo de tools; uma amostra por resultado do vocabulário fechado.
+	if h.node != nil && h.node.video != nil {
+		for i, r := range videoCausas() {
+			labels := `{resultado="` + r + `"}`
+			if i == 0 {
+				g("aos_video_read_total",
+					"Execucoes da tool video_read desde o arranque, por resultado (AOS-536): descrito, ou a causa da falha — entrada_invalida, sem_credencial, ficheiro_fora_da_raiz, nome_nao_canonico, ficheiro_em_falta, ficheiro_ilegivel, ficheiro_nao_regular, ficheiro_com_varias_ligacoes, ficheiro_trocado, ficheiro_grande, formato_nao_aceite, video_longo (todas antes de chamar o modelo, sem custo), tecto_do_run, orcamento_indisponivel, tempo_esgotado, cancelado, erro_do_gateway, modelo_servido_diferente, video_cortado, video_vazio, resposta_invalida. Vocabulario fechado: nenhum texto do modelo, nenhum byte do video.",
+					"counter", float64(h.node.video.lido(r)), labels)
+				continue
+			}
+			amostra("aos_video_read_total", labels, float64(h.node.video.lido(r)))
+		}
+	}
+
 	// AOS-507 — TURNOS PELA FORMA DA RESPOSTA DO PROVIDER. Só sai com a medição ligada: com `off` a
 	// família não existe, e o /metrics é o de antes. Uma amostra por série dos três vocabulários
 	// fechados (342 no máximo), sempre presentes: o zero é um zero verdadeiro.
