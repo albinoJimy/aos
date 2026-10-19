@@ -105,20 +105,27 @@ type relatorioDeOCRQualificante struct {
 		Fornecedor string `json:"fornecedor"`
 		Modelo     string `json:"modelo"`
 	} `json:"rota"`
-	Veredicto *struct {
-		RotaMedida *struct {
-			DigestDoPerfil string `json:"digest_do_perfil"`
-		} `json:"rota_medida"`
-	} `json:"veredicto_do_ocr"`
+	Veredicto *veredictoQualificante `json:"veredicto_do_ocr"`
+	// VeredictoDoVideo é o mesmo bloco num relatório `video` (AOS-537).
+	VeredictoDoVideo *veredictoQualificante `json:"veredicto_do_video"`
 }
 
-// ocrQualificantesNosRelatorios conta, nos relatórios `ocr` reais das pastas dadas, os que
-// qualificaram um perfil hoje (AOS-530).
+type veredictoQualificante struct {
+	RotaMedida *struct {
+		DigestDoPerfil string `json:"digest_do_perfil"`
+	} `json:"rota_medida"`
+}
+
+// ocrQualificantesNosRelatorios conta, nos relatórios `ocr` (AOS-530) e `video` (AOS-537) reais
+// das pastas dadas, os que qualificaram um perfil hoje.
 func ocrQualificantesNosRelatorios(pastas []string, k ChaveDaQualificacao, vistos map[string]bool) OrdemDaQualificacao {
 	var o OrdemDaQualificacao
+	// Desde o AOS-537 contam também as corridas `video` que mediram um perfil: o tecto é sobre a
+	// rota, meça ela imagens ou vídeos.
 	for _, pasta := range pastas {
-		achados, _ := filepath.Glob(filepath.Join(pasta, "ensaio-"+ModoReal+"-ocr-*.json"))
-		for _, caminho := range achados {
+		ocr, _ := filepath.Glob(filepath.Join(pasta, "ensaio-"+ModoReal+"-ocr-*.json"))
+		video, _ := filepath.Glob(filepath.Join(pasta, "ensaio-"+ModoReal+"-video-*.json"))
+		for _, caminho := range append(ocr, video...) {
 			abs, err := filepath.Abs(caminho)
 			if err != nil || vistos[abs] {
 				continue
@@ -129,14 +136,24 @@ func ocrQualificantesNosRelatorios(pastas []string, k ChaveDaQualificacao, visto
 				continue
 			}
 			var r relatorioDeOCRQualificante
-			if json.Unmarshal(cru, &r) != nil || r.Modo != ModoReal || r.Experiencia != "ocr" || !strings.HasPrefix(r.DataUTC, k.Dia) ||
-				r.Veredicto == nil || r.Veredicto.RotaMedida == nil {
+			if json.Unmarshal(cru, &r) != nil || r.Modo != ModoReal || !strings.HasPrefix(r.DataUTC, k.Dia) {
+				continue
+			}
+			v := r.Veredicto
+			switch r.Experiencia {
+			case "ocr":
+			case "video":
+				v = r.VeredictoDoVideo
+			default:
+				continue
+			}
+			if v == nil || v.RotaMedida == nil {
 				continue
 			}
 			if r.Rota.Fornecedor == k.Fornecedor && r.Rota.Modelo == k.Modelo {
 				o.DaRota++
 			}
-			if r.Veredicto.RotaMedida.DigestDoPerfil == k.PerfilDigest {
+			if v.RotaMedida.DigestDoPerfil == k.PerfilDigest {
 				o.DoPerfil++
 			}
 		}

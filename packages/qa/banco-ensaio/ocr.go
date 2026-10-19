@@ -666,6 +666,12 @@ const FormatoDasLeiturasGuardadas = "aos-ensaio/leitura-ocr/v1"
 // EscreverLeiturasGuardadas grava, ao lado do relatório, a pasta `respostas-<nome do relatório>/`
 // com um ficheiro JSON por imagem: o texto lido. Recusa escrever numa pasta que já exista.
 func EscreverLeiturasGuardadas(relatorioEmJSON, motor string, textos map[string]string) (string, error) {
+	return escreverTextosGuardados(relatorioEmJSON, motor, FormatoDasLeiturasGuardadas, "imagem", textos)
+}
+
+// escreverTextosGuardados é a escrita das leituras do OCR e das descrições do vídeo (AOS-537): um
+// ficheiro por media, com o formato, a chave do media (`imagem`, `video`), o motor e o texto.
+func escreverTextosGuardados(relatorioEmJSON, motor, formato, chave string, textos map[string]string) (string, error) {
 	nome := strings.TrimSuffix(filepath.Base(relatorioEmJSON), ".json")
 	pasta := filepath.Join(filepath.Dir(relatorioEmJSON), PrefixoDaPastaDasRespostas+nome)
 	if err := os.Mkdir(pasta, 0o700); err != nil {
@@ -680,7 +686,7 @@ func EscreverLeiturasGuardadas(relatorioEmJSON, motor string, textos map[string]
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		cru, err := json.MarshalIndent(map[string]string{"formato": FormatoDasLeiturasGuardadas, "imagem": id, "motor": motor, "texto": textos[id]}, "", "  ")
+		cru, err := json.MarshalIndent(map[string]string{"formato": formato, chave: id, "motor": motor, "texto": textos[id]}, "", "  ")
 		if err != nil {
 			return pasta, err
 		}

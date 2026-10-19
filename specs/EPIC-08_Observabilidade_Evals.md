@@ -2759,6 +2759,132 @@ Só o elo do proxy.
 
 ---
 
+## AOS-537 — O banco de ensaio mede o vídeo: a experiência `video`, com uma bateria sintética gerada pelo ffmpeg e um veredicto contra o limiar de factos
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa nem emenda ADR nenhum: muda o banco de ensaio, que vive fora da imagem do nó. O ADR-042 é citado só como precedente do veredicto do OCR. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-08 — Observabilidade e Evals |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A6 (multimodal), sub-fase A6.1 «vídeo como tool»; rótulo do desenho «A6-video-medição» |
+| Tipo | feature (banco de ensaio) |
+| Prioridade | P2: os elos 2 e 3 da A6.1 (que modelos lêem vídeo pela OpenRouter, e com que limites) medem-se com isto; nada em produção depende dele |
+| Estimativa | M |
+| Dependências | AOS-529 e AOS-530 (a experiência `ocr`, o seu veredicto e o braço de visão pelo proxy do banco), AOS-534 (o proxy passa a parte `video_url` intacta até 5,6 MB), feitos. Decisões do dono de 2026-10-18 (opção A; o ffmpeg só no banco, com a imagem fixada pelo digest; os três candidatos; o limiar de 90%) |
+| Bloqueia | AOS-536 (a tool de vídeo precisa de um modelo medido) |
+| Responsável sugerido | Engenheiro de Qualidade |
+| Documentos de referência | `docs/reports/desenho-a5-a6-multimodal-2026-10-14.md` (§5.4, §5.5), `packages/qa/banco-ensaio/README.md` («A medição do vídeo»), `docs/runbooks/PROC-BANCO-DE-ENSAIO.md` («Medir um modelo de vídeo») |
+
+### Contexto
+
+O AOS-534 fechou o elo 1 da A6.1: o proxy LiteLLM fixado entrega ao fornecedor a parte
+`{"type":"video_url","video_url":{"url":"data:video/mp4;base64,…"}}` intacta, nas duas rotas da
+OpenRouter, até 5,6 MB. Faltam os elos 2 (que modelos aceitam e **lêem** vídeo pela OpenRouter) e
+3 (os limites de tamanho e duração), que só o modelo real diz, com custo. Para os medir, o banco
+precisa do que já tem para o OCR: uma bateria sintética com factos conhecidos, uma experiência com
+o motor plugável e um veredicto.
+
+**Decisões do dono (2026-10-18).** Vídeos de teste gerados com o **ffmpeg só no banco**, pela imagem
+`jrottenberg/ffmpeg@sha256:8ec1ee1f6a0fcd37c97725827b6b7832795c9596e3439b8da56d7700d61ae778`,
+autorizada e já descarregada no posto. Candidatos a medir pela OpenRouter:
+`google/gemini-3.5-flash-lite`, `google/gemini-3.8-flash`, `qwen/qwen3-vl-32b-instruct` (o Kimi
+directo fica fora). Limiar do veredicto: **90% dos factos**, o do OCR (D7). O alias de produção
+futuro é `video-visao` (não é deste ticket).
+
+### Objectivo
+
+Medir, por modelo, se ele descreve os factos de um vídeo curto — o texto que aparece, as contagens,
+as cores e a ordem dos acontecimentos — e se transcreve como dado uma instrução escrita no
+fotograma, com tempo, tokens e custo por vídeo, e um veredicto contra o limiar do dono.
+
+### Âmbito
+
+- **A bateria de vídeo** (`bateria-video/casos.json`, digest próprio): oito vídeos de 6 a 30 s, de
+  1 a 4 fps, de 320×240 a 640×360, cada um uma sequência de cenas estáticas (fundo de cor pura,
+  linhas de texto na fonte bitmap do OCR, grupos de formas). 34 factos de cinco tipos, todos
+  verificáveis pelo texto da resposta com a regra dos factos do banco: `texto`, `contagem`
+  (`COUNT: <n> <cor> <forma>s`), `cor` (`BACKGROUND <cena>: <cor>`), `ordem` (duas linhas, a
+  primeira antes da segunda) e `injeccao` (as linhas de uma instrução escrita no fotograma: o facto
+  é transcrevê-las como dado). Validação fail-closed (dimensões, ritmo, duração, vocabulário, fundos
+  seguidos iguais, cada facto ser do seu vídeo, todos os tipos cobertos).
+- **Os fotogramas desenham-se em Go**, deterministas e em memória; o digest cobre o ficheiro dos
+  casos e os píxeis. **O MP4 (H.264, `yuv420p`, `+faststart`) gera-o o ffmpeg** num contentor
+  `--rm --network none --read-only --cap-drop ALL --pull never`, uid 65532, 1 GiB, 512 processos,
+  120 s, com a imagem fixada pelo digest; os fotogramas entram por stdin em RGBA cru; o MP4 sai
+  para uma pasta temporária, a única montada. O banco recusa se a imagem não estiver no posto e
+  diz o `docker pull` a fazer; confere cada MP4 (`ftyp`, `moov` antes da `mdat`, a duração da `mvhd`,
+  as dimensões da `tkhd`, até 4 MiB) antes de o usar; cache por processo, pelo digest da bateria.
+- **A experiência `video`** (`aos-ensaio video`), com dois motores: o **falso** (sem rede nem
+  Docker; lê os factos de origem — `certo`, `erra-factos`, `cortado`) e o **`visao`**, pelo proxy
+  efémero do banco, com a parte `video_url` e uma instrução fixa e versionada (1.0.0, digest no
+  relatório), `max_tokens` 8192 e a resposta cortada (`finish_reason: length`) como falha do vídeo.
+  As regras do modo real são as do braço de visão do OCR, extraídas para `rota_paga.go` sem mudar
+  uma mensagem: o ficheiro de chaves, a lista de modelos, o contador e o tecto do dia, o pior caso
+  (um pedido por vídeo e a sonda) antes de enviar, `--so-plano` com o destino da chave, nunca em CI,
+  e as qualificações do dia com `--perfil`. Os MP4 geram-se depois do plano e antes do proxy.
+- **O relatório e o veredicto**, como os do OCR: por vídeo e por tipo de facto, pela regra e com
+  acentos, tempo, tokens e custo pela tabela de preços; o digest da bateria, do codificador e do
+  próprio relatório; `qualificado` só com pelo menos 90% dos factos e nenhum vídeo por descrever.
+  O texto do modelo não sai do relatório nem das saídas (só com `--guardar-respostas`).
+
+### Critérios de Aceitação
+
+- [x] A bateria de vídeo carrega com digest próprio e estável, cobre os cinco tipos de facto, as
+      dimensões e os ritmos pedidos e um vídeo de 30 s; a validação é fail-closed; as baterias de
+      antes mantêm os digests.
+      *Nota de 2026-10-19:* `TestAOS537_BateriaVideo_TemDigestProprioECobreOPedido` (bateria 1.1.0,
+      digest `sha256:6a52cb40…9b97`), `…_OCarregamentoEFailClosed` (21 defeitos, cada um pela sua razão) e
+      `TestAOS537_Fotogramas_DesenhamOQueOCasoDiz` (fundos, texto e as formas contadas nos píxeis).
+- [x] Os MP4 conferem-se antes de ir ao modelo, e o ffmpeg corre nas condições fixadas.
+      *Nota de 2026-10-19:* sem Docker, `TestAOS537_MP4_LeAFormaERecusaOQueNaoEOVideo`,
+      `TestAOS537_ComMP4_ConfereOQueOCodificadorDevolve` e `TestAOS537_FFmpeg_CorreNasCondicoesFixadas`
+      (com um Docker de teste: argumentos, fotogramas pelo stdin, recusa com o `docker pull`).
+- [ ] Com Docker, a bateria gera-se com o ffmpeg real e cada MP4 tem `ftyp`, a duração e as
+      dimensões esperadas: `AOS_BANCO_FFMPEG=1 go test -run '^TestAOS537_FFmpegReal_GeraABateria$' -v -count=1 .`
+      em `packages/qa/banco-ensaio` — por correr no posto do dono.
+- [x] Os motores falsos e o veredicto: `certo` ⇒ `qualificado` (e não vale para produção, por não
+      ser do modo real), `erra-factos` ⇒ `recusado` com o número exacto de presentes, `cortado` ⇒
+      `recusado` com o vídeo mais longo `falhou:cortada`; a fronteira dos 90%.
+      *Nota de 2026-10-19:* `TestAOS537_Falsos_OVeredictoDistingueOsTres`, `TestAOS537_ARegraDosFactos`.
+- [x] O pedido do motor `visao` leva a parte `video_url` com a data URL `video/mp4` e os bytes do MP4,
+      a instrução fixa e nenhuma tool; o tecto e uma recusa param a corrida, um 400 falha o vídeo,
+      o custo conta-se; pela linha de comandos, as regras do modo real e o relatório que entra na
+      reconstrução do contador do dia e nas qualificações do dia.
+      *Nota de 2026-10-19:* com um fornecedor falso em `httptest`, `TestAOS537_Visao_OPedidoLevaOVideoInteiroSemTools`,
+      `…_DescreveOsVideosEContaOCusto`, `TestAOS537_LinhaDeComandos` e `TestAOS537_Perfil_ContaNasQualificacoesDoDia`.
+- [ ] Medição real, com autorização do dono, dos três candidatos, com o `--so-plano` primeiro: os
+      factos por tipo, o tempo e o custo por vídeo, e o veredicto de cada um.
+
+### Fora de âmbito
+
+- A porta do gateway 1.13.0 e a capacidade `video` do perfil (AOS-535): até lá, o `--perfil` da
+  experiência identifica-se só pelo digest e não pode declarar `tools`.
+- A tool de vídeo e o alias `video-visao` (AOS-536).
+- A medição real paga: corre-a o dono, com autorização, no posto.
+- Vídeos reais, som, movimento; descarregar imagens Docker.
+
+### Notas
+
+- O MP4 não sai pelo stdout do contentor, ao contrário do pedido inicial: o `+faststart` obriga o
+  ffmpeg a reescrever o ficheiro no fim, e o muxer de MP4 recusa uma saída sem `seek`; a
+  alternativa (MP4 fragmentado) não leva a duração na `mvhd`. Sai para uma pasta temporária do
+  posto, a única montada, que o banco lê e apaga.
+- As contagens e as cores verificam-se nas linhas que a instrução pede (`COUNT`, `BACKGROUND`): um
+  modelo que vê certo e escreve noutra forma perde esses factos. É um limite declarado no relatório.
+- **Revisão independente (2026-10-19), corrigida no mesmo ramo; relatório versão 2, bateria 1.1.0.**
+  Um `qualificado` era de confiança, mas um `recusado` podia vir da formatação: uma resposta perfeita
+  em negrito (`**COUNT:** 4 red circles`) dava 18 de 34. Os factos de contagem e de cor passaram a
+  ler-se das linhas rotuladas com uma dobra própria do vídeo (sem `*`, `_`, crases nem `|`, sem o
+  espaço antes de `:`, várias contagens numa linha), e uma contradição (duas cores para a mesma cena,
+  hipóteses, dois números para a mesma forma e cor) falha o facto; a regra comum dos factos, a do OCR
+  e dos degraus, não mudou. O vídeo mais longo passou a contagem decrescente, para o par de ordem
+  contrariar a ordem alfabética e a numérica. A pasta montada passou de 0777 a 0733, e o MP4 lê-se só
+  como ficheiro regular, sem seguir ligações; o custo de um pedido soma-se antes do registo no
+  contador. Regressões: `aos537_revisao_test.go`.
+
+---
+
 ## AOS-535 — A porta do gateway 1.13.0 com a parte de vídeo e a capacidade `video` no perfil da rota
 
 A seguir, por detalhar depois do AOS-534: o pedido do Model Gateway passa a levar uma parte de vídeo, e uma rota sem a capacidade `video` recusa-o antes de sair.
@@ -2805,3 +2931,5 @@ A seguir, por detalhar depois do AOS-535: a tool, mediada pelo Reference Monitor
 | 1.27 | 2026-10-15 | AOS-529: correcções da revisão adversarial (um falso que erra factos, o zero sem barra, a pasta montada legível pelo uid do contentor, a falha do PDF classificada por estágio e pelo pico, `--pull never`, os limites dizem runc e chamada isolada) e duas decisões do dono: a imagem do Tesseract construída no posto (`ocr/Dockerfile`, aceite pelo ID) e o braço do modelo de visão pelo proxy do banco, com as chaves, os tectos e o custo do fornecedor dele. A medição real fica para depois do PR | Equipa AOS |
 | 1.28 | 2026-10-15 | AOS-529 medido: o Tesseract local com 82,5% dos factos (76,2% com acentos), ~0,9 s e custo zero por imagem; o Claude Haiku 5.5 pela OpenRouter com 100% (100%), 2 a 9 s e ~0,0001 USD por imagem; o Gemini 3.8 Flash com 89,2% e ~0,0034 USD, com a resposta cortada (provavelmente o limite de tokens de saída do adaptador, por confirmar). Imagens sintéticas, doze no braço de visão. A medição levou o dono a mudar a D2: OCR por um modelo de visão através de uma tool (ADR-042, proposto; AOS-530 reescrito) | Equipa AOS |
 | 1.29 | 2026-10-18 | +AOS-534 (fase A6, sub-fase A6.1, spike): a parte `video_url` com uma data URL de MP4 atravessa o proxy LiteLLM fixado intacta, nas duas rotas da OpenRouter? O falso do estado regista as partes do `content` (tipo, chaves, classe da data URL, sha256 e tamanho, sem bytes) e um cenário opcional com o proxy real mede-o sem custo, com um MP4 sintético pequeno e outro de 3 a 6 MB. AOS-535 e AOS-536 abertos só com o título, a seguir | Equipa AOS |
+| 1.30 | 2026-10-19 | +AOS-537 (fase A6, sub-fase A6.1): o banco mede o vídeo — a bateria sintética de oito vídeos com 34 factos (texto, contagens, cores, ordem e uma instrução no fotograma), fotogramas em Go e MP4 pelo ffmpeg fixado pelo digest num contentor sem rede, e a experiência `video` com o motor falso e o modelo pelo proxy do banco, com veredicto contra 90% dos factos. As regras do modo real do braço de visão do OCR passam a `rota_paga.go`, partilhadas. Implementado e provado com falsos; o ffmpeg real e a medição dos três candidatos ficam para o dono | Equipa AOS |
+| 1.31 | 2026-10-19 | AOS-537: correcções da revisão independente — os factos de contagem e de cor lêem-se das linhas rotuladas, tolerantes ao markdown e sem contradições (relatório versão 2); a bateria de vídeo 1.1.0 com um par de ordem contra a ordem alfabética; a pasta montada do ffmpeg em 0733 e o MP4 lido só como ficheiro regular; o custo antes do registo no contador | Equipa AOS |

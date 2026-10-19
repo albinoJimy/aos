@@ -308,26 +308,11 @@ func mostrarBateriaOCR(args []string, stdout, stderr io.Writer) int {
 
 // ─── O motor de visão: as regras do modo real ──────────────────────────────────────────────
 
-// execucaoDaVisao é o que a corrida de visão preparou: o motor, o contador e o proxy.
+// execucaoDaVisao é o que a corrida de visão preparou: a rota paga (o contador e o proxy) e o
+// motor. As regras do modo real vivem em rota_paga.go, partilhadas com a experiência `video`.
 type execucaoDaVisao struct {
-	// registar conta a corrida entre as qualificações do dia, quando ela qualifica um perfil; nil
-	// sem `--perfil`.
-	registar   func() (OrdemDaQualificacao, error)
-	motor      *MotorOCRVisao
-	contador   *Contador
-	fornecedor Fornecedor
-	modelo     string
-	piorCaso   int64
-	// pasta é a pasta dos relatórios quando não vem por --saida: a do dono, como no modo real.
-	pasta      string
-	fecharProx func()
-}
-
-func (v *execucaoDaVisao) fechar() {
-	if v.fecharProx != nil {
-		v.fecharProx()
-	}
-	v.contador.Fechar()
+	*rotaPaga
+	motor *MotorOCRVisao
 }
 
 // PiorCasoDaVisao é o número máximo de pedidos de uma corrida do motor de visão: um por imagem que
@@ -349,135 +334,30 @@ func PiorCasoDaVisao(b *BateriaOCR) int64 {
 // desta corrida tem de ser a que o perfil espera, recusado ANTES de abrir o contador ou o proxy; e
 // conta nas qualificações do dia (D7), conferidas antes do proxy e escritas quando a sonda passa.
 func prepararVisao(ctx context.Context, o opcoesDoOCR, b *BateriaOCR, perfil *modelgateway.RouteProfile, amb Ambiente, red *Redactor, stderr io.Writer) (*execucaoDaVisao, int) {
-	esperado := perfilEsperado(perfil)
-	caminho := o.chaves
-	if caminho == "" {
-		caminho = amb.Getenv(EnvDasChaves)
+	const prefixo = "aos-ensaio ocr"
+	rp, codigo := planearRotaPaga(planoDaRotaPaga{
+		prefixo: prefixo, chaves: o.chaves, fornecedor: o.visaoFornecedor, modelo: o.visaoModelo, precos: o.precos, saida: o.saida,
+		reconstruir: o.reconstruir, perfil: perfil, piorCaso: PiorCasoDaVisao(b), unidade: "imagens", nota: "; o PDF fica fora",
+		ticketDoPerfil: "AOS-530", alias: AliasDaVisao,
+	}, amb, red, stderr)
+	if rp == nil {
+		return nil, codigo
 	}
-	if caminho == "" {
-		fmt.Fprintf(stderr, "aos-ensaio ocr: RECUSADO — o motor visao exige o caminho do ficheiro de chaves (--chaves ou %s)\n", EnvDasChaves)
-		return nil, SaidaRecusada
-	}
-	fornecedor, err := LerFornecedor(o.visaoFornecedor)
-	if err != nil {
-		fmt.Fprintf(stderr, "aos-ensaio ocr: --visao-fornecedor: %v\n", err)
-		return nil, SaidaUso
-	}
-	chaves, err := LerChaves(caminho)
-	if err != nil {
-		fmt.Fprintf(stderr, "aos-ensaio ocr: RECUSADO — %v\n", err)
-		return nil, SaidaRecusada
-	}
-	// A lista de modelos do dono manda: um modelo fora dela é recusado por [Chaves.Rota].
-	rota, err := chaves.Rota(fornecedor, o.visaoModelo, Destino{deTeste: amb.destinoDeTeste})
-	if err != nil {
-		fmt.Fprintf(stderr, "aos-ensaio ocr: RECUSADO — %v\n", err)
-		return nil, SaidaRecusada
-	}
-	red.Acrescentar(rota.Segredos()...)
-	// O PERFIL MEDIDO É O DESTA ROTA (AOS-530), como no `qualificar` (cli.go): o proxy declara ter
-	// servido `<prefixo>/<modelo>`, e o gateway do nó compara-o com o `expected_model` do perfil em
-	// cada chamada da tool. Um relatório que mediu outro modelo não pode qualificar este perfil.
-	if esperado != "" && esperado != prefixoDoProxy(fornecedor)+"/"+rota.Modelo {
-		fmt.Fprintf(stderr, "aos-ensaio ocr: RECUSADO — o expected_model do perfil nao e a rota desta corrida (%s/%s): o veredicto e da rota medida, e o modelo servido tem de ser o que o perfil espera. Nenhum pedido foi enviado\n", prefixoDoProxy(fornecedor), rota.Modelo)
-		return nil, SaidaRecusada
-	}
-	var precos *TabelaDePrecos
-	if o.precos != "" {
-		if precos, err = LerTabelaDePrecos(o.precos); err != nil {
-			fmt.Fprintf(stderr, "aos-ensaio ocr: RECUSADO — %v\n", err)
-			return nil, SaidaRecusada
-		}
-	}
-	pastaDoEstado := filepath.Dir(caminho)
-	if amb.PastaDoDono != "" {
-		pastaDoEstado = amb.PastaDoDono
-	}
-	caminhoDoContador := filepath.Join(pastaDoEstado, "contador.json")
-	pastaDaSaida := o.saida
-	if pastaDaSaida == "" {
-		pastaDaSaida = filepath.Join(pastaDoEstado, "relatorios")
-	}
-	pastas := []string{filepath.Join(pastaDoEstado, "relatorios"), filepath.Join(filepath.Dir(caminho), "relatorios"), pastaDaSaida}
-	if !verificarContadorDoDia(caminhoDoContador, pastas, []Fornecedor{fornecedor}, amb.Relogio().UTC().Format("2006-01-02"), o.reconstruir, stderr) {
-		return nil, SaidaRecusada
-	}
-	// FAIL-CLOSED: sem tecto, sem preço para um tecto em dólares, ou com o contador em uso, não abre.
-	contador, err := AbrirContador(caminhoDoContador, fornecedor, rota.Tectos, precos, rota.Modelo, amb.Relogio)
-	if err != nil {
-		fmt.Fprintf(stderr, "aos-ensaio ocr: RECUSADO — %v\n", err)
-		return nil, SaidaRecusada
-	}
-	v := &execucaoDaVisao{contador: contador, fornecedor: fornecedor, modelo: rota.Modelo, piorCaso: PiorCasoDaVisao(b), pasta: pastaDaSaida}
-	// AS QUALIFICAÇÕES DO DIA (AOS-518, decisão D7), também para a corrida `ocr` que qualifica um
-	// perfil: repetir até passar é escolher o resultado. É o MESMO mecanismo e o MESMO registo das
-	// qualificações dos candidatos (`qualificacoes.json`, ao lado do contador e sob a trava dele):
-	// duas por perfil e quatro por rota — fornecedor e modelo — por dia UTC, contadas juntas com as
-	// da experiência `qualificacao`. Juntas porque o tecto é sobre a ROTA: medir o mesmo modelo
-	// noutra experiência não é uma tentativa nova. Confere-se aqui, antes do proxy e de qualquer
-	// pedido; escreve-se quando a sonda passa ([execucaoDaVisao.sondar]).
-	if perfil != nil {
-		caminhoDasQualificacoes := filepath.Join(pastaDoEstado, NomeDoRegistoDeQualificacoes)
-		chave := ChaveDaQualificacao{Dia: amb.Relogio().UTC().Format("2006-01-02"), PerfilDigest: perfil.Digest(), Fornecedor: string(fornecedor), Modelo: rota.Modelo}
-		feitas, qerr := QualificacoesDeHoje(caminhoDasQualificacoes, pastas, chave)
-		if qerr == nil && feitas.esgotada() {
-			qerr = ErrQualificacoesDoDia
-		}
-		if qerr != nil {
-			contador.Fechar()
-			fmt.Fprintf(stderr, "aos-ensaio ocr: RECUSADO — %v. Nenhum pedido foi enviado\n", qerr)
-			return nil, SaidaRecusada
-		}
-		fmt.Fprintf(stderr, "aos-ensaio ocr: QUALIFICACAO de um perfil (AOS-530): este perfil ja foi qualificado %d vez(es) hoje, de um maximo de %d; esta rota, %d de %d (contadas com as da experiencia qualificacao)\n",
-			feitas.DoPerfil, QualificacoesPorPerfilPorDia, feitas.DaRota, QualificacoesPorRotaPorDia)
-		v.registar = func() (OrdemDaQualificacao, error) {
-			return RegistarQualificacao(caminhoDasQualificacoes, pastas, chave)
-		}
-	}
-	if err := contador.Cabe(v.piorCaso); err != nil {
-		contador.Fechar()
-		fmt.Fprintf(stderr, "aos-ensaio ocr: RECUSADO — o pior caso (%d pedidos: %d imagens e 1 sonda) nao cabe: %v\n", v.piorCaso, v.piorCaso-1, err)
-		return nil, SaidaRecusada
-	}
-	estado, err := contador.Estado()
-	if err != nil {
-		contador.Fechar()
-		fmt.Fprintf(stderr, "aos-ensaio ocr: RECUSADO — %v\n", err)
-		return nil, SaidaRecusada
-	}
-	fmt.Fprintf(stderr, "aos-ensaio ocr: motor VISAO — fornecedor %s, modelo %s; pior caso %d pedidos (%d imagens e 1 sonda; o PDF fica fora); hoje (%s UTC) restam %d de %d\n",
-		fornecedor, rota.Modelo, v.piorCaso, v.piorCaso-1, estado.Dia, estado.PedidosRestantes, estado.TectoPedidos)
-	fmt.Fprintf(stderr, "aos-ensaio ocr: DESTINO DA CHAVE: %s  (contador: %s)\n", rota.Destino, caminhoDoContador)
+	v := &execucaoDaVisao{rotaPaga: rp}
 	if o.soPlano {
 		return v, SaidaOK
 	}
-	if amb.Lancador == nil {
-		contentores, redes, verr := VarrerOrfaos(ctx)
-		if verr != nil {
-			contador.Fechar()
-			fmt.Fprintf(stderr, "aos-ensaio ocr: %v\n", verr)
-			return nil, SaidaSemInfra
-		}
-		if contentores+redes > 0 {
-			fmt.Fprintf(stderr, "aos-ensaio ocr: VARRIDOS %d contentor(es) e %d rede(s) aos512-* de uma corrida anterior\n", contentores, redes)
-		}
+	if codigo := rp.levantar(ctx, prefixo, amb, red, stderr); codigo != SaidaOK {
+		return nil, codigo
 	}
-	pedido := PedidoDeProxy{Prefixo: prefixoDoProxy(fornecedor), Modelo: rota.Modelo, Alias: AliasDaVisao, Vida: VidaMaximaDoProxy}.ComSegredos(rota.apiKey, rota.apiBase)
-	vivo, err := lancadorDe(amb, red).Lancar(ctx, pedido)
-	if err != nil {
-		contador.Fechar()
-		fmt.Fprintf(stderr, "aos-ensaio ocr: %v\n", err)
-		return nil, SaidaSemInfra
-	}
-	red.Acrescentar(vivo.ChaveMestra())
-	v.fecharProx = vivo.Fechar
+	var err error
 	v.motor, err = NovoMotorOCRVisao(CfgDaVisao{
-		BaseURL: vivo.BaseURL, Credencial: vivo.ChaveMestra(), Fornecedor: string(fornecedor), Modelo: rota.Modelo,
-		Contador: contador, Preco: precoOpcional(precos, rota.Modelo),
+		BaseURL: rp.base, Credencial: rp.credencial, Fornecedor: string(rp.fornecedor), Modelo: rp.modelo,
+		Contador: rp.contador, Preco: precoOpcional(rp.precos, rp.modelo),
 	})
 	if err != nil {
 		v.fechar()
-		fmt.Fprintf(stderr, "aos-ensaio ocr: %v\n", err)
+		fmt.Fprintf(stderr, "%s: %v\n", prefixo, err)
 		return nil, SaidaErro
 	}
 	return v, SaidaOK
@@ -485,39 +365,12 @@ func prepararVisao(ctx context.Context, o opcoesDoOCR, b *BateriaOCR, perfil *mo
 
 // sondar faz a sonda da rota antes da primeira imagem: sem 200, a corrida não começa.
 func (v *execucaoDaVisao) sondar(ctx context.Context, stderr io.Writer) int {
-	s := v.motor.Sondar(ctx)
-	if s.Resultado == SondaOK {
-		// A sonda passou: a corrida conta entre as qualificações do dia, antes da primeira imagem.
-		if v.registar != nil {
-			if _, err := v.registar(); err != nil {
-				fmt.Fprintf(stderr, "aos-ensaio ocr: RECUSADO — %v\n", err)
-				return SaidaRecusada
-			}
-		}
-		return SaidaOK
-	}
-	fmt.Fprintf(stderr, "aos-ensaio ocr: a SONDA nao teve 200 (HTTP %d, %s): a corrida NAO COMECOU; gastou-se no maximo 1 pedido do tecto\n", s.HTTP, s.Resultado)
-	if s.Resultado == SondaTecto || s.Resultado == SondaContador {
-		return SaidaRecusada
-	}
-	return SaidaParouAMeio
+	return v.depoisDaSonda(v.motor.Sondar(ctx), "aos-ensaio ocr", stderr)
 }
 
 // preencher põe no relatório o modo, a rota, os pedidos e o custo — com os nomes de campo das
 // corridas reais, para o contador do dia se reconstruir também a partir dele.
 func (v *execucaoDaVisao) preencher(r *RelatorioOCR, amb Ambiente) {
 	r.Modo = ModoReal
-	r.Rota = &RotaDoOCR{Fornecedor: string(v.fornecedor), Modelo: v.modelo}
-	r.Pedidos = &PedidosDoOCR{PiorCaso: v.piorCaso, DiaUTC: amb.Relogio().UTC().Format("2006-01-02")}
-	r.Custo = &CustoDoOCR{}
-	if c, ok := v.motor.CustoMicroUSD(); ok {
-		r.Custo.MicroUSDDaCorrida = &c
-	}
-	if e, err := v.contador.Estado(); err == nil {
-		r.Pedidos.Enviados = e.EnviadosNestaCorrida
-		if e.TemUSD {
-			hoje := e.MicroUSDHoje
-			r.Custo.MicroUSDHoje = &hoje
-		}
-	}
+	r.Rota, r.Pedidos, r.Custo = v.uso(amb, v.motor.CustoMicroUSD)
 }

@@ -95,6 +95,9 @@ type Ambiente struct {
 	// dockerDeTeste, quando presente, faz de Docker do motor de OCR em contentor (AOS-529). Só os
 	// testes do próprio pacote a definem.
 	dockerDeTeste corredorDocker
+	// codificadorDeTeste, quando presente, faz de ffmpeg da experiência `video` (AOS-537): gera os
+	// MP4 sem Docker. Só os testes do próprio pacote o definem.
+	codificadorDeTeste CodificadorDeVideo
 }
 
 // corridaFeita é o que uma corrida deixou escrito: o relatório, tal como foi gravado, e os dois
@@ -155,6 +158,10 @@ const usoDoBanco = `aos-ensaio — banco de ensaio da fronteira runtime-modelo (
   aos-ensaio ocr     [--motor falso|tesseract|visao ...]  mede um motor de OCR com imagens sinteticas (AOS-529;
                                                    'aos-ensaio ocr -h' para as opcoes); o relatorio traz o
                                                    veredicto contra o limiar de factos (AOS-530)
+  aos-ensaio video   [--motor falso|visao ...]        mede um modelo capaz de video com videos sinteticos
+                                                   (AOS-537; 'aos-ensaio video -h' para as opcoes); o MP4
+                                                   gera-o o ffmpeg num contentor fixado; veredicto contra o
+                                                   limiar de factos
   aos-ensaio qualificar-ocr --motor visao|falso --perfil F --board B --regiao R --saida PASTA ...
                                                    prepara o registo de entrada de USO TOOL do alias de uma
                                                    tool de OCR para o dono assinar (AOS-530; 'aos-ensaio
@@ -244,6 +251,9 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		case "ocr":
 			// A experiência de OCR (AOS-529) tem as suas opções e o seu uso (ocr_cli.go).
 			return executarOCR(ctx, args[1:], stdout, stderr, amb, red)
+		case "video":
+			// A experiência de vídeo (AOS-537) tem as suas opções e o seu uso (video_cli.go).
+			return executarVideo(ctx, args[1:], stdout, stderr, amb, red)
 		case "qualificar-ocr":
 			// O registo de uso tool (AOS-530) tem as suas opções e o seu uso (qualificar_ocr.go).
 			return qualificarOCR(ctx, args[1:], stdout, stderr, amb, red)
