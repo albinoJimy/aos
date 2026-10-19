@@ -182,3 +182,64 @@ func TestAOS538_ToolDestination(t *testing.T) {
 		t.Fatalf("LocalReads=%v", got)
 	}
 }
+
+// aos538Classe classifica UMA call com o anotador de risco (com ou sem o destino das tools) e
+// devolve a classe anotada.
+func aos538Classe(t *testing.T, dests *ToolDestinations, tool, capability, sens string) string {
+	t.Helper()
+	c := NewRiskClassifier(nil)
+	if dests != nil {
+		c = c.WithToolDestinations(*dests)
+	}
+	call := &Call{ToolID: tool, Capability: capability, Resource: Resource{Type: "file", Value: "doc://x"},
+		Context: CallContext{Taint: taint.StringTrusted, Reversibility: "reversible", Sensitivity: sens}}
+	if _, err := c.Evaluate(context.Background(), call); err != nil {
+		t.Fatal(err)
+	}
+	return call.Context.RiskClass
+}
+
+// O egress declarado chega ao classificador de risco (AOS-538): a ocr_read e a video_read deixam de
+// ser vistas como locais. Com a sensibilidade que o loop entrega hoje (vazia ⇒ sensível,
+// fail-closed) passam de `gray` a `danger`; a doc_read e o web_post não mudam.
+func TestAOS538_EgressDeclaradoChegaAoClassificadorDeRisco(t *testing.T) {
+	d := aos538Destinos()
+	casos := []struct {
+		tool, capability, antes, depois string
+	}{
+		{"ocr_read", "cap:fs.read", "gray", "danger"},
+		{"video_read", "cap:fs.read", "gray", "danger"},
+		{"doc_read", "cap:fs.read", "gray", "gray"},
+		{"web_post", "cap:http.post", "danger", "danger"},
+		// Capability diferente da do binding: o egress derivado de antes.
+		{"ocr_read", "cap:mem.read", "gray", "gray"},
+		// Egress implícito: o derivado de antes.
+		{"doc_read_implicito", "cap:fs.read", "gray", "gray"},
+	}
+	for _, c := range casos {
+		if got := aos538Classe(t, nil, c.tool, c.capability, ""); got != c.antes {
+			t.Errorf("%s/%s sem destinos: %q, queria %q", c.tool, c.capability, got, c.antes)
+		}
+		if got := aos538Classe(t, &d, c.tool, c.capability, ""); got != c.depois {
+			t.Errorf("%s/%s com destinos: %q, queria %q", c.tool, c.capability, got, c.depois)
+		}
+	}
+}
+
+// O declarado só ELEVA: um `egress: "none"` declarado numa capability de rede não a torna local; um
+// `internal` declarado numa capability local sobe-a.
+func TestAOS538_EgressDeclaradoSoEleva(t *testing.T) {
+	d := NewToolDestinations(map[string]ToolDestination{
+		"post_dito_local": {Capability: "cap:http.post", Egress: "none", Mutation: "none", Reversibility: "reversible"},
+		"leitura_interna": {Capability: "cap:fs.read", Egress: "internal", Mutation: "none", Reversibility: "reversible"},
+	})
+	if got := aos538Classe(t, &d, "post_dito_local", "cap:http.post", "internal"); got != "gray" {
+		t.Fatalf("egress none declarado baixou uma capability de rede: %q", got)
+	}
+	if got := aos538Classe(t, nil, "leitura_interna", "cap:fs.read", "internal"); got != "safe" {
+		t.Fatalf("controlo: leitura local interna sem destinos devia ser safe, veio %q", got)
+	}
+	if got := aos538Classe(t, &d, "leitura_interna", "cap:fs.read", "internal"); got != "gray" {
+		t.Fatalf("egress internal declarado nao elevou: %q", got)
+	}
+}

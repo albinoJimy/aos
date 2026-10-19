@@ -167,6 +167,12 @@ type SecuredConfig struct {
 	// é a barreira control/data-plane exigida por [referencemonitor.NewProductionSecure].
 	// nil ⇒ [referencemonitor.NewStaticPrivilegedSet] vazio (classificador real).
 	Privileged referencemonitor.PrivilegedAuthorizer
+	// ToolDestinations é o destino que o registo de tools declara (egress/mutação/reversibilidade
+	// por tool, AOS-538). Leva o egress DECLARADO ao anotador de risco da cadeia
+	// ([referencemonitor.RiskClassifier.WithToolDestinations]), onde só eleva o derivado da
+	// capability. Zero ⇒ o egress é só o derivado, como antes. O gate de taint recebe o destino
+	// pelo próprio Privileged ([referencemonitor.DestinationPrivileged]), não por aqui.
+	ToolDestinations referencemonitor.ToolDestinations
 	// Authority é a fonte de autoridade user∩classe para o [ScopeGate] (AOS-071).
 	// nil ⇒ [authz.NewStaticAuthoritySource] vazio (fonte real ⇒ scope fail-closed).
 	Authority authz.AuthoritySource
@@ -455,7 +461,7 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 		// NÃO é o RiskGate. O RiskGate IMPÕE (SAROC-04, canal de confirmação) e, sem um
 		// risk.Gate composto — o caso deste nó — NEGA tudo o que não seja safe. Pô-lo aqui
 		// pararia o nó por inteiro. Este hook devolve sempre HookAllow.
-		referencemonitor.NewRiskClassifier(nil),
+		referencemonitor.NewRiskClassifier(nil).WithToolDestinations(cfg.ToolDestinations), // AOS-538: o egress declarado chega aqui
 		pdp.NewPolicyCheck(policyDP),              // policy (PDP, AOS-004)
 		referencemonitor.NewTaintGate(privileged), // taint (AOS-069)
 		referencemonitor.NewScopeGate(authority),  // scope (AOS-071)

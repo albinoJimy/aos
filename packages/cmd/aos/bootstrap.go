@@ -845,6 +845,9 @@ type Node struct {
 	// (gateway por ambiente) ou só preenche um goal vazio (modelo de referência).
 	modelID            string
 	modeloAutoritativo bool
+	// toolDestinations é o destino que AOS_MODEL_TOOLS declara por tool (AOS-538) — o MESMO que o
+	// anotador de risco da cadeia recebe. Zero sem tools declaradas.
+	toolDestinations referencemonitor.ToolDestinations
 	// PendingApprovals é o registo DURÁVEL das tool calls escaladas que aguardam aval
 	// humano — o que a superfície de administração expõe ao operador (polling). nil
 	// quando o four-eyes não está composto.
@@ -2567,6 +2570,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		// AOS-254: liga o registo de compensações ao dispatcher durável (WithCompensationRegistry
 		// na composição de produção). nil quando a execução durável está desligada.
 		CompensationRegistry: compensations,
+		ToolDestinations:     toolDests,   // AOS-538: o egress declarado no registo de tools chega ao anotador de risco
 		FreezeOptions:        freezeOpts,  // toolset.WithTracer quando a observabilidade está ligada
 		RuntimeOptions:       runtimeOpts, // agentruntime.WithTracer (RT+RM partilham o tracer)
 		Tracer:               chainTracer, // AOS-210: o MESMO tracer para o dispatcher durável (aos.activity)
@@ -3353,6 +3357,9 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	return &Node{
 		BackupExporter: backupExporter, // AOS-101: nil ⇒ o nó não exporta backups (por omissão)
 		Runtime:        sec,
+		// AOS-538: o destino das tools que o anotador de risco da cadeia usa, para a simulação de
+		// autonomia reclassificar com os MESMOS factos.
+		toolDestinations: toolDests,
 		// AOS-396: o modelo pedido que o nó declara em cada turno.
 		modelID:            modeloDoNo,
 		modeloAutoritativo: modeloAutoritativo,

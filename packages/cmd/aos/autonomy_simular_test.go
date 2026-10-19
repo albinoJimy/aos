@@ -41,7 +41,7 @@ func TestSimulacaoConcordaComOClassificadorReal(t *testing.T) {
 		rec.Context.Reversibility = k.revers
 		rec.Context.Sensitivity = k.sensib
 
-		daSimulacao := reclassificar(rec)
+		daSimulacao := reclassificar(rec, rm.ToolDestinations{})
 
 		// O MESMO caminho que o nó percorre: o classificador real sobre os mesmos factos.
 		doNo := classeReal(t, k.cap, k.tipo, k.val, k.taint, k.revers, k.sensib)
