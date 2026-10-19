@@ -213,10 +213,10 @@ func TestAOS536_QualificarVideo_SoComQualificadoReal(t *testing.T) {
 		t.Errorf("expected_model de outro modelo: %d lancamentos\n%s", lanc.lancamentos, e.stderr)
 	}
 
-	// O alias de produção `video-visao` com a allowlist EMBEBIDA, que não o autoriza: 11 antes de
-	// qualquer pedido. (Em produção corre-se com a allowlist externa do nó.)
+	// Um alias que a allowlist EMBEBIDA não autoriza: 11 antes de qualquer pedido. (Desde AOS-536 a
+	// embebida autoriza `video-visao`; o caso negativo usa um alias que nenhuma regra nomeia.)
 	lanc = &lancadorDeTeste{t: t, devolver: aos536Fornecedor(t)}
-	fora := aos530Perfil(t, strings.Replace(aos536PerfilKimi, `"gpt-4o-mini"`, `"video-visao"`, 1))
+	fora := aos530Perfil(t, strings.Replace(aos536PerfilKimi, `"gpt-4o-mini"`, `"video-fora-da-allowlist"`, 1))
 	saida = filepath.Join(t.TempDir(), "fora")
 	e = aos536QualificarVideo(t, lanc, fora, saida)
 	semPacote("fora da allowlist", saida, e, SaidaPacoteRecusado)
@@ -259,7 +259,7 @@ const aos536PerfilDeProducao = `{"requested":"video-visao","expected_model":"ope
 
 // O PERFIL DO README passa as conferências do `qualificar-video` até à corrida: com a allowlist
 // externa que autoriza `video-visao`, o motor falso corre e sai 9 (nada para assinar); com a
-// embebida, que não o autoriza, sai 11 antes de correr.
+// embebida, que o autoriza desde que o dono a assinou com o alias (AOS-536), também.
 func TestAOS536_OPerfilDoREADMEServe(t *testing.T) {
 	readme, err := os.ReadFile("README.md")
 	if err != nil || !strings.Contains(string(readme), aos536PerfilDeProducao) {
@@ -273,8 +273,8 @@ func TestAOS536_OPerfilDoREADMEServe(t *testing.T) {
 		t.Fatalf("com a allowlist externa: %d\n%s\n%s", e.codigo, e.stdout, e.stderr)
 	}
 	saida = filepath.Join(t.TempDir(), "embebida")
-	if e := aos536QualificarVideo(t, nil, perfil, saida, "--motor", "falso"); e.codigo != SaidaPacoteRecusado || !strings.Contains(e.stderr, routeentry.CauseNameNotAllowlisted) {
-		t.Fatalf("com a allowlist embebida: %d\n%s", e.codigo, e.stderr)
+	if e := aos536QualificarVideo(t, nil, perfil, saida, "--motor", "falso"); e.codigo != SaidaQualificadoEmEnsaio || !strings.Contains(e.stderr, "a EMBEBIDA no gateway") {
+		t.Fatalf("com a allowlist embebida: %d\n%s\n%s", e.codigo, e.stdout, e.stderr)
 	}
 }
 

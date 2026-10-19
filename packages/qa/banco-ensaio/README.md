@@ -1031,13 +1031,14 @@ do AOS-537 (34/34 factos), num ficheiro à parte — por exemplo `perfil-video-v
 go run ./cmd/aos-ensaio qualificar-video --motor visao --chaves $env:USERPROFILE\.aos-ensaio\chaves.env `
   --visao-fornecedor openrouter --visao-modelo google/gemini-3.5-flash-lite --precos <precos.json> `
   --perfil perfil-video-visao.json --board <board do no> --regiao <regiao do no> `
-  --allowlist-dir <allowlist do no> --ancora-da-allowlist <ancora da allowlist> --saida <pasta nova>
+  --saida <pasta nova>
 ```
 
-A allowlist **embebida** não autoriza `video-visao`: sem `--allowlist-dir` e
-`--ancora-da-allowlist` (a allowlist externa do nó, que o autoriza para o board e a região dele) o
-comando sai 11 com `nome_fora_da_allowlist`, antes de qualquer pedido. Um ensaio sem custo, com o
-motor `falso` e as mesmas opções de allowlist, sai 9 (qualificado, nada para assinar).
+A allowlist **embebida** autoriza `video-visao` desde que o dono a assinou com o alias (AOS-536,
+2026-10-19); sem `--allowlist-dir` o comando confere essa. Se o nó monta uma allowlist externa,
+repete-se com `--allowlist-dir` e `--ancora-da-allowlist`. Um alias que a allowlist conferida não
+autoriza sai 11 com `nome_fora_da_allowlist`, antes de qualquer pedido. Um ensaio sem custo, com o
+motor `falso`, sai 9 (qualificado, nada para assinar).
 
 O nó (pacote `routeentry`): um registo de uso `tool` aceita **exactamente uma** capacidade de
 media — `imagem` (o perfil do AOS-530) ou `video` —, sem `tools`; as duas juntas, nenhuma, ou
