@@ -46,10 +46,11 @@ const (
 	// UseRun é o uso de sempre, e a omissão: o perfil serve turnos de runs. Um registo de uso run
 	// cujo alias não é o do titular é um candidato (ADR-041 §2.1).
 	UseRun = "run"
-	// UseTool é o perfil de um alias que só uma tool chama (a `ocr_read`, ADR-042). NUNCA é
-	// candidato: não conta como não-titular, não ganha adaptador de run, não entra no canary nem
-	// no disjuntor, e um run não se fixa nele. A fatia tem de ser 0 ([CauseToolWithShare]), e o
-	// relatório citado é da experiência `ocr` ([CheckReport]).
+	// UseTool é o perfil de um alias que só uma tool chama (a `ocr_read`, ADR-042; a tool de vídeo,
+	// AOS-536). NUNCA é candidato: não conta como não-titular, não ganha adaptador de run, não entra
+	// no canary nem no disjuntor, e um run não se fixa nele. A fatia tem de ser 0
+	// ([CauseToolWithShare]); o perfil declara exactamente UMA capacidade de media ([Entry.Media]),
+	// e o relatório citado é o da experiência dessa media ([CheckReport]).
 	UseTool = "tool"
 )
 
@@ -77,6 +78,11 @@ type Entry struct {
 	InitialSharePercent int
 	// Use é o uso do registo: [UseRun] (também quando o registo não traz o membro) ou [UseTool].
 	Use string
+	// Media é a capacidade de media do perfil de um registo de uso [UseTool]:
+	// [modelgateway.CapabilityImage] (o perfil de imagem do AOS-530) ou [modelgateway.CapabilityVideo]
+	// (o de vídeo, AOS-536). Vazio num registo de uso [UseRun]. Não é um membro do registo: lê-se das
+	// capacidades do perfil, que estão debaixo da assinatura.
+	Media string
 }
 
 // ForTool diz se o registo é de uso [UseTool]: um perfil que só uma tool chama, e que nunca é
@@ -203,13 +209,36 @@ func ParseEntry(raw []byte) (Entry, error) {
 	if ReturnsState(profile) {
 		return Entry{}, refuse(CauseProfileReturnsState, "")
 	}
-	// O PERFIL DE UM REGISTO DE USO TOOL LÊ IMAGENS E NÃO PEDE EFEITOS (ADR-042 §2.3 e §2.4): declara
-	// a capacidade `imagem` e não declara `tools` — o modelo que lê a imagem não pode pedir tools.
-	if e.ForTool() && (!slices.Contains(profile.Capabilities, modelgateway.CapabilityImage) || slices.Contains(profile.Capabilities, modelgateway.CapabilityTools)) {
-		return Entry{}, refuse(CauseToolProfileCapabilities, "")
+	// O PERFIL DE UM REGISTO DE USO TOOL LÊ UMA MEDIA E NÃO PEDE EFEITOS (ADR-042 §2.3 e §2.4; AOS-536):
+	// não declara `tools` — o modelo que lê a media não pode pedir tools — e declara EXACTAMENTE uma
+	// capacidade de media, `imagem` ou `video`. As duas juntas recusam: a porta não leva um pedido
+	// com as duas (AOS-535), e o relatório citado é de UMA experiência.
+	if e.ForTool() {
+		media, ok := toolMedia(profile.Capabilities)
+		if !ok {
+			return Entry{}, refuse(CauseToolProfileCapabilities, "")
+		}
+		e.Media = media
 	}
 	e.Profile = profile
 	return e, nil
+}
+
+// toolMedia devolve a capacidade de media de um perfil de uso [UseTool]: a única de
+// [modelgateway.CapabilityImage] e [modelgateway.CapabilityVideo] que ele declara, sem
+// [modelgateway.CapabilityTools]. Devolve false com `tools`, sem media nenhuma, ou com as duas.
+func toolMedia(capabilities []string) (string, bool) {
+	if slices.Contains(capabilities, modelgateway.CapabilityTools) {
+		return "", false
+	}
+	image, video := slices.Contains(capabilities, modelgateway.CapabilityImage), slices.Contains(capabilities, modelgateway.CapabilityVideo)
+	switch {
+	case image && !video:
+		return modelgateway.CapabilityImage, true
+	case video && !image:
+		return modelgateway.CapabilityVideo, true
+	}
+	return "", false
 }
 
 // ReturnsState diz se um perfil devolve estado opaco ao provider, por qualquer dos três campos

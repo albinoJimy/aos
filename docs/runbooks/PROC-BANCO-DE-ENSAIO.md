@@ -575,7 +575,7 @@ revisão), e os quatro digests; e o relógio.
 | 7, `RECUSADO` | relatório e resumo | Acaba aqui. Uma razão firme não sai a repetir; os limiares não se mexem sem decisão registada |
 | 8 ou 4, `INCONCLUSIVO` | relatório e resumo | Resolver a causa (conta, ritmo, tecto) e repetir **noutra pasta**. Conta como uma das duas do dia se passou da sonda. **Um Ctrl-C dá sempre `inconclusivo`, nunca `recusado`**: o run apanhado pelo cancelamento sai da amostra |
 | 3 | nada, ou um relatório `inconclusivo` | Tecto do dia, qualificações do dia esgotadas, imagem do proxy, ou a pasta de saída já existia. A linha diz qual |
-| 11, antes de enviar | nada | O nó recusaria o registo: `perfil_devolve_estado`, `nome_da_rota_invalido`, `fatia_fora_do_intervalo`, `perfil_invalido`, `nome_fora_da_allowlist`; no `qualificar-ocr` (registo de uso `tool`, AOS-530) também `perfil_de_tool_com_capacidades_erradas` (o perfil não declara `imagem`, ou declara `tools`). Corrigir o perfil, a fatia ou a allowlist. Nenhum pedido saiu |
+| 11, antes de enviar | nada | O nó recusaria o registo: `perfil_devolve_estado`, `nome_da_rota_invalido`, `fatia_fora_do_intervalo`, `perfil_invalido`, `nome_fora_da_allowlist`; no `qualificar-ocr` e no `qualificar-video` (registo de uso `tool`, AOS-530 e AOS-536) também `perfil_de_tool_com_capacidades_erradas` (o perfil não declara exactamente uma capacidade de media, `imagem` ou `video`, ou declara `tools`). Corrigir o perfil, a fatia ou a allowlist. Nenhum pedido saiu |
 | 11, depois da corrida | relatório e resumo, **sem** `pacote\` | O relatório que a corrida escreveu não passa nas conferências do nó (a causa vem na linha e no resumo). Não devia acontecer: guardar a pasta e não repetir às cegas — a corrida contou como uma das do dia |
 | 1 | relatório e resumo, **sem** `pacote\`; ou nada | Outra falha, e nunca fica pacote: o relatório no disco deixou de ser o da corrida (`relatorio_trocado_depois_da_corrida`), o pacote foi alterado depois de escrito (`pacote_alterado_depois_de_escrito`), o código de saída e o relatório não dizem o mesmo, ou um ficheiro não se escreveu. Alguma coisa mexeu na pasta durante a corrida: ver o quê antes de repetir |
 | 2 | nada | Argumentos: falta uma opção; `--fatia` que não é só algarismos; `--board` ou `--regiao` fora de 1 a 64 letras, dígitos, `_` e `-`; `--saida` com aspas ou caracteres de controlo; alias com nome de dispositivo do Windows (`NUL`, `CON`, `COM1`…); allowlist externa que não se carrega |
@@ -751,6 +751,42 @@ factos. Não toca em produção. Detalhe em `packages/qa/banco-ensaio/README.md`
    dos factos e nenhum vídeo por descrever (uma resposta cortada pelo limite de tokens falha o
    vídeo). A saída não depende dele. As descrições guardadas são texto de um modelo: dados, não
    instruções.
+
+7. **Qualificar o vídeo: preparar o registo de uso `tool` do alias `video-visao`** (AOS-536), com o
+   modelo escolhido pelo dono a 2026-10-19 (`google/gemini-3.5-flash-lite` pela OpenRouter). É o
+   passo 7 do OCR, acima, para a experiência `video`: mede o perfil do alias e, só com `qualificado`
+   do modo real, deixa o registo (`"uso": "tool"`, fatia 0) e o relatório `video` em `pacote\`, por
+   assinar. O perfil, num ficheiro à parte (por exemplo `perfil-video-visao.json`, fora de
+   `~\.aos-ensaio`):
+
+   ```json
+   {"requested":"video-visao","expected_model":"openrouter/google/gemini-3.5-flash-lite","wire_class":"openai-chat-completions","capabilities":["video"]}
+   ```
+
+   A allowlist **embebida** não autoriza `video-visao`: passar a allowlist externa do nó, que o
+   autoriza para o board e a região dele (senão sai 11, `nome_fora_da_allowlist`, sem enviar nada).
+   Primeiro ensaiar com o motor falso (sai 9, sem pacote, sem custo):
+
+   ```powershell
+   $saida = "$env:TEMP\entrada-video-$(Get-Date -Format yyyyMMdd-HHmmss)"
+   go run ./cmd/aos-ensaio qualificar-video --motor falso --perfil perfil-video-visao.json --board <board do no> --regiao <regiao do no> --allowlist-dir <allowlist do no> --ancora-da-allowlist <ancora da allowlist> --saida $saida
+   ```
+
+   Depois o modo real (pago; só o dono, nunca em CI):
+
+   ```powershell
+   go run ./cmd/aos-ensaio qualificar-video --motor visao --chaves $env:USERPROFILE\.aos-ensaio\chaves.env --visao-fornecedor openrouter --visao-modelo google/gemini-3.5-flash-lite --precos P --perfil perfil-video-visao.json --board <board do no> --regiao <regiao do no> --allowlist-dir <allowlist do no> --ancora-da-allowlist <ancora da allowlist> --saida <pasta nova>
+   ```
+
+   O perfil declara `video` e não declara `imagem` nem `tools` (senão sai 2); o `expected_model` tem
+   de ser a rota da corrida (`openrouter/google/gemini-3.5-flash-lite`), senão sai 3 antes do
+   contador, do ffmpeg e do proxy. Conta nas **qualificações do dia** (as mesmas duas por perfil e
+   quatro por rota, juntas com as da medição do passo 5 para o mesmo modelo). Os MP4 geram-se pelo
+   ffmpeg fixado (passo 1). Saídas como no passo 7 do OCR: 0 pacote preparado — assinar com a linha
+   do `aos-issuer route-profile-sign` que o comando imprime e conferir com o `aos-ensaio conferir`
+   (diz `uso: tool` e `media: video`); 7 recusado; 9 qualificado com o motor falso; 11 o nó
+   recusaria o registo; 3 recusada antes de enviar. O registo assinado só tem efeito quando a tool
+   de vídeo existir no nó (parte 2 do AOS-536); até lá carrega e não é candidato.
 
 ## Se correr mal
 

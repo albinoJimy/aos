@@ -80,6 +80,8 @@ type aos530Tool struct {
 	registo        func(doc map[string]any)
 	// qualificacao cita um relatório de qualificação (o dos candidatos) em vez de um `ocr`.
 	qualificacao bool
+	// video cita um relatório `video` (AOS-536) em vez de um `ocr`.
+	video bool
 }
 
 // aos530PastaCom cria uma pasta de perfis assinados com os registos de uso `run` e de uso `tool`
@@ -96,8 +98,11 @@ func aos530PastaCom(t *testing.T, runs []aos520Registo, tools ...aos530Tool) {
 	}
 	for _, x := range tools {
 		rdoc := rt.OCRReportDoc(rt.ProfileDigest(t, x.perfil))
-		if x.qualificacao {
+		switch {
+		case x.qualificacao:
 			rdoc = rt.ReportDoc(rt.ProfileDigest(t, x.perfil))
+		case x.video:
+			rdoc = rt.VideoReportDoc(rt.ProfileDigest(t, x.perfil))
 		}
 		if x.relatorio != nil {
 			x.relatorio(rdoc)

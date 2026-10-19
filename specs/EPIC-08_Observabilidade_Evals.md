@@ -2984,7 +2984,117 @@ declare `video`, e nunca em streaming; os bytes não saem por mais via nenhuma.
 
 ## AOS-536 — A tool de vídeo: um vídeo da pasta semeada descrito por um modelo capaz de vídeo, pelo Model Gateway do nó
 
-A seguir, por detalhar depois do AOS-535: a tool, mediada pelo Reference Monitor, manda o vídeo inteiro ao modelo como parte `video_url` (opção A do dono, 2026-10-18).
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa nem emenda ADR nenhum: segue a opção A do dono de 2026-10-18 e o molde da `ocr_read` (AOS-530). O ADR-042 é citado só como a origem desse molde. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-08 — Observabilidade e Evals |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A6 (multimodal), sub-fase A6.1 «vídeo como tool»; rótulo do desenho «A6-video-tool» |
+| Tipo | feature (Model Gateway, banco de ensaio e nó) |
+| Prioridade | P2: o último elo da A6.1; nada em produção o pede hoje |
+| Estimativa | M (parte 1: S; parte 2: M) |
+| Dependências | AOS-530 (o registo de uso `tool`, o `qualificar-ocr` e a `ocr_read`, o molde), AOS-535 (a porta 1.13.0 com `Message.Videos` e a capacidade `video`) e AOS-537 (o banco mede o vídeo, relatório versão 2), feitos. Escolha do dono de 2026-10-19: `google/gemini-3.5-flash-lite` pela OpenRouter para o alias `video-visao`, com a qualificação autorizada |
+| Bloqueia | — |
+| Responsável sugerido | Engenheiro de Plataforma |
+| Documentos de referência | `docs/reports/desenho-a5-a6-multimodal-2026-10-14.md` (§5), `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` §4 e §5, `packages/qa/banco-ensaio/README.md` («Preparar o registo de uso `tool` de vídeo»), `deploy/server/README.md` («Perfis de rota assinados») |
+
+### Contexto
+
+A medição do AOS-537 (2026-10-19, bateria 1.1.0, oito vídeos, 34 factos) qualificou o Gemini 3.5
+Flash-Lite com 34/34 factos por 0,0048 USD a bateria inteira, e o dono escolheu-o para o alias de
+produção `video-visao`. A porta do gateway já leva um vídeo MP4 só para uma rota cujo perfil
+declare `video` (AOS-535). Faltam duas coisas, que este ticket entrega em duas partes:
+
+1. **O perfil do alias tem de chegar ao nó por um registo assinado.** Hoje um registo de entrada de
+   uso `tool` (`policy/routeentry`, AOS-530) exige a capacidade `imagem` e cita um relatório `ocr`:
+   um perfil só com `video` recusa. E o banco não tem um comando que prepare esse registo a partir
+   do veredicto da experiência `video`, como o `qualificar-ocr` faz para a `ocr`.
+2. **A tool.** Uma tool do nó, mediada pelo Reference Monitor, que lê um vídeo da pasta semeada e o
+   manda inteiro ao modelo como parte `video_url`, pelo Model Gateway do nó — o molde da
+   `ocr_read`.
+
+### Objectivo
+
+Parte 1: o nó aceita um registo de uso `tool` de vídeo, assinado pelo dono, que cite uma medida de
+vídeo qualificada do modo real; e o banco prepara-o, por assinar, a partir da corrida. Parte 2: a
+tool `video_read` no nó.
+
+### Âmbito — parte 1 (o registo de uso `tool` de vídeo e o `qualificar-video`)
+
+- **`policy/routeentry`.** Um registo de uso `tool` aceita dois perfis: o de **imagem** de hoje
+  (declara `imagem`, não declara `tools` nem `video`) e o de **vídeo** (declara `video`, não declara
+  `tools` nem `imagem`). Exactamente uma capacidade de media; senão `perfil_de_tool_com_capacidades_erradas`
+  como hoje. A media lê-se do perfil (`Entry.Media`), que está debaixo da assinatura; não há membro
+  novo no registo.
+- **O relatório citado é o da media.** Um registo de vídeo exige um relatório da experiência
+  `video`, da versão 2 do AOS-537 (`ReadVideoVerdict`, leitura fechada com as listas de nomes do
+  relatório `video`), do modo `real`, `qualificado`, que vale para produção, para o mesmo perfil e
+  a mesma imagem do proxy. Um registo de imagem continua a exigir o relatório `ocr`. Um relatório de
+  uma media num registo da outra recusa com `relatorio_de_outra_experiencia`; um `video` da versão 1
+  com `relatorio_de_forma_desconhecida`. Um registo de uso `run` decide como antes.
+- **Os registos de hoje são byte-iguais**: o mesmo digest, a mesma assinatura e a mesma decisão — o
+  de uso `run` (pinado no AOS-530) e o de uso `tool` de imagem (pinado aqui, com o digest conferido
+  fora do Go).
+- **O nó (`cmd/aos`).** Nada muda no arranque além do que o `routeentry` decide: um registo de uso
+  `tool` de vídeo carrega e nunca é candidato (`naoTitulares` já o exclui). A linha do arranque diz
+  a experiência citada (a de um registo de imagem fica byte-igual), e a `ocr_read` liga-se só a um
+  registo de imagem.
+- **O banco: `aos-ensaio qualificar-video`.** O caminho do `qualificar-ocr`, partilhado
+  (`qualificar_media.go`): corre a experiência `video` com `--perfil` (capacidade `video`, sem
+  `imagem` nem `tools`), confere o `expected_model` contra a rota medida antes de enviar, conta nas
+  qualificações do dia, e só com `qualificado` do modo real deixa em `pacote/` o registo
+  (`"uso":"tool"`, fatia 0) e o relatório `video`, por assinar; imprime as linhas do `aos-issuer
+  route-profile-sign` e do `aos-ensaio conferir`. O `conferir` mostra o uso e a media. O `--perfil`
+  da experiência `video` aceita um perfil com `video` (e o relatório deixa de dizer que o perfil
+  não a declara quando a declara).
+
+### Âmbito — parte 2 (a tool `video_read` no nó), por fazer
+
+- A tool `video_read`, mediada pelo Reference Monitor, no molde da `ocr_read`: um vídeo da pasta
+  semeada, por referência, lido pelo nó, conferido como MP4 (as regras do AOS-535) e mandado inteiro
+  ao alias `video-visao` como parte `video_url` só desse pedido; o resultado é texto `untrusted`,
+  com o digest do vídeo e o modelo servido; o custo grava-se no tecto do run; o replay não chama o
+  modelo.
+- O arranque fail-closed: o alias na allowlist em vigor, um registo de uso `tool` de **vídeo** para
+  ele e, com a contabilidade composta, o preço do par.
+
+### Critérios de Aceitação
+
+- [x] Parte 1: um registo de uso `tool` com um perfil de vídeo carrega (`Entry.Media` = `video`); um
+      perfil com `video` e `imagem`, com `video` e `tools`, só com `tools` ou sem capacidades recusa
+      com `perfil_de_tool_com_capacidades_erradas`; um relatório `ocr` num registo de vídeo, um
+      `video` num registo de imagem e uma qualificação num registo de vídeo recusam com
+      `relatorio_de_outra_experiencia`; a forma, a versão, o modo, o veredicto, o perfil e a imagem
+      do proxy do relatório `video` recusam cada um com a sua causa; os registos de hoje têm o
+      digest e a assinatura pinados.
+      *Nota de 2026-10-19:* `packages/platform/model-gateway/policy/routeentry/aos536_video_test.go`.
+- [x] Parte 1: no nó, um registo de vídeo carrega com um candidato, com o interruptor `on` e `off`,
+      e não é candidato, não tem adaptador de run e não é servido a runs; recusa o arranque a citar um
+      relatório `ocr`, com `video` e `imagem`, ou para o alias do titular; a `ocr_read` não se liga a
+      ele.
+      *Nota de 2026-10-19:* `packages/cmd/aos/aos536_video_tool_no_test.go` e o caso «so um registo
+      de uso tool de video para o alias» de `TestAOS530_No_ArranqueFailClosed`.
+- [x] Parte 1: o `qualificar-video` com o modelo de vídeo falso no modo real prepara o pacote, que
+      o `LoadDir` aceita assinado com uma chave de teste e o `conferir` mostra com `media: video`;
+      com o motor falso sai 9 sem pacote; recusado (factos errados, respostas cortadas) sai 7; o
+      `expected_model` de outra rota sai 3 sem pedido; um perfil com capacidades erradas sai 2 sem
+      pedido; o alias fora da allowlist sai 11 sem pedido; o perfil de produção do README passa com
+      a allowlist externa que o autoriza. Os nomes do relatório `video` que o banco escreve são os
+      que o nó lê.
+      *Nota de 2026-10-19:* `packages/qa/banco-ensaio/aos536_qualificar_video_test.go`. Cada defesa
+      nova foi mutada à mão e cada mutação avermelha (a do modo na primeira barreira só com a do
+      `vale_para_producao`, que a repete; sozinha, o nó recusa o pacote na terceira).
+- [ ] Parte 1: a qualificação real do `video-visao` (pelo dono, com a allowlist externa do nó), o
+      pacote assinado e conferido.
+- [ ] Parte 2: a tool `video_read` no nó, com os critérios a detalhar ao abri-la.
+
+### Fora de âmbito
+
+- Alterar a allowlist embebida ou o `tools.json`: o alias `video-visao` autoriza-se pela allowlist
+  externa assinada do nó.
+- Um registo de uso `tool` com mais de uma capacidade de media, ou de uso `run` com vídeo.
+- Vídeos reais, outros contentores além do MP4, e subir o tecto de 4 MiB do AOS-535.
 
 ---
 
@@ -3024,3 +3134,4 @@ A seguir, por detalhar depois do AOS-535: a tool, mediada pelo Reference Monitor
 | 1.29 | 2026-10-18 | +AOS-534 (fase A6, sub-fase A6.1, spike): a parte `video_url` com uma data URL de MP4 atravessa o proxy LiteLLM fixado intacta, nas duas rotas da OpenRouter? O falso do estado regista as partes do `content` (tipo, chaves, classe da data URL, sha256 e tamanho, sem bytes) e um cenário opcional com o proxy real mede-o sem custo, com um MP4 sintético pequeno e outro de 3 a 6 MB. AOS-535 e AOS-536 abertos só com o título, a seguir | Equipa AOS |
 | 1.30 | 2026-10-19 | +AOS-537 (fase A6, sub-fase A6.1): o banco mede o vídeo — a bateria sintética de oito vídeos com 34 factos (texto, contagens, cores, ordem e uma instrução no fotograma), fotogramas em Go e MP4 pelo ffmpeg fixado pelo digest num contentor sem rede, e a experiência `video` com o motor falso e o modelo pelo proxy do banco, com veredicto contra 90% dos factos. As regras do modo real do braço de visão do OCR passam a `rota_paga.go`, partilhadas. Implementado e provado com falsos; o ffmpeg real e a medição dos três candidatos ficam para o dono | Equipa AOS |
 | 1.31 | 2026-10-19 | AOS-537: correcções da revisão independente — os factos de contagem e de cor lêem-se das linhas rotuladas, tolerantes ao markdown e sem contradições (relatório versão 2); a bateria de vídeo 1.1.0 com um par de ordem contra a ordem alfabética; a pasta montada do ffmpeg em 0733 e o MP4 lido só como ficheiro regular; o custo antes do registo no contador | Equipa AOS |
+| 1.32 | 2026-10-19 | AOS-536 escrito por inteiro (fase A6, sub-fase A6.1), em duas partes. Parte 1 feita: o registo de uso `tool` aceita um perfil de vídeo (exactamente uma capacidade de media) e cita um relatório `video` versão 2; o banco ganha o `aos-ensaio qualificar-video`. Parte 2 (a tool `video_read` no nó) por fazer | Equipa AOS |

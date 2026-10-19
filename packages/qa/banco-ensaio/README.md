@@ -192,7 +192,7 @@ O banco não lê mais nenhuma variável, e nenhuma destas chega ao nó `aos`.
 | 4 | Parou a meio (`tecto_atingido`, `contador_inutilizavel`, `interrompida`, `chave_recusada`, `saldo_insuficiente`, `limite_de_ritmo`, `so_respostas_429`, `serie_de_429`) ou a sonda não a deixou começar (as três primeiras, mais `modelo_desconhecido` e `sonda_falhou`). O relatório parcial foi escrito e diz a causa. |
 | 5 | Modo `real` pedido em CI. |
 | 6 | Falta o Docker ou a imagem do proxy, ou o proxy não arrancou. |
-| 11 | Só `qualificar`, `qualificar-ocr` e `conferir` (AOS-522, AOS-530): o nó recusaria o registo de entrada, ou o pacote assinado. |
+| 11 | Só `qualificar`, `qualificar-ocr`, `qualificar-video` e `conferir` (AOS-522, AOS-530, AOS-536): o nó recusaria o registo de entrada, ou o pacote assinado. |
 | 1 | Outra falha. |
 
 ## O ficheiro de chaves, os tectos e o contador
@@ -1002,10 +1002,52 @@ e o total. A descrição do modelo **não** vai para o relatório, o resumo nem 
 O **veredicto** (`veredicto_do_video`) é contra o limiar do dono — **90% dos factos**, o do OCR (D7);
 `--limiar-de-factos` só o aperta — e exige ainda que **nenhum vídeo fique por descrever**: o modelo
 da tool será um só, sem nova tentativa, e um vídeo por ler é uma chamada que falha. Só um
-`qualificado` do modo real é a medida de um modelo; nenhum nó lê este relatório ainda (a tool é o
-AOS-536). Com `--perfil` (sem a capacidade `tools`; a capacidade `video` do perfil é do AOS-535),
-o digest do perfil e a rota medida vão para o veredicto e a corrida conta nas **qualificações do
-dia**, no mesmo registo das do OCR e dos candidatos. A saída do `video` não depende do veredicto.
+`qualificado` do modo real é a medida de um modelo; o nó lê-o citado por um registo de uso `tool`
+de vídeo (AOS-536, abaixo). Com `--perfil` (sem a capacidade `tools`; com a capacidade `video` do
+AOS-535 para um registo de uso `tool` — um perfil sem ela mede-se, e o relatório diz nos limites
+que o nó não o aceitaria), o digest do perfil e a rota medida vão para o veredicto e a corrida
+conta nas **qualificações do dia**, no mesmo registo das do OCR e dos candidatos. A saída do
+`video` não depende do veredicto: quem age sobre ele é o `qualificar-video`.
+
+### Preparar o registo de uso `tool` de vídeo (`qualificar-video`, AOS-536)
+
+É o `qualificar-ocr` (AOS-530, acima) para o alias de uma tool de vídeo: o mesmo caminho, as mesmas
+barreiras e as mesmas saídas (`qualificar_media.go`), sobre a experiência `video`. Corre-a com o
+perfil e, **só com o veredicto `qualificado` de uma corrida completa do motor `visao`** (o modo
+real), deixa em `PASTA/pacote/` o registo de **uso `tool`** — `"uso": "tool"`, fatia `0` — e o
+relatório `video` (versão 2) que ele cita, por assinar. O perfil declara a capacidade **`video`**
+e não declara `imagem` nem `tools` (senão sai 2, antes de qualquer pedido); o `expected_model` tem
+de ser a rota desta corrida (senão sai 3 antes do contador, do ffmpeg e do proxy); conta nas
+qualificações do dia; e os MP4 gera-os o ffmpeg fixado, como na experiência.
+
+O perfil do alias de produção `video-visao`, escolhido pelo dono a 2026-10-19 depois da medição
+do AOS-537 (34/34 factos), num ficheiro à parte — por exemplo `perfil-video-visao.json`:
+
+```json
+{"requested":"video-visao","expected_model":"openrouter/google/gemini-3.5-flash-lite","wire_class":"openai-chat-completions","capabilities":["video"]}
+```
+
+```powershell
+go run ./cmd/aos-ensaio qualificar-video --motor visao --chaves $env:USERPROFILE\.aos-ensaio\chaves.env `
+  --visao-fornecedor openrouter --visao-modelo google/gemini-3.5-flash-lite --precos <precos.json> `
+  --perfil perfil-video-visao.json --board <board do no> --regiao <regiao do no> `
+  --allowlist-dir <allowlist do no> --ancora-da-allowlist <ancora da allowlist> --saida <pasta nova>
+```
+
+A allowlist **embebida** não autoriza `video-visao`: sem `--allowlist-dir` e
+`--ancora-da-allowlist` (a allowlist externa do nó, que o autoriza para o board e a região dele) o
+comando sai 11 com `nome_fora_da_allowlist`, antes de qualquer pedido. Um ensaio sem custo, com o
+motor `falso` e as mesmas opções de allowlist, sai 9 (qualificado, nada para assinar).
+
+O nó (pacote `routeentry`): um registo de uso `tool` aceita **exactamente uma** capacidade de
+media — `imagem` (o perfil do AOS-530) ou `video` —, sem `tools`; as duas juntas, nenhuma, ou
+`tools` recusam com `perfil_de_tool_com_capacidades_erradas`. O relatório citado é o da
+experiência dessa media: um registo de vídeo exige um relatório `video` da versão 2, do modo real,
+`qualificado`, para o seu perfil e a imagem do proxy declarada; um relatório `ocr` num registo de
+vídeo, ou um `video` num registo de imagem, recusa com `relatorio_de_outra_experiencia`. Os
+registos de hoje são os mesmos bytes, o mesmo digest e a mesma assinatura. O `conferir` diz o uso
+e a media (`media: video — o relatorio citado e da experiencia video`). A tool de vídeo no nó é a
+parte 2 do AOS-536, por fazer.
 
 ### O que a experiência `video` não prova
 
