@@ -374,6 +374,10 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 		if err := g.recusarImagemSemCapacidade(ex, req); err != nil {
 			return err
 		}
+		// AOS-535: a parte de vídeo, no mesmo sítio e pelas mesmas razões, contra `video`.
+		if err := g.recusarVideoSemCapacidade(ex, req); err != nil {
+			return err
+		}
 		cred, err := g.credential(ctx, ex)
 		if err != nil {
 			return err
@@ -408,9 +412,9 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 		}
 		if err != nil {
 			g.contarRecusaDeParametros(req.Model, enviados, err)
-			if comEstado > 0 || req.HasImages() {
-				// O pedido levou estado ou uma imagem (AOS-530): o corpo do erro do provider pode
-				// ecoá-los, e não sobe.
+			if comEstado > 0 || req.HasImages() || req.HasVideos() {
+				// O pedido levou estado, uma imagem (AOS-530) ou um vídeo (AOS-535): o corpo do erro
+				// do provider pode ecoá-los, e não sobe.
 				return semCorpoDoErro(err)
 			}
 			return err
@@ -491,6 +495,10 @@ func (g *Gateway) ChatStream(ctx context.Context, req port.ChatRequest) (port.Ch
 		// em [Gateway.Chat] (antes da credencial, do selo, do adaptador e do custo).
 		if req.HasImages() {
 			return &RouteWithoutImageError{Cause: ImageCauseStreaming}
+		}
+		// AOS-535: o vídeo também fica fora do streaming, qualquer que seja a rota.
+		if req.HasVideos() {
+			return &RouteWithoutVideoError{Cause: VideoCauseStreaming}
 		}
 		cred, err := g.credential(ctx, ex)
 		if err != nil {
@@ -940,6 +948,9 @@ func errType(err error) string {
 	}
 	if errors.Is(err, ErrRouteWithoutImage) {
 		return "route_without_image"
+	}
+	if errors.Is(err, ErrRouteWithoutVideo) {
+		return "route_without_video"
 	}
 	return "provider_error"
 }

@@ -155,7 +155,7 @@ func temEstadoParaSair(msgs []Message) bool {
 // estado o resultado é, byte a byte, o de `json.Marshal(wireChatRequest)` — preso por teste.
 //
 // É também o caminho de um pedido com partes de imagem (AOS-530): as mensagens sem estado saem por
-// [mensagemNoWire], que só muda a forma das que levam imagens.
+// [mensagemNoWire], que só muda a forma das que levam imagens ou vídeo (AOS-535).
 func marshalComEstado(w wireChatRequest) ([]byte, error) {
 	modelo, err := json.Marshal(w.Model)
 	if err != nil {
@@ -222,6 +222,10 @@ func marshalComEstado(w wireChatRequest) ([]byte, error) {
 			// O estado só se arma em mensagens `assistant`, e as imagens só vão em mensagens `user`:
 			// as duas juntas não se escrevem — nunca se descarta uma imagem em silêncio.
 			return nil, &ImagePartError{Cause: ImageCauseRole}
+		}
+		if len(m.Videos) > 0 {
+			// O mesmo para o vídeo (AOS-535).
+			return nil, &VideoPartError{Cause: VideoCauseRole}
 		}
 		if err := escreverMensagemComEstado(&b, m); err != nil {
 			return nil, err

@@ -325,7 +325,7 @@ func TestAOS530_Perfil_CapacidadeImagem(t *testing.T) {
 			t.Fatal("digest vazio")
 		}
 	}
-	for _, caps := range []string{`["video"]`, `["Imagem"]`, `["image"]`} {
+	for _, caps := range []string{`["audio"]`, `["Imagem"]`, `["image"]`} {
 		if _, err := modelgateway.ParseRouteProfile([]byte(`{"requested":"x","expected_model":"y","wire_class":"openai-chat-completions","capabilities":` + caps + `}`)); !errors.Is(err, modelgateway.ErrBadRouteProfile) {
 			t.Fatalf("capabilities %s tinha de ser recusada: %v", caps, err)
 		}

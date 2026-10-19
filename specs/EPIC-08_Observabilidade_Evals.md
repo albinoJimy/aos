@@ -2889,7 +2889,96 @@ fotograma, com tempo, tokens e custo por vídeo, e um veredicto contra o limiar 
 
 ## AOS-535 — A porta do gateway 1.13.0 com a parte de vídeo e a capacidade `video` no perfil da rota
 
-A seguir, por detalhar depois do AOS-534: o pedido do Model Gateway passa a levar uma parte de vídeo, e uma rota sem a capacidade `video` recusa-o antes de sair.
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa nem emenda ADR nenhum: segue a opção A do dono de 2026-10-18 e o precedente da peça 1 do AOS-530. O ADR-042 é citado só como a origem dessa peça. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-08 — Observabilidade e Evals |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A6 (multimodal), sub-fase A6.1 «vídeo como tool»; rótulo do desenho «A6-video-porta» |
+| Tipo | feature (Model Gateway) |
+| Prioridade | P2: a tool de vídeo (AOS-536) precisa de uma porta que leve o vídeo; nada em produção o pede hoje |
+| Estimativa | S |
+| Dependências | AOS-530 peça 1 (a porta 1.12.0 com as partes de imagem e a capacidade `imagem`, o precedente exacto), AOS-534 (o proxy fixado passa a parte `video_url` intacta até 5,6 MB) e AOS-537 (o banco gera MP4 e manda-os nessa forma), feitos. Opção A do dono de 2026-10-18 |
+| Bloqueia | AOS-536 (a tool de vídeo) |
+| Responsável sugerido | Engenheiro de Plataforma |
+| Documentos de referência | `tecnica/06_Model_Gateway_Custos.md` §5, `docs/reports/desenho-a5-a6-multimodal-2026-10-14.md` (§5), `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` §4 |
+
+### Contexto
+
+O AOS-534 provou que o proxy LiteLLM fixado entrega ao fornecedor a parte
+`{"type":"video_url","video_url":{"url":"data:video/mp4;base64,…"}}` intacta, nas duas rotas da
+OpenRouter, com um MP4 de 4 194 456 bytes crus (pedido de 5 592 829 bytes). O AOS-537 já gera MP4
+(H.264, `+faststart`) e manda-os assim, pelo proxy do banco. Falta o pedido do Model Gateway do nó
+poder levar o vídeo, e só para uma rota que o declare — o mesmo passo que a peça 1 do AOS-530 deu
+para as imagens.
+
+### Objectivo
+
+Uma mensagem `user` de um pedido do gateway pode levar uma parte de vídeo MP4, validada pelos bytes
+e escrita no wire na forma medida; um pedido com vídeo só sai para uma rota resolvida cujo perfil
+declare `video`, e nunca em streaming; os bytes não saem por mais via nenhuma.
+
+### Âmbito
+
+- **A porta 1.13.0 (MINOR).** `Message.Videos []VideoPart` (`json:"-"`), um campo novo ao lado de
+  `Message.Images`, e não uma generalização das duas numa lista de «media»: um campo novo não muda
+  o wire nem os selos de nenhum pedido de hoje, nem quem já constrói imagens (a `ocr_read`).
+  `VideoPart` impressa (`%v`, `%+v`, `%#v`) ou serializada mostra só o tipo, o tamanho e o `sha256`.
+- **A validação** (`Normalize`, e de novo em `MarshalWire` para um pedido que não passou por ele),
+  com causas de vocabulário fechado (`ErrVideoPart`/`*VideoPartError`): tipo só `video/mp4`; não
+  vazio; até **4 MiB crus** (`MaxVideoBytes`, o tamanho medido pelo AOS-534 — subir exige nova
+  medida do proxy); a magia (a caixa 1 é `ftyp` com marca `isom`, `iso2`, `mp41`, `mp42` ou `avc1`);
+  a estrutura mínima (as caixas de topo lêem-se até ao último byte, há `moov` e `mdat`, e a primeira
+  `moov` vem antes da primeira `mdat` — o `+faststart`, para o fornecedor ler em fluxo); só em
+  mensagens `user`; e no pedido inteiro o tecto agregado (a soma das partes de vídeo, também 4 MiB),
+  **no máximo um vídeo** (o tecto é o de um corpo medido com uma parte, e o custo e a leitura de dois
+  vídeos no mesmo pedido ninguém os mediu) e **nunca com imagens** (nenhuma rota foi medida com as
+  duas, e recusar é mais simples do que decidir que capacidade um pedido misto exige).
+- **O wire OpenAI.** A mensagem com vídeo sai com `content` em partes, o texto primeiro e depois
+  `video_url` com a data URL `video/mp4` em base64. Um pedido sem vídeo sai byte-igual ao de hoje.
+- **A capacidade `video`** no perfil da rota, aceite por `Validate`; nenhum perfil em código a
+  declara e os digests de hoje não mudam. O gateway recusa (`ErrRouteWithoutVideo`/
+  `*RouteWithoutVideoError`, causas `perfil_sem_video`, `rota_sem_perfil`, `video_em_streaming`)
+  ANTES da credencial, do selo de atribuição, do adaptador e do custo um pedido com vídeo para uma
+  rota RESOLVIDA (depois de recuo) sem `video` ou sem perfil, e qualquer vídeo em streaming.
+- **As recusas não são falha do modelo** (`ClassifyTurnFailure`): a de capacidade é
+  `perfil_do_run`, a de forma é `negado_pelo_gateway` — o disjuntor do candidato não as conta.
+- **Os bytes nunca** em spans, selos, eventos, logs ou erros; o erro do provider a um pedido com
+  vídeo sobe sem o corpo.
+- O adaptador RT→GW dos turnos não muda e não produz vídeo.
+
+### Critérios de Aceitação
+
+- [x] Cada recusa da forma (tipo, vazio, magia, marca, estrutura, `moov` depois da `mdat`, tecto por
+      parte e agregado no limite exacto e +1, papel, dois vídeos, vídeo com imagem) tem a sua causa,
+      no `Normalize` e no wire chamado sem ele; as formas válidas passam.
+      *Nota de 2026-10-19:* `packages/platform/model-gateway/port/aos535_video_test.go`
+      (`TestAOS535_Normalize_RecusaCadaForma`, `…_Pedido_UmVideoSemImagensETectoAgregado`,
+      `…_Tecto_LimiteExacto`, `…_Normalize_AceitaAsFormasValidas`).
+- [x] O wire: sem vídeo, o literal de antes byte a byte; com vídeo, `text` e `video_url` com os bytes
+      exactos; um vídeo numa mensagem com estado para sair recusa; as respostas continuam só texto.
+      *Nota de 2026-10-19:* `TestAOS535_MarshalWire_*`, `TestAOS535_Resposta_ContinuaSoTexto`.
+- [x] A recusa por capacidade (rota sem `video`, só com `imagem`, sem perfil, recuo, streaming) com
+      zero chamadas ao adaptador, zero credenciais, zero selos e zero custo; o caminho que passa é
+      contabilizado; as recusas classificam-se como não-falha do modelo.
+      *Nota de 2026-10-19:* `packages/platform/model-gateway/aos535_video_test.go` e os casos AOS-535
+      de `TestAOS521_ClassifyTurnFailure`.
+- [x] Pelo adaptador HTTP real contra `httptest`: a data URL chega com os bytes exactos; sem a
+      capacidade, ou em streaming, zero pedidos; um 400 que ecoe o vídeo não sobe com o corpo.
+      *Nota de 2026-10-19:* `TestAOS535_Gateway_AdaptadorHTTP`.
+- [x] Os bytes fora de `%v`/`%+v`/`%#v`/JSON, de spans, de selos e de erros; o adaptador dos turnos
+      não produz vídeo (prova dinâmica e pela fonte).
+      *Nota de 2026-10-19:* `TestAOS535_BytesSoNoWire`, `…_Gateway_RotaComVideo_Passa`,
+      `…_AdaptadorDoRuntime_NuncaProduzVideo`. Cada defesa foi mutada à mão e cada mutação avermelha.
+
+### Fora de âmbito
+
+- A tool de vídeo e o alias `video-visao` (AOS-536), e o registo de entrada de uso `tool` para uma
+  rota de vídeo: hoje `policy/routeentry` exige `imagem` a um registo de uso `tool`.
+- Subir o tecto de 4 MiB, mais de um vídeo por pedido, vídeo com imagens, outros contentores
+  (`webm`, QuickTime): cada um exige medida nova.
+- Vídeo em streaming e vídeo em respostas.
 
 ---
 
