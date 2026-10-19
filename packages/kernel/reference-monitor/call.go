@@ -126,8 +126,10 @@ type CallContext struct {
 	RiskDecisionMode string
 	// TaintPrivilege é o PORQUÊ da classificação do [TaintGate] para esta call (AOS-538): uma das
 	// constantes TaintPrivilege* — `local_read` diz que a tool se declara leitura local e por isso
-	// não foi tratada como privilegiada. Escrita SÓ pelo gate (que a reescreve sempre), vazia com
-	// o gate fora da cadeia, desarmado, ou sem o destino das tools. Não decide nada: é registo.
+	// não foi tratada como privilegiada. É SAÍDA: o RM apaga o valor que a call traga antes de
+	// correr a cadeia, e só o [TaintGate] o escreve, quando o classificador conhece o destino das
+	// tools e o gate está armado. Vazia com o gate fora da cadeia, desarmado, ou sem o destino das
+	// tools. Não decide nada: é registo.
 	TaintPrivilege string
 }
 

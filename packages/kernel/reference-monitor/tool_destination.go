@@ -26,9 +26,10 @@ type ToolDestination struct {
 
 func normalizeAxis(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 
-// IsLocalRead diz se a tool se declara LEITURA LOCAL: `egress: "none"`, `mutation: "none"` e
-// `reversibility: "reversible"`, os três explícitos. É a ÚNICA forma de uma tool ficar fora do
-// gate de taint (ADR-034, emenda AOS-538). Um eixo implícito dá false.
+// IsLocalRead diz se a tool se DECLARA leitura local: `egress: "none"`, `mutation: "none"` e
+// `reversibility: "reversible"`, os três explícitos. Um eixo implícito dá false. É condição
+// necessária e não suficiente para a tool ficar fora do gate de taint: a capability e o recurso da
+// call também não podem denunciar egress ([DestinationPrivileged.ClassifyCall]).
 func (d ToolDestination) IsLocalRead() bool {
 	return normalizeAxis(d.Egress) == "none" &&
 		normalizeAxis(d.Mutation) == "none" &&
@@ -87,12 +88,14 @@ func (t ToolDestinations) forCall(call *Call) (ToolDestination, bool) {
 	return d, true
 }
 
-// LocalReads devolve, ordenados, os nomes das tools que se declaram leitura local — as que o gate
-// de taint deixa passar com o contexto untrusted. É o que o banner de arranque nomeia.
+// LocalReads devolve, ordenados, os nomes das tools que se declaram leitura local e cuja capability
+// não denuncia egress — as que o gate de taint deixa passar com o contexto untrusted. É o que o
+// banner de arranque nomeia. O recurso de cada call ainda pode tirar-lhe a excepção (um recurso de
+// rede), e esse só se conhece na call.
 func (t ToolDestinations) LocalReads() []string {
 	var out []string
 	for name, d := range t.m {
-		if d.IsLocalRead() {
+		if d.IsLocalRead() && !derivesEgress(&Call{Capability: d.Capability}) {
 			out = append(out, name)
 		}
 	}
@@ -171,7 +174,7 @@ func (d DestinationPrivileged) ClassifyCall(call *Call) (bool, string) {
 		return false, ""
 	}
 	dest, known := d.dests.forCall(call)
-	if known && dest.IsLocalRead() {
+	if known && dest.IsLocalRead() && !derivesEgress(call) {
 		return false, TaintPrivilegeLocalRead
 	}
 	if d.base.IsPrivileged(call.Capability) {
@@ -182,3 +185,10 @@ func (d DestinationPrivileged) ClassifyCall(call *Call) (bool, string) {
 	}
 	return false, TaintPrivilegeNotListed
 }
+
+// derivesEgress diz se a capability ou o recurso da call DENUNCIAM egress, pela mesma derivação
+// que o classificador de risco usa ([egressForCall]): uma capability de rede, um recurso de rede, ou
+// uma capability que não está na lista das provadamente locais (indeterminada conta como externa,
+// fail-closed). Uma declaração `egress: "none"` não desfaz isto: um `cap:http.post` declarado
+// leitura local continua privilegiado (AOS-538, achado M-4 da revisão).
+func derivesEgress(call *Call) bool { return egressForCall(call).IsExternal() }

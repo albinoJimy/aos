@@ -25,8 +25,12 @@ func aos538Destinos() ToolDestinations {
 		"doc_read_implicito": {Capability: "cap:fs.read", Mutation: "none", Reversibility: "reversible"},
 		// Efeito declarado com a capability fora de AOS_PRIVILEGED_CAPS.
 		"fs_write": {Capability: "cap:fs.write", Egress: "none", Mutation: "mutates", Reversibility: "reversible"},
-		// Leitura local com uma capability que ESTÁ no conjunto armado: a regra nova liberta-a.
-		"http_get_local": {Capability: "cap:http.post", Egress: "none", Mutation: "none", Reversibility: "reversible"},
+		// Declara-se leitura local com uma capability de REDE: a declaração não desfaz o egress que
+		// a capability denuncia (achado M-4 da revisão) — nunca ganha a excepção.
+		"post_dito_local":     {Capability: "cap:http.post", Egress: "none", Mutation: "none", Reversibility: "reversible"},
+		"http_get_dito_local": {Capability: "cap:http.get", Egress: "none", Mutation: "none", Reversibility: "reversible"},
+		// Capability indeterminada (nem local nem de rede): conta como egress, fail-closed.
+		"indeterminada_dita_local": {Capability: "cap:s3.upload", Egress: "none", Mutation: "none", Reversibility: "reversible"},
 	})
 }
 
@@ -66,7 +70,11 @@ func TestAOS538_GateDecidePeloDestino(t *testing.T) {
 	}{
 		// A regra nova: leitura local passa com o contexto untrusted, mesmo com cap:fs.read armada.
 		{"doc_read-untrusted-passa", "doc_read", "cap:fs.read", taint.StringUntrusted, false, TaintPrivilegeLocalRead},
-		{"leitura-local-com-cap-armada-de-rede", "http_get_local", "cap:http.post", taint.StringUntrusted, false, TaintPrivilegeLocalRead},
+		// Capability de rede declarada leitura local: continua privilegiada (cap:http.post armada) ou,
+		// fora do conjunto, não ganha a razão local_read.
+		{"cap-de-rede-dita-local-continua-privilegiada", "post_dito_local", "cap:http.post", taint.StringUntrusted, true, TaintPrivilegeCapability},
+		{"cap-de-rede-fora-do-conjunto-nao-e-leitura-local", "http_get_dito_local", "cap:http.get", taint.StringUntrusted, false, TaintPrivilegeNotListed},
+		{"cap-indeterminada-nao-e-leitura-local", "indeterminada_dita_local", "cap:s3.upload", taint.StringUntrusted, false, TaintPrivilegeNotListed},
 		// Egress externo: continuam privilegiadas pela capability (a leitura única por run mantém-se).
 		{"ocr_read-untrusted-negada", "ocr_read", "cap:fs.read", taint.StringUntrusted, true, TaintPrivilegeCapability},
 		{"video_read-untrusted-negada", "video_read", "cap:fs.read", taint.StringUntrusted, true, TaintPrivilegeCapability},
@@ -178,7 +186,66 @@ func TestAOS538_ToolDestination(t *testing.T) {
 		t.Fatal("implícito ou leitura local nao declaram efeito")
 	}
 	got := aos538Destinos().LocalReads()
-	if len(got) != 2 || got[0] != "doc_read" || got[1] != "http_get_local" {
+	if len(got) != 1 || got[0] != "doc_read" {
 		t.Fatalf("LocalReads=%v", got)
+	}
+}
+
+// M-4: o RECURSO da call também pode denunciar egress. A doc_read pedida sobre um recurso de rede
+// não é leitura local, e com cap:fs.read armada é negada.
+func TestAOS538_RecursoDeRedeTiraAExcepcao(t *testing.T) {
+	store := &storeQueCaptura{}
+	priv := NewDestinationPrivileged(NewStaticPrivilegedSet(aos538Caps()...), aos538Destinos())
+	m := New(WithHooks(DefaultHooksWithTaint(priv)...), WithEventSink(&eventStoreSink{store: store}))
+	if err := m.Register("doc_read", func(_ context.Context, in []byte) ([]byte, error) { return in, nil }); err != nil {
+		t.Fatal(err)
+	}
+	for tipo, querDeny := range map[string]bool{"file": false, "url": true, "http": true} {
+		dec, err := m.Mediate(context.Background(), Call{RunID: "r", StepID: "s-" + tipo, ToolID: "doc_read", Capability: "cap:fs.read",
+			Resource: Resource{Type: tipo, Value: "x"}, Context: CallContext{Taint: taint.StringUntrusted}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (dec.Effect == EffectDeny) != querDeny {
+			t.Fatalf("recurso %q: efeito %s, queria deny=%v", tipo, dec.Effect, querDeny)
+		}
+	}
+}
+
+// B-1: sem o TaintGate na cadeia, o carimbo posto pelo chamador não chega ao evento — o RM apaga-o
+// antes da cadeia; só o gate o escreve.
+func TestAOS538_CarimboDoChamadorApagadoSemGate(t *testing.T) {
+	store := &storeQueCaptura{}
+	m := New(WithHooks(DefaultHooks()...), WithEventSink(&eventStoreSink{store: store}))
+	if err := m.Register("doc_read", func(_ context.Context, in []byte) ([]byte, error) { return in, nil }); err != nil {
+		t.Fatal(err)
+	}
+	dec, err := m.Mediate(context.Background(), Call{RunID: "r", StepID: "s", ToolID: "doc_read", Capability: "cap:fs.read",
+		Context: CallContext{Taint: taint.StringUntrusted, TaintPrivilege: TaintPrivilegeLocalRead}})
+	if err != nil || dec.Effect != EffectPermit {
+		t.Fatalf("sem gate a call passa: %s %v", dec.Effect, err)
+	}
+	var p mediationPayload
+	if err := json.Unmarshal(store.ultimo, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Context.TaintPrivilege != "" {
+		t.Fatalf("o carimbo do chamador chegou ao evento sem gate na cadeia: %q", p.Context.TaintPrivilege)
+	}
+}
+
+// B-4: um destino registado SEM capability nunca casa uma call — nem uma call sem capability. Sem a
+// guarda, a call vazia herdaria a leitura local da entrada.
+func TestAOS538_DestinoSemCapabilityNuncaCasa(t *testing.T) {
+	dests := NewToolDestinations(map[string]ToolDestination{
+		"sem_cap": {Egress: "none", Mutation: "none", Reversibility: "reversible"},
+	})
+	priv := NewDestinationPrivileged(NewStaticPrivilegedSet(aos538Caps()...), dests)
+	call := &Call{ToolID: "sem_cap", Capability: "", Resource: Resource{Type: "file"}}
+	if _, ok := dests.forCall(call); ok {
+		t.Fatal("um destino sem capability casou uma call sem capability")
+	}
+	if _, razao := priv.ClassifyCall(call); razao == TaintPrivilegeLocalRead {
+		t.Fatal("a call sem capability herdou a leitura local de um destino sem capability")
 	}
 }
