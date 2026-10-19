@@ -2985,7 +2985,7 @@ declare `video`, e nunca em streaming; os bytes não saem por mais via nenhuma.
 ## AOS-536 — A tool de vídeo: um vídeo da pasta semeada descrito por um modelo capaz de vídeo, pelo Model Gateway do nó
 
 <!-- rtm: adrs-mencionados -->
-<!-- Este ticket NÃO implementa nem emenda ADR nenhum: segue a opção A do dono de 2026-10-18 e o molde da `ocr_read` (AOS-530). O ADR-042 é citado só como a origem desse molde. -->
+<!-- Este ticket segue a opção A do dono de 2026-10-18 e o molde da `ocr_read` (AOS-530); o ADR-042 é citado como a origem desse molde. Emenda o ADR-034 §2.7 (2026-10-19, decisão do dono): a excepção da `ocr_read` passa a cobrir a `video_read`. -->
 
 | Campo | Valor |
 |---|---|
@@ -3085,8 +3085,13 @@ tool `video_read` no nó.
       *Nota de 2026-10-19:* `packages/qa/banco-ensaio/aos536_qualificar_video_test.go`. Cada defesa
       nova foi mutada à mão e cada mutação avermelha (a do modo na primeira barreira só com a do
       `vale_para_producao`, que a repete; sozinha, o nó recusa o pacote na terceira).
-- [ ] Parte 1: a qualificação real do `video-visao` (pelo dono, com a allowlist externa do nó), o
+- [x] Parte 1: a qualificação real do `video-visao` (pelo dono, com a allowlist externa do nó), o
       pacote assinado e conferido.
+      *Nota de 2026-10-19:* a qualificação correu com a allowlist embebida, re-assinada pelo dono
+      com o alias (#521) — o nó de produção não monta uma externa. Modo real, Gemini 3.5 Flash-Lite
+      pela OpenRouter: 34 de 34 factos em 8 vídeos, 0,0051 USD, `qualificado`; o dono assinou o
+      registo (digest `sha256:87f4fda2…`) e o `conferir` aceitou-o. Em produção na v0.1.61; série
+      `vid1`–`vid5` com 5 de 5 planos concluídos e a `video_read` mediada.
 - [x] Parte 2: a tool `video_read` no nó, no molde da `ocr_read` e com o código dela partilhado
       (`tool_de_modelo.go`: a ligação, o arranque, a leitura confinada, a reserva e o evento de custo,
       a chamada ao gateway e as suas falhas; os testes do AOS-530 passam sem alteração). Mediada
@@ -3111,9 +3116,9 @@ tool `video_read` no nó.
       Catorze mutações à mão (o tecto de duração, o filtro da media no arranque, a reserva por
       duração, a tool de origem, a validação MP4, a duração zero, o tecto de bytes, os tectos da não
       medida, a reescrita, o registo no RM, a composição, as causas do vídeo, a métrica, o gateway
-      ligado) avermelham cada uma. **Não** está no `tools.json` de produção: a `video_read` tem
-      egress externo e oferecê-la em produção pede a decisão do dono de estender a excepção do
-      ADR-034 §2.7 (por decidir; `deploy/server/README.md`, «Ligar o vídeo»).
+      ligado) avermelham cada uma. O dono estendeu-lhe a excepção do ADR-034 §2.7 a 2026-10-19
+      (emenda desse dia, #522), e a `video_read` entrou no `tools.json` de produção (#523): em
+      produção na v0.1.61 (`deploy/server/README.md`, «Ligar o vídeo»).
 
 ### Fora de âmbito
 
@@ -3163,3 +3168,4 @@ tool `video_read` no nó.
 | 1.32 | 2026-10-19 | AOS-536 escrito por inteiro (fase A6, sub-fase A6.1), em duas partes. Parte 1 feita: o registo de uso `tool` aceita um perfil de vídeo (exactamente uma capacidade de media) e cita um relatório `video` versão 2; o banco ganha o `aos-ensaio qualificar-video`. Parte 2 (a tool `video_read` no nó) por fazer | Equipa AOS |
 | 1.33 | 2026-10-19 | AOS-536 parte 2 feita no ramo: a tool `video_read` no nó, no molde da `ocr_read` e com o código dela partilhado; a pasta, a capability e o recurso são os da `ocr_read`; tecto de 60 s; reserva função da duração. Fora do `tools.json` de produção até à decisão do dono sobre o ADR-034 §2.7 | Equipa AOS |
 | 1.34 | 2026-10-19 | O dono estende à `video_read` a excepção do ADR-034 §2.7 (emenda de 2026-10-19), com a mesma forma da `ocr_read`; o teste da excepção cobre as duas. Revisão adversarial da parte 2: a duração da `mvhd` dava a volta numa `time.Duration` abaixo da guarda das unidades — corrigido, com teste | Equipa AOS |
+| 1.35 | 2026-10-19 | AOS-536 feito: a `video_read` entra no `tools.json` de produção (#523) e está em produção na v0.1.61; qualificação real, assinatura e série `vid1`–`vid5` (5 de 5) registadas. O «Fora de âmbito» que excluía alterar a allowlist embebida e o `tools.json` foi ultrapassado pelas decisões do dono de 2026-10-19 | Equipa AOS |
