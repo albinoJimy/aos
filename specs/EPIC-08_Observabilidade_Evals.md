@@ -2840,9 +2840,10 @@ fotograma, com tempo, tokens e custo por vídeo, e um veredicto contra o limiar 
       *Nota de 2026-10-19:* sem Docker, `TestAOS537_MP4_LeAFormaERecusaOQueNaoEOVideo`,
       `TestAOS537_ComMP4_ConfereOQueOCodificadorDevolve` e `TestAOS537_FFmpeg_CorreNasCondicoesFixadas`
       (com um Docker de teste: argumentos, fotogramas pelo stdin, recusa com o `docker pull`).
-- [ ] Com Docker, a bateria gera-se com o ffmpeg real e cada MP4 tem `ftyp`, a duração e as
+- [x] Com Docker, a bateria gera-se com o ffmpeg real e cada MP4 tem `ftyp`, a duração e as
       dimensões esperadas: `AOS_BANCO_FFMPEG=1 go test -run '^TestAOS537_FFmpegReal_GeraABateria$' -v -count=1 .`
       em `packages/qa/banco-ensaio` — por correr no posto do dono.
+      *(2026-10-19, no posto: `TestAOS537_FFmpegReal_GeraABateria` gerou os 8 MP4 da bateria 1.1.0 com a duração e as dimensões pedidas, 2 a 14 KB, pela imagem `jrottenberg/ffmpeg@sha256:8ec1ee1f…`.)*
 - [x] Os motores falsos e o veredicto: `certo` ⇒ `qualificado` (e não vale para produção, por não
       ser do modo real), `erra-factos` ⇒ `recusado` com o número exacto de presentes, `cortado` ⇒
       `recusado` com o vídeo mais longo `falhou:cortada`; a fronteira dos 90%.
@@ -2853,8 +2854,9 @@ fotograma, com tempo, tokens e custo por vídeo, e um veredicto contra o limiar 
       reconstrução do contador do dia e nas qualificações do dia.
       *Nota de 2026-10-19:* com um fornecedor falso em `httptest`, `TestAOS537_Visao_OPedidoLevaOVideoInteiroSemTools`,
       `…_DescreveOsVideosEContaOCusto`, `TestAOS537_LinhaDeComandos` e `TestAOS537_Perfil_ContaNasQualificacoesDoDia`.
-- [ ] Medição real, com autorização do dono, dos três candidatos, com o `--so-plano` primeiro: os
+- [x] Medição real, com autorização do dono, dos três candidatos, com o `--so-plano` primeiro: os
       factos por tipo, o tempo e o custo por vídeo, e o veredicto de cada um.
+      *(2026-10-19, com autorização do dono, cinco candidatos em vez de três (o `qwen3-vl-32b-instruct` não aceita vídeo pela API da OpenRouter; o dono aceitou cinco de cinco fornecedores): Gemini 3.5 Flash-Lite 34/34 qualificado (0,0048 USD); Kimi K3 34/34 qualificado (0,0653 USD); Qwen 3.8 Flash 31/34 qualificado; GLM 5.3 Flash 25/34 e Nova 2 Lite 25/34 recusados, com as respostas lidas. O dono escolheu o Gemini 3.5 Flash-Lite.)*
 
 ### Fora de âmbito
 
