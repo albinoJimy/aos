@@ -47,4 +47,13 @@ func TestAOS530_RouteProfileSign_OResumoMostraOUso(t *testing.T) {
 			t.Errorf("uso %q: o resumo nao diz %q:\n%s", uso, quero, out.String())
 		}
 	}
+	// AOS-536: o resumo diz a experiência da media do perfil — o dono não assina um registo de vídeo
+	// com «experiencia ocr» à frente, e o de imagem fica o de antes.
+	for media, quero := range map[string]string{modelgateway.CapabilityImage: "da experiencia ocr\n", modelgateway.CapabilityVideo: "da experiencia video (perfil de video, AOS-536)\n"} {
+		var out bytes.Buffer
+		resumoDoRegisto(&out, routeentry.Entry{Profile: perfil, Use: routeentry.UseTool, Media: media})
+		if !strings.Contains(out.String(), quero) {
+			t.Errorf("media %q: o resumo nao diz %q:\n%s", media, quero, out.String())
+		}
+	}
 }
