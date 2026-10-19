@@ -1171,26 +1171,67 @@ Monitor — o classificador de risco deduz o egress da capability, e vê a `ocr_
 
 ### Critérios de Aceitação
 
-- [ ] O gate de taint recebe a classificação por tool: uma tool com `egress`, `mutation` e
+- [x] O gate de taint recebe a classificação por tool: uma tool com `egress`, `mutation` e
       `reversibility` explícitos e iguais a `none`, `none` e `reversible` nunca é privilegiada para o
       taint; as outras ficam com a regra da capability e são privilegiadas também quando declaram um
       efeito, com o gate armado. Uma tool sem entrada no registo ou com um eixo implícito fica com a
       regra de antes. Com `AOS_PRIVILEGED_CAPS` vazia nada muda.
-- [ ] As duas vias de despacho (directa e durável) decidem igual — teste de paridade.
-- [ ] Com o manifesto de produção e `AOS_PRIVILEGED_CAPS=cap:http.post,cap:fs.read` (o `.env` de
+      *Evidência:* `packages/kernel/reference-monitor/aos538_taint_por_destino_test.go`
+      (`TestAOS538_GateDecidePeloDestino`, `TestAOS538_GateDesarmadoNadaMuda`); no nó composto,
+      `packages/cmd/aos/aos069_fase1_no_composto_test.go`
+      (`TestAOS538_NoComposto_LeituraLocalComPlanInputPassa` e
+      `TestAOS069_Fase1_NoComposto_ComPlanInputContinuaNegado` com egress externo, eixo implícito e
+      sem registo). Uma call com o nome de uma tool de leitura e outra capability fica também com a
+      regra de antes.
+- [x] As duas vias de despacho (directa e durável) decidem igual — teste de paridade.
+      *Evidência:* `packages/integration/aos538_via_duravel_paridade_test.go` (efeito, `denied_by`,
+      rótulo, razão e classe de risco iguais); a classificação é pelo `ToolID`, sem campo novo na
+      Activity (`Context.TaintPrivilege` declarado como saída do gate no
+      `aos454_via_duravel_preserva_parent_step_test.go`).
+- [x] Com o manifesto de produção e `AOS_PRIVILEGED_CAPS=cap:http.post,cap:fs.read` (o `.env` de
       produção, sem mudança no servidor): a `doc_read` com o contexto `untrusted` (um `plan_input`, ou
       depois de um `tool_result`) passa; a `ocr_read` e a `video_read` com o contexto `untrusted`
       continuam negadas por taint (a leitura única por run delas mantém-se); a `web_post` continua
       negada.
-- [ ] O egress declarado no manifesto chega ao classificador de risco: a `ocr_read` e a
+      *Evidência:* `packages/cmd/aos/aos538_taint_por_destino_test.go`
+      (`TestAOS538_ManifestoDeProducao_DocReadPassaOCRVideoNegadas`,
+      `TestAOS538_ManifestoDosDemos_WebPostContinuaNegado`), compostos pelas funções do `Bootstrap`;
+      os testes de uma leitura por run da `ocr_read`/`video_read` continuam verdes. O caso «depois de
+      um `tool_result`» é o mesmo rótulo `untrusted` que o gate vê; não tem teste de loop próprio.
+- [x] O egress declarado no manifesto chega ao classificador de risco: a `ocr_read` e a
       `video_read` deixam de ser vistas como locais.
-- [ ] Os testes de segurança passam a provar a propriedade nova: nenhuma call de efeito ou de
+      *Evidência:* `TestAOS538_EgressDeclaradoChegaAoClassificadorDeRisco` e
+      `TestAOS538_EgressDeclaradoSoEleva` (kernel), `TestAOS538_ManifestoDeProducao_EgressDeclaradoNoRisco`
+      (`packages/cmd/aos`). **Muda em produção:** com a sensibilidade vazia que o loop entrega, a
+      `ocr_read` e a `video_read` passam de `gray` a `danger` no RM, e em L4 `danger` exige
+      aprovação humana. Ver a nota de implementação abaixo.
+- [x] Os testes de segurança passam a provar a propriedade nova: nenhuma call de efeito ou de
       egress é permitida a partir de um `plan_input` injectado (incluindo a `ocr_read`); e um
       meta-teste prova que, com a classificação a ignorar o egress, a injecção que pede `ocr_read`
       passaria.
-- [ ] O banner de arranque do gate diz a regra nova (que tools ficam livres por serem leitura local).
-- [ ] A decisão do gate fica auditável: o evento de mediação diz porque a call não foi tratada como
+      *Evidência:* `packages/security-tests/plan_input_injection_test.go`
+      (`TestPromptInjection_PlanInput_NoPrivilegedCallPermitted`,
+      `TestMetaDetects_PlanInputInjection_WhenEgressIgnored`).
+- [x] O banner de arranque do gate diz a regra nova (que tools ficam livres por serem leitura local).
+      *Evidência:* `taintGatePostureBanner` (`packages/cmd/aos/posture_banner.go`), afirmado em
+      `TestAOS538_ManifestoDeProducao_DocReadPassaOCRVideoNegadas` («livres por leitura local:
+      doc_read»).
+- [x] A decisão do gate fica auditável: o evento de mediação diz porque a call não foi tratada como
       privilegiada.
+      *Evidência:* `context.taint_privilege` no payload `tool.call.*` (`local_read`,
+      `capability_not_listed`, `capability`, `declared_effect`), escrito só pelo gate;
+      `TestAOS538_GateDecidePeloDestino`, `TestAOS538_SemDestinosRegraDeAntesECarimboNaoForjavel`.
+      Não vai ao selo do WORM: acrescentar um campo ao registo selado é migração de `SchemaVersion`
+      (a mesma razão que deixa a `risk_class` fora dele).
+
+### Nota de implementação (2026-10-19)
+
+O egress declarado só **eleva** o derivado da capability (um `none` declarado não torna local
+uma capability de rede). Com a sensibilidade vazia que o loop entrega hoje (o classificador lê-a
+como sensível), a `ocr_read` e a `video_read` passam a `danger` no RM; com o nível L4 de produção
+no domínio `fs`, `danger` confirma — as duas passam a exigir aprovação humana. O `aos-orq` deriva a
+classe do nó a partir do snapshot, com a sensibilidade declarada, e continua a dizer `gray`. Esta
+parte vive num commit próprio no ramo, para o dono decidir antes da release se a quer assim.
 
 ### Fora de âmbito
 
@@ -1209,3 +1250,4 @@ Monitor — o classificador de risco deduz o egress da capability, e vê a `ocr_
 | 1.2 | 2026-10-15 | AOS-530 reescrito: a D2 do desenho mudou pela medição do AOS-529 (o Haiku a 100% dos factos, o Tesseract local a 82,5%) — a tool `ocr_read` passa a transcrever a imagem por um modelo de visão através do Model Gateway do nó, segundo o ADR-042 (proposto): alias `ocr-visao` na allowlist re-assinada, registo de entrada de uso `tool`, parte de imagem só nesta chamada, custo no run e no tecto em dólares, replay sem nova chamada. O OCR local no gVisor fica descrito como alternativa, não implementada | Equipa AOS |
 | 1.3 | 2026-10-15 | AOS-530: o ADR-042 foi ratificado pelo dono; a dependência fica satisfeita | Equipa AOS |
 | 1.4 | 2026-10-19 | +AOS-538: o gate de taint decide pelo destino da tool (emenda de 2026-10-19 ao ADR-034, decisão do dono): ler fica livre, enviar e mudar continuam bloqueados | Equipa AOS |
+| 1.5 | 2026-10-19 | AOS-538 implementado no ramo `feature/AOS-538-taint-por-destino`: o `TaintGate` classifica pelo destino declarado (`DestinationPrivileged`, pelo `ToolID`), o evento sela a razão (`context.taint_privilege`), o banner nomeia as tools livres por leitura local e o egress declarado chega ao anotador de risco (a `ocr_read` e a `video_read` passam a `danger` no RM) | Equipa AOS |
