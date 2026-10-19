@@ -31,6 +31,10 @@ func aos502Entradas(conteudo string) []map[string]string {
 // desde o turno 1, e a tool call PRIVILEGIADA que o modelo pede na tentativa é negada pelo gate
 // de taint, como seria na primeira.
 func TestAOS502_ComInputs_AMesmaProvaEAMesmaAutoridade(t *testing.T) {
+	// A tool declara egress externo: com a regra do AOS-538 uma leitura local passaria com o
+	// contexto untrusted, e o que este teste mede é que a tentativa NÃO ganha autoridade — uma call
+	// privilegiada continua negada pelo taint.
+	aos502ComEgressExterno(t)
 	n := aos502ComporCom(t, agentruntime.CompletionEnforce, 2, func(cfg *Config) {
 		// A leitura é privilegiada neste nó: com um `plan_input` no tail, o gate de taint nega-a.
 		cfg.Privileged = referencemonitor.NewStaticPrivilegedSet(durCap)

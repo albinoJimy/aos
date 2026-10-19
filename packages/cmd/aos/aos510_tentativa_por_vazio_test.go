@@ -468,6 +468,9 @@ func TestAOS510_AProvaRecusa_ComOLogReal(t *testing.T) {
 // nó. A tentativa é hospedada com a MESMA autoridade untrusted desde o turno 1: a tool call
 // privilegiada que o modelo pede na tentativa é negada pelo gate de taint, como seria na primeira.
 func TestAOS510_ComInputs_AMesmaAutoridade(t *testing.T) {
+	// Egress externo: uma leitura local passaria com o contexto untrusted (AOS-538); a call
+	// privilegiada é que prova que a tentativa não ganha autoridade.
+	aos502ComEgressExterno(t)
 	n := aos510ComporCom(t, agentruntime.CompletionEnforce, 2, true, false, func(cfg *Config) {
 		cfg.Privileged = referencemonitor.NewStaticPrivilegedSet(durCap)
 	})
