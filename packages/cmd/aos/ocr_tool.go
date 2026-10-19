@@ -309,11 +309,12 @@ func comporLigacaoOCR(spec *modelToolSpec, assinados *perfisAssinados, externa *
 	if emVigor.Evaluate(allowlist.Input{Board: board, Model: alias, Region: region}) != allowlist.EffectAllow {
 		return nil, fmt.Errorf("%w: alias %q, board %q, regiao %q", ErrOCRAliasForaDaAllowlist, alias, board, region)
 	}
-	// 2. Um registo assinado de uso `tool` para o alias.
+	// 2. Um registo assinado de uso `tool` DE IMAGEM para o alias. Um registo de uso `tool` de vídeo
+	// (AOS-536) cita uma medida de vídeo, não de OCR: não liga a `ocr_read`.
 	perfilDigest := ""
 	if assinados != nil {
 		for _, e := range assinados.entradas {
-			if e.ForTool() && e.Profile.Requested == alias {
+			if e.ForTool() && e.Media == modelgateway.CapabilityImage && e.Profile.Requested == alias {
 				perfilDigest = e.ProfileDigest
 				break
 			}

@@ -678,9 +678,11 @@ func conferir(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "conferir:   digest do registo %s\n", e.EntryDigest)
 		fmt.Fprintf(stdout, "conferir:   digest do perfil  %s\n", e.ProfileDigest)
 		fmt.Fprintf(stdout, "conferir:   digest do relatorio %s\n", e.ReportDigest)
-		// O USO (AOS-530): um registo sem o membro é de uso run.
+		// O USO (AOS-530): um registo sem o membro é de uso run. A MEDIA (AOS-536): a capacidade do
+		// perfil de um registo de uso tool, e a experiência que o relatório citado mediu.
 		if e.ForTool() {
 			fmt.Fprintf(stdout, "conferir:   uso: tool — o perfil de um alias que so uma tool chama; nunca e candidato a servir runs\n")
+			fmt.Fprintf(stdout, "conferir:   media: %s — o relatorio citado e da experiencia %s\n", e.Media, experienciaDaMedia(e.Media))
 		} else {
 			fmt.Fprintf(stdout, "conferir:   uso: run\n")
 		}

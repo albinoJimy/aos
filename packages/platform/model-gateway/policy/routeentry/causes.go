@@ -58,8 +58,9 @@ const (
 	// CauseProfileReturnsState — o perfil devolve estado opaco ao provider. Por esta via só entram
 	// perfis que não devolvem estado (decisão D8 do dono, 2026-10-11).
 	CauseProfileReturnsState = "perfil_devolve_estado"
-	// CauseToolProfileCapabilities — o perfil de um registo de uso `tool` não declara a capacidade
-	// `imagem`, ou declara `tools` (AOS-530, ADR-042 §2.3 e §2.4).
+	// CauseToolProfileCapabilities — o perfil de um registo de uso `tool` declara `tools`, ou não
+	// declara EXACTAMENTE uma capacidade de media: nem `imagem` nem `video`, ou as duas (AOS-530,
+	// ADR-042 §2.3 e §2.4; o perfil de vídeo é do AOS-536).
 	CauseToolProfileCapabilities = "perfil_de_tool_com_capacidades_erradas"
 	// CauseOtherEnvironment — o registo foi assinado para outro board ou outra região.
 	CauseOtherEnvironment = "registo_de_outro_ambiente"
@@ -79,7 +80,8 @@ const (
 	// CauseReportNotCited — o relatório confere, mas o seu digest não é o que o registo cita.
 	CauseReportNotCited = "relatorio_nao_e_o_citado"
 	// CauseReportOfOtherExperiment — o registo é de uso `tool` e o relatório citado não é da
-	// experiência `ocr` (AOS-530, ADR-042 §2.3). Um registo de uso `run` com um relatório `ocr`
+	// experiência da media do perfil: `ocr` para um perfil de `imagem` (AOS-530, ADR-042 §2.3),
+	// `video` para um de `video` (AOS-536). Um registo de uso `run` com um relatório `ocr` ou `video`
 	// recusa como antes, por [CauseReportUnknownShape].
 	CauseReportOfOtherExperiment = "relatorio_de_outra_experiencia"
 	// CauseReportUnknownShape — o relatório tem uma versão ou um membro que este nó não conhece,

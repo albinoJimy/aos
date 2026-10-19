@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 
+	modelgateway "github.com/aos-ref/platform/model-gateway"
 	"github.com/aos-ref/platform/model-gateway/policy/routeentry"
 )
 
@@ -156,7 +157,13 @@ func resumoDoRegisto(w io.Writer, e routeentry.Entry) {
 	fmt.Fprintf(w, "route-profile-sign:   board %q, regiao %q, fatia inicial %d%%\n", e.Board, e.Region, e.InitialSharePercent)
 	// O USO (AOS-530, ADR-042 §2.3): um registo sem o membro é de uso run, como todos os de antes.
 	if e.ForTool() {
-		fmt.Fprintf(w, "route-profile-sign:   uso: tool — o perfil de um alias que so uma tool chama; NUNCA e candidato a servir runs (fatia 0, sem canary nem disjuntor), e o relatorio citado e da experiencia ocr\n")
+		// AOS-536: a experiência citada é a da media do perfil; o texto de um registo de imagem fica
+		// o de antes.
+		experiencia := "experiencia ocr"
+		if e.Media == modelgateway.CapabilityVideo {
+			experiencia = "experiencia video (perfil de video, AOS-536)"
+		}
+		fmt.Fprintf(w, "route-profile-sign:   uso: tool — o perfil de um alias que so uma tool chama; NUNCA e candidato a servir runs (fatia 0, sem canary nem disjuntor), e o relatorio citado e da %s\n", experiencia)
 	} else {
 		fmt.Fprintf(w, "route-profile-sign:   uso: run — um perfil que serve runs (o titular, ou um candidato se o alias nao for o do titular)\n")
 	}

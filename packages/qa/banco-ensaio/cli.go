@@ -166,6 +166,10 @@ const usoDoBanco = `aos-ensaio — banco de ensaio da fronteira runtime-modelo (
                                                    prepara o registo de entrada de USO TOOL do alias de uma
                                                    tool de OCR para o dono assinar (AOS-530; 'aos-ensaio
                                                    qualificar-ocr -h' para as opcoes)
+  aos-ensaio qualificar-video --motor visao|falso --perfil F --board B --regiao R --saida PASTA ...
+                                                   prepara o registo de entrada de USO TOOL do alias de uma
+                                                   tool de video para o dono assinar (AOS-536; 'aos-ensaio
+                                                   qualificar-video -h' para as opcoes)
   aos-ensaio limpar  [--chaves F | --contador F]   remove contentores e redes aos512-* que tenham ficado de uma
                                                    corrida anterior (um proxy orfao guarda a chave no ambiente)
                                                    e a trava do contador de um processo que ja morreu
@@ -257,6 +261,9 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		case "qualificar-ocr":
 			// O registo de uso tool (AOS-530) tem as suas opções e o seu uso (qualificar_ocr.go).
 			return qualificarOCR(ctx, args[1:], stdout, stderr, amb, red)
+		case "qualificar-video":
+			// O registo de uso tool de vídeo (AOS-536), pelo mesmo caminho (qualificar_video.go).
+			return qualificarVideo(ctx, args[1:], stdout, stderr, amb, red)
 		}
 	}
 	return executarCom(ctx, args, stdout, stderr, amb, red, &corridaFeita{})

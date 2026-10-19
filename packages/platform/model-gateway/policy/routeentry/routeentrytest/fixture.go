@@ -240,3 +240,63 @@ func GoodTool(t testing.TB, dir, label, profileJSON, board, region string, key K
 	Write(t, dir, label, entry, routeentry.Sign(entry, key.Priv), report)
 	return entry, report
 }
+
+// VideoToolProfileJSON é um perfil de rota para um registo de uso `tool` de VÍDEO (AOS-536): um
+// alias que a allowlist embebida autoriza (`gpt-4o-mini`), com a capacidade `video`, sem `imagem`
+// nem `tools`.
+const VideoToolProfileJSON = `{"requested":"gpt-4o-mini","expected_model":"openrouter/google/modelo-de-video","wire_class":"openai-chat-completions","capabilities":["video"]}`
+
+// VideoReportDoc devolve os membros de um relatório da experiência `video` (versão
+// [routeentry.VideoReportVersion]) com veredicto `qualificado`, do modo `real`, para o perfil com
+// o digest dado, atrás da imagem do proxy declarada para produção — a forma que o banco escreve
+// (AOS-537). O teste muda-lhe o que quiser antes de o selar com [SealReport].
+func VideoReportDoc(profileDigest string) map[string]any {
+	return map[string]any{
+		"versao_do_relatorio": routeentry.VideoReportVersion,
+		"experiencia":         routeentry.ExperimentVideo,
+		"data_utc":            "2026-10-19T12:00:00Z",
+		"modo":                routeentry.ModeReal,
+		"motor":               "visao",
+		"videos":              []any{},
+		"veredicto_do_video": map[string]any{
+			"veredicto":            routeentry.VerdictQualified,
+			"razoes":               []string{},
+			"regra":                "regra de teste",
+			"limiar_de_factos":     0.9,
+			"videos_nas_contas":    8,
+			"videos_que_falharam":  0,
+			"factos":               34,
+			"presentes_pela_regra": 34,
+			"vale_para_producao":   true,
+			"rota_medida": map[string]any{
+				"fornecedor":                "fornecedor-de-teste",
+				"modelo":                    "modelo-de-video",
+				"modelo_esperado":           "openrouter/google/modelo-de-video",
+				"digest_do_perfil":          profileDigest,
+				"imagem_do_proxy":           routeentry.ProductionProxyImage,
+				"digest_da_imagem_do_proxy": routeentry.ProductionProxyImageDigest(),
+			},
+		},
+	}
+}
+
+// VideoVerdict devolve o bloco `veredicto_do_video` de um [VideoReportDoc].
+func VideoVerdict(doc map[string]any) map[string]any {
+	return doc["veredicto_do_video"].(map[string]any)
+}
+
+// VideoMeasuredRoute devolve o bloco `rota_medida` de um [VideoReportDoc].
+func VideoMeasuredRoute(doc map[string]any) map[string]any {
+	return VideoVerdict(doc)["rota_medida"].(map[string]any)
+}
+
+// GoodVideoTool escreve na pasta um registo VÁLIDO de uso `tool` de vídeo para o perfil dado, a
+// citar um relatório `video` qualificado, assinado com a chave dada, e devolve os bytes do registo
+// e do relatório.
+func GoodVideoTool(t testing.TB, dir, label, profileJSON, board, region string, key Key) (entry, report []byte) {
+	t.Helper()
+	report, reportDigest := SealReport(t, VideoReportDoc(ProfileDigest(t, profileJSON)))
+	entry = Marshal(t, ToolEntryDoc(t, profileJSON, board, region, reportDigest))
+	Write(t, dir, label, entry, routeentry.Sign(entry, key.Priv), report)
+	return entry, report
+}

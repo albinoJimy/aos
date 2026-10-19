@@ -48,9 +48,9 @@ package main
 //
 // O USO (AOS-530, ADR-042 §2.3). Um registo de uso `tool` é o perfil de um alias que só uma tool
 // chama: entra no conjunto de perfis do gateway como os outros, e nunca é candidato
-// ([perfisAssinados.naoTitulares]); a fatia dele é 0 e o relatório citado é da experiência `ocr`
-// (conferidos na leitura da pasta), e não pode ser do alias do titular
-// ([perfisAssinados.conferirUsoTool]).
+// ([perfisAssinados.naoTitulares]); a fatia dele é 0 e o relatório citado é da experiência da
+// media do perfil — `ocr` para `imagem`, `video` para `video` (AOS-536) — (conferidos na leitura da
+// pasta), e não pode ser do alias do titular ([perfisAssinados.conferirUsoTool]).
 
 import (
 	"context"
@@ -255,9 +255,14 @@ func modelRouteProfilesBanner(p *perfisAssinados) []string {
 		}
 		if e.ForTool() {
 			// AOS-530: um registo de uso `tool` diz-se à parte, e a linha dos de uso `run` fica, byte
-			// a byte, a de antes.
-			linhas = append(linhas, fmt.Sprintf("perfil de rota ASSINADO de USO TOOL carregado (EPIC-06/AOS-530, ADR-042): registo %q, alias %q — o perfil de um alias que so uma tool chama; NUNCA e candidato: nao serve runs, nao tem adaptador de run, nao entra no canary nem no disjuntor, e um run fixado neste alias e recusado. Modelo esperado %q (digest do perfil %s). Digest do registo assinado %s; digest do relatorio citado %s (experiencia ocr, veredicto qualificado, do modo real, para este perfil e para a imagem do proxy declarada). Fatia 0 (um registo de uso tool nao tem canary). O perfil NAO autoriza o nome: a allowlist assinada autoriza-o para o board e a regiao deste no, conferido no arranque. Carregado so no arranque",
-				e.Label, e.Profile.Requested, e.Profile.ExpectedModel, e.ProfileDigest, e.EntryDigest, e.ReportDigest))
+			// a byte, a de antes. AOS-536: a experiência citada é a da media do perfil; a linha de um
+			// registo de imagem fica, byte a byte, a de antes.
+			experiencia := "experiencia ocr"
+			if e.Media == modelgateway.CapabilityVideo {
+				experiencia = "experiencia video, perfil de video (AOS-536)"
+			}
+			linhas = append(linhas, fmt.Sprintf("perfil de rota ASSINADO de USO TOOL carregado (EPIC-06/AOS-530, ADR-042): registo %q, alias %q — o perfil de um alias que so uma tool chama; NUNCA e candidato: nao serve runs, nao tem adaptador de run, nao entra no canary nem no disjuntor, e um run fixado neste alias e recusado. Modelo esperado %q (digest do perfil %s). Digest do registo assinado %s; digest do relatorio citado %s (%s, veredicto qualificado, do modo real, para este perfil e para a imagem do proxy declarada). Fatia 0 (um registo de uso tool nao tem canary). O perfil NAO autoriza o nome: a allowlist assinada autoriza-o para o board e a regiao deste no, conferido no arranque. Carregado so no arranque",
+				e.Label, e.Profile.Requested, e.Profile.ExpectedModel, e.ProfileDigest, e.EntryDigest, e.ReportDigest, experiencia))
 			continue
 		}
 		origem := "ACRESCENTA-SE a tabela de perfis em codigo, que nao tem este alias"

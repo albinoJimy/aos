@@ -42,12 +42,14 @@ opcoes:
   --silencioso           nao mostra o resumo, so os caminhos
   --guardar-respostas    grava, ao lado do relatorio, a descricao de cada video (so la)
   --limiar-de-factos F   o limiar do veredicto, de 0.90 (a omissao, o do OCR, D7 do dono) a 1; so aperta
-  --perfil FICHEIRO      (motores visao e falso) o perfil da rota do alias, sem a capacidade tools: o
-                         digest dele, o modelo e a imagem do proxy vao para a rota medida do veredicto,
-                         e a corrida conta nas qualificacoes do dia
+  --perfil FICHEIRO      (motores visao e falso) o perfil da rota do alias, sem a capacidade tools (e,
+                         para o registo de uso tool, com a capacidade video): o digest dele, o modelo e a
+                         imagem do proxy vao para a rota medida do veredicto, e a corrida conta nas
+                         qualificacoes do dia
 
 O relatorio traz o VEREDICTO: qualificado ou recusado contra o limiar de factos, e nenhum video por
-descrever (uma resposta cortada pelo limite de tokens falha o video). A saida NAO depende dele: 0 se
+descrever (uma resposta cortada pelo limite de tokens falha o video). Para preparar o registo de uso tool a partir
+do veredicto: aos-ensaio qualificar-video (AOS-536). A saida NAO depende dele: 0 se
 a corrida completou; 2 argumentos; 3 recusada antes de enviar (chaves, tecto, contador,
 qualificacoes do dia); 4 interrompida; 5 motor visao em CI; 6 sem Docker, sem a imagem do ffmpeg,
 um MP4 invalido, ou sem o proxy.
@@ -65,8 +67,9 @@ type opcoesDoVideo struct {
 var ErrPerfilDoVideo = errors.New("o perfil da rota medida pela experiencia video nao pode declarar a capacidade " + modelgateway.CapabilityTools + " (o modelo que ve o video nao pode pedir efeitos, como no ADR-042 2.3 e 2.4)")
 
 // lerPerfilDoVideo lê e confere o perfil de `--perfil`: a leitura fechada do gateway, o nome da
-// rota do banco, e nenhuma `tools`. A capacidade `video` do perfil é do AOS-535: até lá, o perfil
-// identifica-se só pelo digest.
+// rota do banco, e nenhuma `tools`. A capacidade `video` (AOS-535) aceita-se e não se exige aqui: a
+// experiência mede também um perfil que não a declara; quem a exige é o `qualificar-video`
+// ([lerPerfilDoVideoTool]), porque o nó não aceita um registo de uso tool de vídeo sem ela.
 func lerPerfilDoVideo(caminho string) (*modelgateway.RouteProfile, error) {
 	doc, err := os.ReadFile(caminho) // #nosec G304 -- caminho dado pelo operador na linha de comandos
 	if err != nil {
@@ -94,8 +97,21 @@ func codificadorDe(ctx context.Context, amb Ambiente) (CodificadorDeVideo, error
 	return NovoCodificadorFFmpeg(ctx, nil)
 }
 
+// videoFeito é o que uma corrida `video` deixou escrito: o relatório, tal como foi gravado, e o
+// caminho do JSON. Fica vazio quando a linha de comandos sai sem ter escrito relatório. É por aqui
+// que o `qualificar-video` lê a corrida que acabou de fazer (AOS-536), e não um relatório de fora.
+type videoFeito struct {
+	relatorio *RelatorioVideo
+	emJSON    string
+}
+
 // executarVideo corre o subcomando `video`.
 func executarVideo(ctx context.Context, args []string, stdout, stderr io.Writer, amb Ambiente, red *Redactor) int {
+	return executarVideoCom(ctx, args, stdout, stderr, amb, red, &videoFeito{})
+}
+
+// executarVideoCom é o subcomando `video`, com o relatório escrito deixado em `feito`.
+func executarVideoCom(ctx context.Context, args []string, stdout, stderr io.Writer, amb Ambiente, red *Redactor, feito *videoFeito) int {
 	const prefixo = "aos-ensaio video"
 	if len(args) > 0 && args[0] == "bateria" {
 		return mostrarBateriaVideo(ctx, args[1:], stdout, stderr, amb)
@@ -247,7 +263,10 @@ func executarVideo(ctx context.Context, args []string, stdout, stderr io.Writer,
 			rota.Fornecedor, rota.Modelo = string(rp.fornecedor), rp.modelo
 			rota.ImagemDoProxy, rota.DigestDaImagemDoProxy = ImagemDoProxy, digestDaImagem(ImagemDoProxy)
 		}
-		r.LimitesDaMedicao = append(r.LimitesDaMedicao, "o banco nao compara, nesta experiencia, o modelo que o proxy diz ter servido com o modelo esperado do perfil: quem o compara e o gateway do no, em cada chamada", "o perfil ainda nao declara a capacidade video (AOS-535): identifica-se so pelo digest")
+		r.LimitesDaMedicao = append(r.LimitesDaMedicao, "o banco nao compara, nesta experiencia, o modelo que o proxy diz ter servido com o modelo esperado do perfil: quem o compara e o gateway do no, em cada chamada")
+		if !slices.Contains(perfil.Capabilities, modelgateway.CapabilityVideo) {
+			r.LimitesDaMedicao = append(r.LimitesDaMedicao, "o perfil medido nao declara a capacidade video (AOS-535): o gateway do no recusa-lhe um pedido com video, e o no nao o aceita num registo de uso tool de video")
+		}
 	}
 	r.VeredictoDoVideo = VeredictoVideo(r, o.limiar, rota)
 	emJSON, emTexto, err := EscreverRelatorioVideo(pasta, r)
@@ -255,6 +274,7 @@ func executarVideo(ctx context.Context, args []string, stdout, stderr io.Writer,
 		fmt.Fprintf(stderr, "%s: %v\n", prefixo, err)
 		return SaidaErro
 	}
+	*feito = videoFeito{relatorio: r, emJSON: emJSON}
 	if !o.silencioso {
 		fmt.Fprint(stdout, ResumoVideoEmTexto(r))
 	}

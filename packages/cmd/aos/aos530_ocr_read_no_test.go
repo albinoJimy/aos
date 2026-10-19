@@ -188,7 +188,10 @@ type aos530Opcoes struct {
 	semPasta     bool
 	alias        string // alias do bloco `modelo` (vazio ⇒ o do registo tool)
 	semRegisto   bool   // a pasta de perfis sem o registo de uso tool
-	preco        string // conteúdo de AOS_MODEL_PRICING_PATH (vazio ⇒ sem a variável)
+	// registoDeVideo põe, para o alias da tool, um registo de uso tool de VÍDEO (AOS-536) em vez do
+	// de imagem.
+	registoDeVideo bool
+	preco          string // conteúdo de AOS_MODEL_PRICING_PATH (vazio ⇒ sem a variável)
 	// ambiente são variáveis a mais (o orçamento, a governação da rota), postas depois das outras.
 	ambiente map[string]string
 	// exportador recebe os spans do nó (cfg.OTLPExporter).
@@ -232,9 +235,12 @@ func aos530AmbienteOCR(t *testing.T, o aos530Opcoes) (*aos530Upstream, []byte) {
 	t.Setenv("AOS_MODEL_PROJECTION", "text")
 	aos504SemVariavel(t, "AOS_MODEL_PROJECTION_VERSION")
 	aos530ComAllowlistExterna(t)
-	if o.semRegisto {
+	switch {
+	case o.semRegisto:
 		aos530PastaCom(t, nil)
-	} else {
+	case o.registoDeVideo:
+		aos530PastaCom(t, nil, aos530Tool{rotulo: "ocr", perfil: aos536PerfilVideoTool, video: true})
+	default:
 		aos530PastaCom(t, nil, aos530Tool{rotulo: "ocr", perfil: aos530PerfilTool})
 	}
 	if o.preco != "" {
@@ -661,6 +667,7 @@ func TestAOS530_No_ArranqueFailClosed(t *testing.T) {
 		{"sem a pasta", aos530Opcoes{semPasta: true}, ErrOCRSemPasta},
 		{"alias fora da allowlist", aos530Opcoes{alias: "ocr-nao-autorizado"}, ErrOCRAliasForaDaAllowlist},
 		{"sem registo de uso tool", aos530Opcoes{semRegisto: true}, ErrOCRSemRegistoTool},
+		{"so um registo de uso tool de video para o alias", aos530Opcoes{registoDeVideo: true}, ErrOCRSemRegistoTool},
 		{"sem preco com a contabilidade composta", aos530Opcoes{preco: precoSoTitular}, ErrOCRSemPreco},
 		{"com preco", aos530Opcoes{preco: precoComTool}, nil},
 		{"sem contabilidade composta", aos530Opcoes{}, nil},
