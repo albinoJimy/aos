@@ -213,18 +213,25 @@ ou `reversibility` diferente de `reversible`), com o gate armado. Uma tool sem e
 ou com um eixo implícito, fica com a regra de antes (fail-closed). Com o gate desarmado
 (`AOS_PRIVILEGED_CAPS` vazia) nada muda.
 
-As razões: ler um documento da pasta do dono **não é um destino de integridade** — o que ele lê não
-sai do servidor nem muda nada; o perigo de uma injecção está em **agir** (enviar, escrever, apagar,
-pagar), e esses pedidos continuam negados com o contexto `untrusted` (é a política P-T do FIDES e o
-«lethal trifecta»: corta-se a perna da comunicação externa). O que a regra antiga negava a mais —
+As razões: ler um documento da pasta do dono **não é um destino de integridade** — não muda nada,
+e o conteúdo lido vai no turno seguinte ao fornecedor do modelo titular, como já acontecia com as
+leituras do turno `trusted`, e pode aparecer na resposta ao cliente; o perigo de uma injecção está
+em **agir** (enviar, escrever, apagar, pagar), e esses pedidos continuam negados com o contexto
+`untrusted` (é a política P-T do FIDES e o «lethal trifecta»: nenhuma tool de egress controlada
+pelo atacante fica disponível nesse contexto). O que a regra antiga negava a mais —
 um nó com `consumes` não lia o documento do objectivo, e depois do primeiro `tool_result` nenhum run
 lia outro (resíduo da A1, R1 e resíduo 3 deste ADR) — passa a correr. A `ocr_read` e a `video_read`
 declaram `egress: "external"` e continuam privilegiadas: a «leitura única por run» de que dependem
 as excepções de 2026-10-18 e 2026-10-19 (§2.7) mantém-se para elas. A `doc_read` deixa de a partilhar.
 
-O que esta emenda **aceita**, por escrito: uma injecção num conteúdo lido pode levar o agente a ler
-**outro** documento local e a escrever um resumo enganador (ataque texto-para-texto). Nada sai do
-servidor por isso — enviar continua negado nesse contexto — e nenhum dos desenhos estudados (CaMeL,
+O que esta emenda **aceita**, por escrito: uma injecção num conteúdo lido pode agora **escolher que
+documentos da pasta são lidos** e levar o agente a escrever um resumo enganador (ataque
+texto-para-texto). O que esses documentos dizem vai ao fornecedor do modelo titular no turno
+seguinte e pode chegar ao cliente na resposta — os mesmos dois caminhos de qualquer leitura —, mas
+nenhuma tool de egress que o atacante controle fica disponível nesse contexto: enviar continua
+negado. Uma tool só é leitura local se declarar os três eixos e a sua capability e o recurso da
+call não denunciarem egress; uma tool com o bloco `modelo` tem de declarar `egress: "external"`.
+Nenhum dos desenhos estudados (CaMeL,
 FIDES, os padrões de Beurer-Kellner et al.) fecha esta classe. A forma forte (opção A, §3) continua
 o destino, com o gatilho do §5.4. A §2.5 (fase 1: `cap:fs.read` armada) continua a valer para as
 tools que não se declaram leitura local.
