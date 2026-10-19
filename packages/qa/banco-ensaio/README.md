@@ -1048,7 +1048,7 @@ experiência dessa media: um registo de vídeo exige um relatório `video` da ve
 vídeo, ou um `video` num registo de imagem, recusa com `relatorio_de_outra_experiencia`. Os
 registos de hoje são os mesmos bytes, o mesmo digest e a mesma assinatura. O `conferir` diz o uso
 e a media (`media: video — o relatorio citado e da experiencia video`). A tool de vídeo no nó é a
-parte 2 do AOS-536, por fazer.
+`video_read` (parte 2 do AOS-536), em `packages/cmd/aos/video_tool.go`.
 
 ### O que a experiência `video` não prova
 
