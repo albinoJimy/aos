@@ -138,3 +138,22 @@ func TestAOS538_EgressIlegivelAbortaOsDestinos(t *testing.T) {
 		t.Fatalf("egress ilegivel tinha de abortar com ErrBadModelTools, veio %v", err)
 	}
 }
+
+// M-3: o loader guarda os eixos TAL COMO DECLARADOS. Uma tool com `mutation` omitida não é leitura
+// local, mesmo com `egress: "none"` e `reversibility: "reversible"` explícitos: o gate armado com
+// cap:fs.read nega-a com o contexto untrusted, e o banner não a lista como livre. Se o loader
+// guardasse o valor resolvido, a ausência valeria "none" e a tool ganharia a excepção.
+func TestAOS538_LoaderMutacaoImplicitaNaoELeituraLocal(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "tools.json")
+	if err := os.WriteFile(p, []byte(`[{"name":"le_sem_mutacao","capability":"cap:fs.read","resource_type":"file","resource_value":"doc://{doc_id}","resource_region":"eu","egress":"none","reversibility":"reversible"}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	priv, specs := aos538GateDoManifesto(t, p)
+	if d := destinosDoClassificador(priv); d == nil || len(d.livres) != 0 {
+		t.Fatalf("uma tool com mutation implicita nao pode ser listada como livre: %+v", d)
+	}
+	got := aos538MediarUntrusted(t, priv, specs)
+	if dec := got["le_sem_mutacao"]; dec.Effect != rm.EffectDeny || dec.DeniedBy != "taint" {
+		t.Fatalf("mutation implicita: devia ser NEGADA pelo taint, veio %s/%q", dec.Effect, dec.DeniedBy)
+	}
+}

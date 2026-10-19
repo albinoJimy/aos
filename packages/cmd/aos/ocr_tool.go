@@ -222,6 +222,13 @@ func validarLigacaoModelo(s modelToolSpec) error {
 		return fmt.Errorf("%w: tool %q tem de declarar capability %q (uma leitura por run, partilhada com a doc_read)", ErrBadModelTools, nome, ocrCapability)
 	case strings.TrimSpace(s.ResourceValue) != ocrResourceValue:
 		return fmt.Errorf("%w: tool %q tem de declarar resource_value %q (o recurso selado e o ficheiro lido)", ErrBadModelTools, nome, ocrResourceValue)
+	case strings.ToLower(strings.TrimSpace(s.Egress)) != "external":
+		// AOS-538: o efeito de uma tool de modelo é ENVIAR o ficheiro ao fornecedor da visão. Com
+		// `egress: "none"` (ou implícito, que o contrato do digest lê como none) declarada a par de
+		// `mutation: "none"` e `reversibility: "reversible"`, o gate de taint tratá-la-ia como
+		// leitura local e deixá-la-ia passar com o contexto untrusted. O eixo é factual, não uma
+		// escolha do operador: recusa o arranque em vez de confiar nele.
+		return fmt.Errorf("%w: tool %q tem de declarar `egress: \"external\"` explicito — o ficheiro sai para o fornecedor do modelo (AOS-538)", ErrBadModelTools, nome)
 	}
 	return nil
 }

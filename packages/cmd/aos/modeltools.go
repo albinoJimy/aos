@@ -312,8 +312,9 @@ func loadModelToolsFromEnv() ([]port.Tool, map[string]toolBinding, error) {
 }
 
 // toolDestinationsFromEnv lê os eixos de DESTINO que AOS_MODEL_TOOLS declara para cada tool —
-// `egress`, `mutation` e `reversibility`, TAL COMO ESCRITOS — para o gate de taint e o
-// classificador de risco do Reference Monitor (AOS-538, emenda de 2026-10-19 ao ADR-034).
+// `egress`, `mutation` e `reversibility`, TAL COMO ESCRITOS — para o gate de taint do Reference
+// Monitor (AOS-538, emenda de 2026-10-19 ao ADR-034). O classificador de risco não os recebe: o
+// egress declarado no risco passou ao AOS-539 por decisão do dono.
 //
 // PORQUE NÃO SE REUSA O [toolBinding]. O binding guarda o valor já RESOLVIDO (a mutação ausente
 // vale "mutates", o egress ausente vale "none" no contrato do digest), e a regra nova precisa de

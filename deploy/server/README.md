@@ -2176,10 +2176,14 @@ todos estão feitos (as recusas estão abaixo).
 
    O bloco `modelo` é **exclusivo** do `sandbox` (os dois recusam o arranque), só a `ocr_read` o
    pode ter, e a `capability` e o `resource_value` têm de ser **exactamente** os de cima; um nome
-   repetido no registo recusa o arranque. O `egress` declarado é `external`: a imagem **sai do
-   servidor** para o fornecedor do modelo (pelo gateway do nó e pelo proxy — ADR-042 §4). O que o
-   declarado decide: **no RM** do nó o egress vem da capability (`cap:fs.*` ⇒ sem egress), e o
-   campo só entra no contrato do catálogo assinado (`AOS_MODEL_TOOLS_REGISTER`) e no `GET /tools`;
+   repetido no registo recusa o arranque. O `egress` tem de ser `external`, **declarado** (desde o
+   AOS-538 outro valor, ou a ausência, recusa o arranque): a imagem **sai do servidor** para o
+   fornecedor do modelo (pelo gateway do nó e pelo proxy — ADR-042 §4). O que o declarado decide:
+   **no gate de taint** do RM, uma tool só é leitura local (livre com o contexto untrusted) com
+   `egress: "none"` explícito, e a `ocr_read` continua privilegiada (AOS-538); **na classe de
+   risco** do RM o egress ainda vem da capability (`cap:fs.*` ⇒ sem egress; levar o declarado ao
+   risco é o AOS-539); o campo entra também no contrato do catálogo assinado
+   (`AOS_MODEL_TOOLS_REGISTER`) e no `GET /tools`;
    **no `aos-orq`** o egress declarado conta para a classe de risco do nó do plano, e portanto
    para a aprovação automática. A `resource_region` alinha-se ao board, como a da `doc_read`.
    **Para um plano do `aos-orq` usar a tool**, o `orq/snapshot.json` precisa também da entrada

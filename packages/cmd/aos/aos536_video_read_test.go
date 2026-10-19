@@ -513,8 +513,8 @@ func TestAOS536_Video_AReescritaDoEfeito(t *testing.T) {
 // O BLOCO `modelo` NA `video_read`: aceite com a capability e o recurso da `ocr_read`; com outros,
 // recusado; as duas tools no mesmo registo; e a tool tem executor.
 func TestAOS536_Video_OBlocoModeloNoRegisto(t *testing.T) {
-	const ocr = `{"name":"ocr_read","capability":"cap:fs.read","resource_type":"file","resource_value":"doc://{doc_id}","resource_region":"eu","modelo":{"alias":"ocr-visao"}}`
-	const boa = `{"name":"video_read","capability":"cap:fs.read","resource_type":"file","resource_value":"doc://{doc_id}","resource_region":"eu","modelo":{"alias":"video-visao"}}`
+	const ocr = `{"name":"ocr_read","capability":"cap:fs.read","resource_type":"file","resource_value":"doc://{doc_id}","resource_region":"eu","egress":"external","modelo":{"alias":"ocr-visao"}}`
+	const boa = `{"name":"video_read","capability":"cap:fs.read","resource_type":"file","resource_value":"doc://{doc_id}","resource_region":"eu","egress":"external","modelo":{"alias":"video-visao"}}`
 	t.Setenv("AOS_MODEL_TOOLS", writeTools(t, "["+ocr+","+boa+"]"))
 	specs, err := readModelToolSpecs()
 	if err != nil {
@@ -532,6 +532,8 @@ func TestAOS536_Video_OBlocoModeloNoRegisto(t *testing.T) {
 	casos := map[string]string{
 		"outra capability":        strings.Replace(boa, `"cap:fs.read"`, `"cap:net.connect"`, 1),
 		"recurso fixo":            strings.Replace(boa, `doc://{doc_id}`, `doc://tudo`, 1),
+		"egress none":             strings.Replace(boa, `"egress":"external"`, `"egress":"none","mutation":"none","reversibility":"reversible"`, 1),
+		"egress implicito":        strings.Replace(boa, `"egress":"external",`, ``, 1),
 		"sem alias":               strings.Replace(boa, `"alias":"video-visao"`, `"alias":""`, 1),
 		"outro nome":              strings.Replace(boa, `"video_read"`, `"le_video"`, 1),
 		"com sandbox":             strings.Replace(boa, `"modelo"`, `"sandbox":{"command":"read","path_arg":"doc_id"},"modelo"`, 1),

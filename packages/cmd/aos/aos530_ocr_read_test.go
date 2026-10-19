@@ -353,7 +353,7 @@ func TestAOS530_OCR_AReescritaDoEfeito(t *testing.T) {
 // O BLOCO `modelo` NO REGISTO: exclusivo de `sandbox`, só na `ocr_read`, com alias, a capability e
 // o recurso da tool. Fora disto o registo não carrega.
 func TestAOS530_OCR_OBlocoModeloNoRegisto(t *testing.T) {
-	const boa = `{"name":"ocr_read","capability":"cap:fs.read","resource_type":"file","resource_value":"doc://{doc_id}","resource_region":"eu","modelo":{"alias":"ocr-visao"}}`
+	const boa = `{"name":"ocr_read","capability":"cap:fs.read","resource_type":"file","resource_value":"doc://{doc_id}","resource_region":"eu","egress":"external","modelo":{"alias":"ocr-visao"}}`
 	t.Setenv("AOS_MODEL_TOOLS", writeTools(t, "["+boa+"]"))
 	specs, err := readModelToolSpecs()
 	if err != nil || specDoOCR(specs) == nil || specDoOCR(specs).Modelo.Alias != "ocr-visao" {
@@ -368,6 +368,11 @@ func TestAOS530_OCR_OBlocoModeloNoRegisto(t *testing.T) {
 		"sem alias":        strings.Replace(boa, `"alias":"ocr-visao"`, `"alias":" "`, 1),
 		"outra capability": strings.Replace(boa, `"cap:fs.read"`, `"cap:net.connect"`, 1),
 		"recurso fixo":     strings.Replace(boa, `doc://{doc_id}`, `doc://tudo`, 1),
+		// AOS-538: a imagem sai para o fornecedor da visao — o egress tem de ser `external`,
+		// declarado. Com `none` ou implicito o gate de taint trata-la-ia como leitura local.
+		"egress none":      strings.Replace(boa, `"egress":"external"`, `"egress":"none","mutation":"none","reversibility":"reversible"`, 1),
+		"egress implicito": strings.Replace(boa, `"egress":"external",`, ``, 1),
+		"egress internal":  strings.Replace(boa, `"egress":"external"`, `"egress":"internal"`, 1),
 		// UM NOME REPETIDO: a segunda entrada, sem o bloco e com outra capability e outro recurso,
 		// seria a que o enriquecedor do modelo lia (a última), enquanto o arranque conferia a
 		// primeira. Recusado.
