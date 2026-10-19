@@ -418,42 +418,18 @@ func DefaultHooksWithRisk(policy *risk.Policy, gate *risk.Gate) []Hook {
 //
 // A classificação é PURA e determinística, pelo que o RiskGate a recalcular a jusante obtém o
 // mesmo valor — não há estado partilhado além da anotação, que é reescrita com o mesmo conteúdo.
-type RiskClassifier struct {
-	policy *risk.Policy
-	dests  ToolDestinations
-}
+type RiskClassifier struct{ policy *risk.Policy }
 
 // NewRiskClassifier constrói o anotador. `policy` nil ⇒ [risk.DefaultPolicy] (o mesmo default de
 // [risk.Classify]), para que a anotação exista mesmo sem política versionada composta.
 func NewRiskClassifier(policy *risk.Policy) RiskClassifier { return RiskClassifier{policy: policy} }
-
-// WithToolDestinations devolve o anotador com o destino que o registo de tools DECLARA (AOS-538):
-// o egress declarado de uma tool chega ao eixo de egress da classificação, onde só ELEVA o que a
-// capability e o recurso já derivam ([raiseEgress]). Era o defeito que a discovery do AOS-538
-// encontrou: a `ocr_read` e a `video_read` declaram `egress: "external"` (a imagem e o vídeo saem
-// para o modelo de visão) e o classificador, que só via a `cap:fs.read`, classificava-as locais.
-// Tool sem entrada no registo, egress implícito, ou capability diferente da do binding ⇒ o egress
-// derivado de antes.
-func (c RiskClassifier) WithToolDestinations(d ToolDestinations) RiskClassifier {
-	c.dests = d
-	return c
-}
-
-// egressForCall é o egress da call com o declarado no registo de tools aplicado.
-func (c RiskClassifier) egressForCall(call *Call) risk.Egress {
-	derived := egressForCall(call)
-	if d, ok := c.dests.forCall(call); ok {
-		return raiseEgress(derived, d.declaredEgress())
-	}
-	return derived
-}
 
 // Name implementa [Hook].
 func (RiskClassifier) Name() string { return "risk-classify" }
 
 // Evaluate implementa [Hook]: classifica, anota, e PERMITE — sempre.
 func (c RiskClassifier) Evaluate(_ context.Context, call *Call) (HookResult, error) {
-	egress := c.egressForCall(call)
+	egress := egressForCall(call)
 	classification := risk.Classify(c.policy, risk.Action{
 		Sensitivity:   sensitivityForCall(call, egress),
 		Egress:        egress,

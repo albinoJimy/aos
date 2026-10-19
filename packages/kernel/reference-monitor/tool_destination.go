@@ -3,8 +3,6 @@ package referencemonitor
 import (
 	"sort"
 	"strings"
-
-	"github.com/aos-ref/kernel/reference-monitor/risk"
 )
 
 // ToolDestination são os eixos de DESTINO que o registo de tools (config trusted do operador,
@@ -183,38 +181,4 @@ func (d DestinationPrivileged) ClassifyCall(call *Call) (bool, string) {
 		return true, TaintPrivilegeDeclaredEffect
 	}
 	return false, TaintPrivilegeNotListed
-}
-
-// declaredEgress projecta o egress DECLARADO no eixo do classificador de risco. Implícito ou fora
-// do vocabulário ⇒ [risk.EgressUnknown]; quem o consome só o usa para ELEVAR (ver [raiseEgress]).
-func (d ToolDestination) declaredEgress() risk.Egress {
-	switch normalizeAxis(d.Egress) {
-	case "none":
-		return risk.EgressNone
-	case "internal":
-		return risk.EgressInternal
-	case "external":
-		return risk.EgressExternal
-	default:
-		return risk.EgressUnknown
-	}
-}
-
-// raiseEgress aplica o egress DECLARADO ao derivado da capability: só ELEVA, nunca baixa. Um
-// derivado já externo (ou indeterminado, que conta como externo) fica; um declarado externo ou
-// interno sobe o derivado. Um `none` declarado não desfaz um egress que a capability ou o recurso
-// já denunciam — a declaração do operador não é mentível para baixo (SAROC-01).
-func raiseEgress(derived, declared risk.Egress) risk.Egress {
-	if derived.IsExternal() {
-		return derived
-	}
-	switch declared {
-	case risk.EgressExternal:
-		return risk.EgressExternal
-	case risk.EgressInternal:
-		if derived == risk.EgressNone {
-			return risk.EgressInternal
-		}
-	}
-	return derived
 }

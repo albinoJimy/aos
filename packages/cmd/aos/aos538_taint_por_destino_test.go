@@ -8,11 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aos-ref/control-plane/governance/autonomy"
 	rm "github.com/aos-ref/kernel/reference-monitor"
-	"github.com/aos-ref/kernel/reference-monitor/risk"
 	"github.com/aos-ref/kernel/reference-monitor/taint"
-	"github.com/aos-ref/platform/audit"
 )
 
 // AOS-538 — o critério de produção, sem mexer no servidor: com o manifesto REAL de produção
@@ -139,50 +136,5 @@ func TestAOS538_EgressIlegivelAbortaOsDestinos(t *testing.T) {
 	t.Setenv("AOS_MODEL_TOOLS", p)
 	if _, err := toolDestinationsFromEnv(); !errors.Is(err, ErrBadModelTools) {
 		t.Fatalf("egress ilegivel tinha de abortar com ErrBadModelTools, veio %v", err)
-	}
-}
-
-// O egress declarado chega ao classificador de risco do nó (AOS-538) — e o que isso MUDA em
-// produção, escrito aqui para não ser descoberto por acaso. Com o manifesto real e a sensibilidade
-// que o loop entrega (vazia ⇒ sensível, fail-closed), a `ocr_read` e a `video_read` passam de
-// `gray` a `danger` (egress externo de dados sensíveis); a `doc_read` fica `gray`. Em L4 (o nível
-// de produção no domínio fs) `danger` CONFIRMA: as duas passam a exigir aprovação humana. A
-// simulação de autonomia reclassifica igual ao nó.
-func TestAOS538_ManifestoDeProducao_EgressDeclaradoNoRisco(t *testing.T) {
-	t.Setenv("AOS_MODEL_TOOLS", toolsJSONProducao)
-	specs, err := readModelToolSpecs()
-	if err != nil {
-		t.Fatal(err)
-	}
-	dests, err := toolDestinationsFromEnv()
-	if err != nil {
-		t.Fatal(err)
-	}
-	quer := map[string]struct {
-		antes, depois risk.Class
-		escalaEmL4    bool
-	}{
-		"doc_read":   {risk.ClassGray, risk.ClassGray, false},
-		"ocr_read":   {risk.ClassGray, risk.ClassDanger, true},
-		"video_read": {risk.ClassGray, risk.ClassDanger, true},
-	}
-	for _, s := range specs {
-		q, ok := quer[s.Name]
-		if !ok {
-			t.Fatalf("tool %q nova no manifesto de producao: decide aqui o que muda para ela", s.Name)
-		}
-		rec := audit.AuditRecord{ToolID: s.Name, Capability: s.Capability, Resource: audit.Resource{Type: s.ResourceType, Value: "doc://x"}}
-		rec.Context.Taint = taint.StringTrusted
-		rec.Context.Reversibility = s.Reversibility
-		if got := reclassificar(rec, rm.ToolDestinations{}); got != q.antes {
-			t.Errorf("%s sem o destino: %v, queria %v", s.Name, got, q.antes)
-		}
-		depois := reclassificar(rec, dests)
-		if depois != q.depois {
-			t.Errorf("%s com o destino: %v, queria %v", s.Name, depois, q.depois)
-		}
-		if got := autonomy.Oversight(autonomy.L4, depois).RequiresHumanGate(); got != q.escalaEmL4 {
-			t.Errorf("%s em L4: exige humano=%v, queria %v", s.Name, got, q.escalaEmL4)
-		}
 	}
 }
