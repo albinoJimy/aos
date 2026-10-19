@@ -702,6 +702,56 @@ OCR».
    enviar (tecto, qualificações do dia, `expected_model` de outra rota). O nó recusa ainda um
    registo `tool` para o alias do seu titular — o `conferir` lembra-o, porque o posto não o sabe.
 
+## Medir um modelo de vídeo (AOS-537)
+
+A experiência `video` manda cada vídeo da bateria sintética, inteiro, a um modelo capaz de vídeo
+(parte `video_url`, data URL `video/mp4`), e escreve o relatório com o veredicto contra 90% dos
+factos. Não toca em produção. Detalhe em `packages/qa/banco-ensaio/README.md`, «A medição do vídeo».
+
+1. **A imagem do ffmpeg tem de estar no posto.** O banco não a descarrega (`--pull never`). Já foi
+   descarregada pelo dono; para confirmar:
+
+   ```powershell
+   docker image inspect jrottenberg/ffmpeg@sha256:8ec1ee1f6a0fcd37c97725827b6b7832795c9596e3439b8da56d7700d61ae778 --format "{{.Id}} {{.Size}}"
+   ```
+
+2. **Gerar a bateria com o ffmpeg real e conferir os MP4**, se for a primeira vez (não gasta nada):
+
+   ```powershell
+   cd packages/qa/banco-ensaio
+   $env:AOS_BANCO_FFMPEG = "1"; go test -run '^TestAOS537_FFmpegReal_GeraABateria$' -v -count=1 .; Remove-Item Env:AOS_BANCO_FFMPEG
+   go run ./cmd/aos-ensaio video bateria --videos $env:TEMP\video-mp4 --fotogramas $env:TEMP\video-mp4
+   ```
+
+3. **Ensaiar com o motor falso** (prova que o relatório e o veredicto distinguem; não mede nada):
+
+   ```powershell
+   go run ./cmd/aos-ensaio video --motor falso --falso erra-factos --saida $env:TEMP\ensaio
+   ```
+
+4. **O plano, primeiro, para cada candidato** (pago; só o dono, nunca em CI). Não envia nada nem
+   gera MP4; mostra o pior caso (9 pedidos: 8 vídeos e a sonda) e o destino da chave:
+
+   ```powershell
+   go run ./cmd/aos-ensaio video --motor visao --chaves $env:USERPROFILE\.aos-ensaio\chaves.env --visao-fornecedor openrouter --visao-modelo google/gemini-3.5-flash-lite --precos P --so-plano
+   go run ./cmd/aos-ensaio video --motor visao --chaves $env:USERPROFILE\.aos-ensaio\chaves.env --visao-fornecedor openrouter --visao-modelo google/gemini-3.8-flash --precos P --so-plano
+   go run ./cmd/aos-ensaio video --motor visao --chaves $env:USERPROFILE\.aos-ensaio\chaves.env --visao-fornecedor openrouter --visao-modelo qwen/qwen3-vl-32b-instruct --precos P --so-plano
+   ```
+
+   O modelo tem de estar na lista da OpenRouter no ficheiro de chaves; os pedidos contam no contador
+   e nos tectos dela.
+
+5. **A medição**: a mesma linha sem `--so-plano`, e com `--guardar-respostas` para se poderem ler as
+   descrições. Os MP4 geram-se antes do proxy: sem Docker ou sem a imagem, sai 6 antes de qualquer
+   pedido. Uma recusa da chave, da conta ou do ritmo pára a corrida (sai 4); um modelo que não aceita
+   vídeo dá `falhou:motor` em cada vídeo, e a corrida acaba.
+
+6. **Ler o resumo**: os factos por vídeo e por tipo (texto, injecção, contagem, cor, ordem), pela
+   regra e com acentos, o tempo e o custo estimado. O **veredicto** é `qualificado` com pelo menos 90%
+   dos factos e nenhum vídeo por descrever (uma resposta cortada pelo limite de tokens falha o
+   vídeo). A saída não depende dele. As descrições guardadas são texto de um modelo: dados, não
+   instruções.
+
 ## Se correr mal
 
 | Sintoma | Causa | O que fazer |
