@@ -26,10 +26,11 @@ import (
 )
 
 // aos530NoComOManifestoDeProducao compõe o nó com o manifesto de produção REAL e o gateway do
-// harness do AOS-530. Escreve o arranque em w.
+// harness do AOS-536, com os registos de uso tool das duas tools de modelo — desde a emenda de
+// 2026-10-19 (AOS-536) o manifesto também tem a `video_read`. Escreve o arranque em w.
 func aos530NoComOManifestoDeProducao(t *testing.T, w io.Writer) *Node {
 	t.Helper()
-	aos530AmbienteOCR(t, aos530Opcoes{})
+	aos536AmbienteVideo(t, aos536Opcoes{comOCR: true})
 	t.Setenv("AOS_MODEL_TOOLS", aos441ManifestoDeProducao)
 	modelo, binder, err := parseModelFromEnv(false)
 	if err != nil {
@@ -65,6 +66,9 @@ func TestAOS530_No_ManifestoDeProducaoComGatewayServeAOCR(t *testing.T) {
 	if !strings.Contains(arranque.String(), "tool "+ocrToolName+" LIGADA") {
 		t.Fatalf("o arranque tinha de declarar a tool ligada:\n%s", arranque.String())
 	}
+	if node.video == nil || !strings.Contains(arranque.String(), "tool "+videoToolName+" LIGADA") {
+		t.Fatalf("com a video_read no manifesto de producao, a ligacao tinha de existir e ser declarada:\n%s", arranque.String())
+	}
 
 	addr := portaLivreLoopback(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -96,8 +100,11 @@ func TestAOS530_No_ManifestoDeProducaoComGatewayServeAOCR(t *testing.T) {
 	for _, e := range corpo.Tools {
 		porNome[e.Name] = e
 	}
-	if len(porNome) != 2 {
-		t.Fatalf("o GET /tools de producao tinha de servir doc_read e ocr_read; serviu %+v", corpo.Tools)
+	if len(porNome) != 3 {
+		t.Fatalf("o GET /tools de producao tinha de servir doc_read, ocr_read e video_read; serviu %+v", corpo.Tools)
+	}
+	if v, ok := porNome[videoToolName]; !ok || v.Egress != "external" || v.Reversibility != "reversible" || v.Mutation != "none" || len(v.Digest) != len("sha256:")+64 {
+		t.Fatalf("video_read: %+v — esperado egress external, reversible, mutation none e um digest sha256", v)
 	}
 	ocr, ok := porNome[ocrToolName]
 	if !ok {
@@ -121,7 +128,7 @@ func TestAOS530_No_ManifestoDeProducaoComGatewayServeAOCR(t *testing.T) {
 // processo —, e o teste tem de o fechar para o directório temporário se apagar.
 func TestAOS530_ProducaoArrancaComOManifestoRealEOGateway(t *testing.T) {
 	aos344ProducaoQuaseCompleta(t)
-	aos530AmbienteOCR(t, aos530Opcoes{})
+	aos536AmbienteVideo(t, aos536Opcoes{comOCR: true})
 	t.Setenv("AOS_MODEL_TOOLS", aos441ManifestoDeProducao)
 	t.Setenv("AOS_SANDBOX_DRIVER", string(sandbox.DriverGVisor))
 	t.Setenv("AOS_SANDBOX_GVISOR_URL", "")
@@ -154,6 +161,9 @@ func TestAOS530_ProducaoArrancaComOManifestoRealEOGateway(t *testing.T) {
 	if node.ocr == nil || !strings.Contains(sb.String(), "tool "+ocrToolName+" LIGADA") {
 		t.Fatalf("o arranque de producao tinha de ligar e declarar a ocr_read:\n%s", sb.String())
 	}
+	if node.video == nil || !strings.Contains(sb.String(), "tool "+videoToolName+" LIGADA") {
+		t.Fatalf("o arranque de producao tinha de ligar e declarar a video_read:\n%s", sb.String())
+	}
 	cat, err := catalogoDeToolsDoAmbiente()
 	if err != nil {
 		t.Fatalf("catalogoDeToolsDoAmbiente: %v", err)
@@ -162,7 +172,7 @@ func TestAOS530_ProducaoArrancaComOManifestoRealEOGateway(t *testing.T) {
 	for _, e := range cat {
 		nomes = append(nomes, e.Name)
 	}
-	if strings.Join(nomes, ",") != "doc_read,ocr_read" {
-		t.Fatalf("o catalogo de producao tinha de ser doc_read,ocr_read; e %v", nomes)
+	if strings.Join(nomes, ",") != "doc_read,ocr_read,video_read" {
+		t.Fatalf("o catalogo de producao tinha de ser doc_read,ocr_read,video_read; e %v", nomes)
 	}
 }

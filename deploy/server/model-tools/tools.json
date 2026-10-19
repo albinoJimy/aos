@@ -36,5 +36,24 @@
     "resource_region": "eu-west",
     "egress": "external",
     "modelo": { "alias": "ocr-visao" }
+  },
+  {
+    "name": "video_read",
+    "description": "Descreve o que se vê num vídeo MP4 da pasta de documentos, por id: o texto que aparece, as cenas e a ordem dos acontecimentos. Usa isto quando te pedirem para ver ou descrever um vídeo.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "doc_id": { "type": "string", "description": "id do vídeo a descrever (o nome do ficheiro, por exemplo passos-longo.mp4)" }
+      },
+      "required": ["doc_id"]
+    },
+    "capability": "cap:fs.read",
+    "reversibility": "reversible",
+    "mutation": "none",
+    "resource_type": "file",
+    "resource_value": "doc://{doc_id}",
+    "resource_region": "eu-west",
+    "egress": "external",
+    "modelo": { "alias": "video-visao" }
   }
 ]
