@@ -1144,6 +1144,62 @@ mantêm-se.
 
 ---
 
+## AOS-538 — O gate de taint decide pelo destino da tool: ler fica livre, enviar e mudar continuam bloqueados
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-07 — Segurança e Isolamento |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — resíduo «um nó com tools e `consumes` é negado pelo gate de taint» |
+| Tipo | feat |
+| Prioridade | P1: sem isto um plano em que um passo lê o que outro passo encontrou falha sempre |
+| Estimativa | S |
+| Dependências | Emenda de 2026-10-19 ao ADR-034 (decisão do dono: «aceito a regra») |
+| Responsável sugerido | Engenheiro de Segurança |
+| Documentos de referência | `docs/adr/ADR-034-autorizacao-derivada-do-contexto.md` (emenda de 2026-10-19); `packages/kernel/reference-monitor/taint_gate.go`; `packages/cmd/aos/modeltools.go`; `packages/integration/secured.go`; `packages/security-tests/plan_input_injection_test.go` |
+
+### Contexto
+
+O gate de taint do Reference Monitor nega qualquer capability de `AOS_PRIVILEGED_CAPS` pedida com o
+contexto `untrusted`. Em produção a lista é `cap:http.post,cap:fs.read`, e a `doc_read`, a
+`ocr_read` e a `video_read` partilham a `cap:fs.read`. Resultado medido
+(`plan-e2e-v0151t-1791401536`): um nó com `consumes` não lê o documento que o objectivo nomeia, e
+depois do primeiro resultado de tool nenhum run lê outro documento. O dono decidiu (emenda de
+2026-10-19 ao ADR-034) que ler fica livre e que só enviar e mudar continuam bloqueados.
+
+A discovery encontrou um defeito ligado: o egress que o manifesto declara não chega ao Reference
+Monitor — o classificador de risco deduz o egress da capability, e vê a `ocr_read` como local.
+
+### Critérios de Aceitação
+
+- [ ] O gate de taint recebe a classificação por tool: uma tool com `egress`, `mutation` e
+      `reversibility` explícitos e iguais a `none`, `none` e `reversible` nunca é privilegiada para o
+      taint; as outras ficam com a regra da capability e são privilegiadas também quando declaram um
+      efeito, com o gate armado. Uma tool sem entrada no registo ou com um eixo implícito fica com a
+      regra de antes. Com `AOS_PRIVILEGED_CAPS` vazia nada muda.
+- [ ] As duas vias de despacho (directa e durável) decidem igual — teste de paridade.
+- [ ] Com o manifesto de produção e `AOS_PRIVILEGED_CAPS=cap:http.post,cap:fs.read` (o `.env` de
+      produção, sem mudança no servidor): a `doc_read` com o contexto `untrusted` (um `plan_input`, ou
+      depois de um `tool_result`) passa; a `ocr_read` e a `video_read` com o contexto `untrusted`
+      continuam negadas por taint (a leitura única por run delas mantém-se); a `web_post` continua
+      negada.
+- [ ] O egress declarado no manifesto chega ao classificador de risco: a `ocr_read` e a
+      `video_read` deixam de ser vistas como locais.
+- [ ] Os testes de segurança passam a provar a propriedade nova: nenhuma call de efeito ou de
+      egress é permitida a partir de um `plan_input` injectado (incluindo a `ocr_read`); e um
+      meta-teste prova que, com a classificação a ignorar o egress, a injecção que pede `ocr_read`
+      passaria.
+- [ ] O banner de arranque do gate diz a regra nova (que tools ficam livres por serem leitura local).
+- [ ] A decisão do gate fica auditável: o evento de mediação diz porque a call não foi tratada como
+      privilegiada.
+
+### Fora de âmbito
+
+- Pedir os documentos antes de ver os dados do passo anterior (o passo 2 do plano do dono).
+- Escalar para aprovação humana em vez de negar (o passo 3).
+- A forma forte do ADR-005 (opção A do ADR-034).
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -1152,3 +1208,4 @@ mantêm-se.
 | 1.1 | 2026-10-15 | +AOS-530 (fase A5, «A5-ocr»): a tool `ocr_read` — verbo `ocr` no executor gVisor, motor no rootfs com versão fixa, texto e digest do media no resultado; nada no kernel nem no gateway; a entrada no `tools.json` só pelo dono. Depende do AOS-529 | Equipa AOS |
 | 1.2 | 2026-10-15 | AOS-530 reescrito: a D2 do desenho mudou pela medição do AOS-529 (o Haiku a 100% dos factos, o Tesseract local a 82,5%) — a tool `ocr_read` passa a transcrever a imagem por um modelo de visão através do Model Gateway do nó, segundo o ADR-042 (proposto): alias `ocr-visao` na allowlist re-assinada, registo de entrada de uso `tool`, parte de imagem só nesta chamada, custo no run e no tecto em dólares, replay sem nova chamada. O OCR local no gVisor fica descrito como alternativa, não implementada | Equipa AOS |
 | 1.3 | 2026-10-15 | AOS-530: o ADR-042 foi ratificado pelo dono; a dependência fica satisfeita | Equipa AOS |
+| 1.4 | 2026-10-19 | +AOS-538: o gate de taint decide pelo destino da tool (emenda de 2026-10-19 ao ADR-034, decisão do dono): ler fica livre, enviar e mudar continuam bloqueados | Equipa AOS |
