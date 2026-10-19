@@ -190,6 +190,17 @@ partilha a `cap:fs.read` da `doc_read` e a capability está armada em produção
 imagem, nunca conteúdo do run (ADR-042 §2.4, §4). `TestAOS069_ManifestoDeProducaoNaoOfereceEgressExterno`
 continua a avermelhar para qualquer outra tool com egress externo.
 
+**Emenda de 2026-10-19 (AOS-536; decisão do dono: «Colocar video_read na excepção»).** A
+`video_read` (ADR-042, AOS-536) passa a estar coberta pela mesma excepção, com a mesma forma: a
+entrada chama-se `video_read`, declara `modelo.alias`, usa `cap:fs.read` e o recurso
+`doc://{doc_id}`. As razões são as da `ocr_read`: o modelo só escolhe o `doc_id` entre os vídeos
+que o dono semeou (a mesma pasta), a instrução é fixa e versionada, o modelo de vídeo não recebe
+tools, a `cap:fs.read` partilhada dá uma leitura por run entre as duas tools, e o que sai do
+servidor é o vídeo semeado, nunca conteúdo do run. A excepção continua por nome **e** forma, e
+`TestAOS069_ManifestoDeProducaoNaoOfereceEgressExterno` continua a avermelhar para qualquer outra
+tool com egress externo. Esta emenda não põe a `video_read` no manifesto: entra lá com o registo de
+uso `tool` de vídeo assinado, o preço e a rota em produção.
+
 ## 3. Alternativas consideradas
 
 - **(A) Dual-LLM / CaMeL completo** — um planeador que só vê trusted + handles e um executor que
@@ -328,9 +339,9 @@ continua a avermelhar para qualquer outra tool com egress externo.
   como `plan_input`, pelo loop real, não produz nenhuma call privilegiada permitida (fase 0 e fase
   1), com controlo de contexto limpo e meta-teste com o gate desligado.
 - `packages/cmd/aos/aos069_web_post_contexto_limpo_test.go` — o manifesto de produção não oferece
-  nenhuma tool de `cap:http.post` nem de egress externo (§2.7), salvo a `ocr_read` com a forma da
-  emenda de 2026-10-18 — `TestAOS069_ExcepcaoDaOCRNaoCobreOutraTool` prova que a excepção não cobre
-  outra tool; onde o `web_post` é oferecido, morre
+  nenhuma tool de `cap:http.post` nem de egress externo (§2.7), salvo a `ocr_read` e a `video_read` com
+  a forma das emendas de 2026-10-18 e 2026-10-19 — `TestAOS069_ExcepcaoDaOCRNaoCobreOutraTool`
+  prova que a excepção não cobre outra tool; onde o `web_post` é oferecido, morre
   em contexto limpo no PDP pela região (R8); e a injecção no objectivo passa a cláusula de taint
   (R7).
 - `packages/kernel/agent-runtime/replay/aos069_autoridade_replay_test.go` — a âncora opt-in

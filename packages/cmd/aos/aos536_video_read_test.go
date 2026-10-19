@@ -413,6 +413,10 @@ func TestAOS536_Video_DuracaoDaMvhd(t *testing.T) {
 		{"v0 escala 600", aos536MP4(aos536Mvhd(0, 600, 900)), 1500 * time.Millisecond, true},
 		{"sem escala", aos536MP4(aos536Mvhd(0, 0, 10)), 0, false},
 		{"absurda", aos536MP4(aos536Mvhd(1, 1, 1<<41)), 0, false},
+		// Abaixo da guarda das unidades, mas os ns não cabem num int64: sem a guarda dos ms dava a
+		// volta e passava por ~290 ms (revisão adversarial do AOS-536).
+		{"absurda abaixo da guarda das unidades", aos536MP4(aos536Mvhd(1, 1, 18446744074)), 0, false},
+		{"maior que cabe", aos536MP4(aos536Mvhd(1, 1000, 1<<40)), time.Duration(1<<40) * time.Millisecond, true},
 		{"curta", aos536MP4(make([]byte, 19)), 0, false},
 		{"versao desconhecida", aos536MP4(append([]byte{2}, make([]byte, 120)...)), 0, false},
 		{"sem moov", append(aos536Caixa("ftyp", []byte("isom")), aos536Caixa("mdat", nil)...), 0, false},

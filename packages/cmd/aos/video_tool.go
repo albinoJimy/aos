@@ -305,7 +305,7 @@ func (l *ligacaoVideo) lerVideo(doc string) (port.VideoPart, time.Duration, stri
 // duracaoDoMP4 lê a duração da `mvhd` (versão 0 ou 1) da primeira `moov` de um MP4 que já passou
 // [port.VideoPart.Validate]. É o leitor mínimo de caixas do banco (`video_mp4.go`, AOS-537), só para
 // a duração: o nó não importa o banco. Fail-closed: uma caixa que sai dos bytes, uma `mvhd` curta,
-// sem escala de tempo ou com uma duração absurda (acima de 2^40 unidades) ⇒ não há duração.
+// sem escala de tempo ou com uma duração absurda (acima de 2^40 unidades ou de 2^40 ms) ⇒ não há duração.
 //
 // A DURAÇÃO É A QUE O FICHEIRO DECLARA. Ninguém descodifica o vídeo; a `mvhd` é escrita por quem
 // gerou o ficheiro, e a pasta semeada é do dono. Um ficheiro que declarasse menos do que tem passaria
@@ -331,8 +331,15 @@ func duracaoDoMP4(b []byte) (time.Duration, bool) {
 	if escala == 0 || duracao > 1<<40 {
 		return 0, false
 	}
-	// duracao ≤ 2^40 e escala ≥ 1: duracao × 1000 cabe folgado num int64.
-	return time.Duration(duracao*1000/escala) * time.Millisecond, true // #nosec G115 -- duracao limitada acima a 2^40
+	// duracao ≤ 2^40: duracao × 1000 cabe num uint64. Mas os ms ainda podem não caber numa
+	// time.Duration (ns num int64): com escala 1 e duracao perto de 2^40, ms × 10^6 dava a volta e
+	// um vídeo de séculos passava por centenas de ms. Os ms também se limitam a 2^40 (~35 anos),
+	// que × 10^6 cabe folgado num int64 — acima disso a duração é absurda e não há duração.
+	ms := duracao * 1000 / escala
+	if ms > 1<<40 {
+		return 0, false
+	}
+	return time.Duration(ms) * time.Millisecond, true // #nosec G115 -- ms limitados acima a 2^40
 }
 
 // caixaDoMP4 devolve o corpo da primeira caixa do tipo dado entre as caixas de um nível. Fail-closed:

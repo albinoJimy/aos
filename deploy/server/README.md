@@ -2298,13 +2298,11 @@ escolhido); o efectivo é o MENOR entre ele e `AOS_MODEL_EGRESS_TIMEOUT` (120 s 
 5. **Os vídeos** MP4 com `+faststart` em `/opt/aos/gvisor/seed/` (a pasta da `ocr_read`), no nível
    de topo, ficheiros regulares legíveis pelo uid 65532, até 4 MiB e 60 s.
 6. **A variável** `AOS_OCR_SEED_DIR=/etc/aos/ocr-seed` — já posta para a `ocr_read`.
-7. **POR DECIDIR PELO DONO: a excepção do ADR-034 §2.7.** A `video_read` tem **egress externo**: o
-   vídeo sai do servidor para o fornecedor do modelo. A emenda de 2026-10-18 do ADR-034 §2.7 é uma
-   excepção **só da `ocr_read`**, por nome e forma; a `video_read` **não** está coberta, e
-   `TestAOS069_ManifestoDeProducaoNaoOfereceEgressExterno` avermelha com ela no manifesto de
-   produção. Estender a excepção à `video_read` (com a mesma forma: `modelo.alias`, `cap:fs.read`,
-   `doc://{doc_id}`) é uma **decisão do dono**, a escrever numa emenda do ADR-034 antes do passo 8.
-   Não foi tomada.
+7. **A excepção do ADR-034 §2.7 — DECIDIDA (2026-10-19).** A `video_read` tem **egress externo**: o
+   vídeo sai do servidor para o fornecedor do modelo. O dono estendeu-lhe a excepção da `ocr_read`
+   (emenda de 2026-10-19 do ADR-034 §2.7), por nome e forma: `modelo.alias`, `cap:fs.read`,
+   `doc://{doc_id}`. Com outra forma, `TestAOS069_ManifestoDeProducaoNaoOfereceEgressExterno`
+   continua a avermelhar.
 8. **A entrada no `tools.json` — por PR ao repositório e uma release, NUNCA editando o servidor**,
    só depois do passo 7. Na forma da da `ocr_read`, com `"name": "video_read"`, `"egress": "external"`
    e `"modelo": { "alias": "video-visao" }`; a `capability` e o `resource_value` têm de ser
