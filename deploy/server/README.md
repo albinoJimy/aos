@@ -2232,7 +2232,7 @@ o `pdftoppm` se houver PDF; o resultado `aos-ocr/v1` com `motor: local`, a vers�
 modelo servido e com custo zero declarado. Usá-la quando os documentos não puderem ir ao fornecedor
 do modelo; nesse caso a ligação `modelo` não se usa.
 
-### Ligar o vídeo — a tool `video_read` (AOS-536, parte 2; molde ADR-042) — no código; NÃO está no `tools.json` de produção
+### Ligar o vídeo — a tool `video_read` (AOS-536, parte 2; molde ADR-042) — no `tools.json` de produção desde 2026-10-19
 
 A `video_read` lê um vídeo **MP4** da pasta semeada e devolve a descrição factual feita por um
 **modelo capaz de vídeo**, por **uma** chamada ao Model Gateway do nó — o mesmo dos turnos —, no
@@ -2245,8 +2245,10 @@ vê vídeo. O resultado é JSON `aos-video/v1` (texto, `sha256`, tamanho e dura�
 modelo servido, digest do perfil, digest da instrução), `untrusted`. O replay usa o resultado
 capturado e **não** volta a chamar o modelo.
 
-**Sem a entrada `video_read` no `tools.json`, o nó é o de antes.** O código está no nó; a entrada
-**não** está no `tools.json` de produção, e pô-la é um acto do dono (passo 8).
+**A entrada `video_read` está no `tools.json` de produção** (passo 8, feito por PR a 2026-10-19).
+Com ela, o nó **recusa arrancar** sem os passos 1 a 6 feitos no servidor: o registo de vídeo
+assinado, o preço do par e a pasta semeada. Por isso esses passos fazem-se **antes** de aprovar o
+deploy da release que a traz.
 
 **O que a tool aceita, antes de qualquer custo.** A leitura é a da `ocr_read` (nível de topo, sem
 ligações simbólicas, ficheiro regular conferido no descritor, `ficheiro_trocado`, `nome_nao_canonico`,
@@ -2282,9 +2284,8 @@ escolhido); o efectivo é o MENOR entre ele e `AOS_MODEL_EGRESS_TIMEOUT` (120 s 
 
 **Passos do dono, por ordem.** Cada um sem o seguinte é inerte.
 
-1. **A allowlist** com o alias `video-visao` no board do nó: um bundle externo assinado
-   (`AOS_MODEL_ALLOWLIST_BUNDLE_DIR` + `AOS_MODEL_ALLOWLIST_TRUST_ANCHOR`) ou a embebida re-assinada
-   numa release. A embebida **não** o autoriza hoje e não foi alterada.
+1. **A allowlist** com o alias `video-visao` no board do nó — **feito**: a embebida, re-assinada
+   pelo dono (2026-10-19), autoriza-o na regra `board-eu-chat`; chega ao nó com a release.
 2. **O registo de entrada assinado de uso `tool` de VÍDEO** para `video-visao` (AOS-536 parte 1):
    `aos-ensaio qualificar-video` no modo real prepara o pacote, o dono assina-o
    (`aos-issuer route-profile-sign`) e põe-no em `/opt/aos/perfis-de-rota/`. Um registo de
@@ -2303,8 +2304,8 @@ escolhido); o efectivo é o MENOR entre ele e `AOS_MODEL_EGRESS_TIMEOUT` (120 s 
    (emenda de 2026-10-19 do ADR-034 §2.7), por nome e forma: `modelo.alias`, `cap:fs.read`,
    `doc://{doc_id}`. Com outra forma, `TestAOS069_ManifestoDeProducaoNaoOfereceEgressExterno`
    continua a avermelhar.
-8. **A entrada no `tools.json` — por PR ao repositório e uma release, NUNCA editando o servidor**,
-   só depois do passo 7. Na forma da da `ocr_read`, com `"name": "video_read"`, `"egress": "external"`
+8. **A entrada no `tools.json` — feito por PR (2026-10-19); chega com a release, NUNCA editando o
+   servidor.** Na forma da da `ocr_read`, com `"name": "video_read"`, `"egress": "external"`
    e `"modelo": { "alias": "video-visao" }`; a `capability` e o `resource_value` têm de ser
    exactamente `cap:fs.read` e `doc://{doc_id}`. Para um plano do `aos-orq` a usar, a entrada também
    no `orq/snapshot.json` (como a `ocr_read`).

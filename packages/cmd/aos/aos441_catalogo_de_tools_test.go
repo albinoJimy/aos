@@ -27,7 +27,8 @@ import (
 const aos441ManifestoDeProducao = "../../../deploy/server/model-tools/tools.json"
 
 // manifestoDeProducaoSemOCR escreve num ficheiro temporário o manifesto de PRODUÇÃO (lido de
-// origem, que é o ficheiro real) sem a entrada `ocr_read`, e devolve o caminho. É para os testes que arrancam o nó com o manifesto de produção
+// origem, que é o ficheiro real) sem as tools cujo efeito é uma chamada a um modelo — a `ocr_read`
+// e, desde a emenda de 2026-10-19 (AOS-536), a `video_read` —, e devolve o caminho. É para os testes que arrancam o nó com o manifesto de produção
 // e não compõem o Model Gateway — e que não são sobre o OCR: desde a emenda de 2026-10-18 ao
 // ADR-034 §2.7 a `ocr_read` está no manifesto, e sem gateway o nó recusa arrancar
 // (ErrOCRSemGateway, ADR-042 §2.1). Deriva-se do ficheiro REAL, filtrando só por nome, para que
@@ -49,7 +50,7 @@ func manifestoDeProducaoSemOCR(t *testing.T, origem string) string {
 		if err := json.Unmarshal(e["name"], &nome); err != nil {
 			t.Fatalf("entrada do manifesto de producao sem name legivel: %v", err)
 		}
-		if nome != ocrToolName {
+		if nome != ocrToolName && nome != videoToolName {
 			sem = append(sem, e)
 		}
 	}
@@ -112,15 +113,16 @@ func TestAOS441CatalogoServeOsNomesDoManifesto(t *testing.T) {
 	for _, e := range cat {
 		porNome[e.Name] = e
 	}
-	// Decisão do dono (2026-09-26, ADR-034 §2.7) e a sua emenda de 2026-10-18 (AOS-530, ADR-042):
-	// o catálogo de produção tem exactamente `doc_read` e `ocr_read` — esta última é a única tool
-	// de egress externo, e a excepção é por nome e forma.
+	// Decisão do dono (2026-09-26, ADR-034 §2.7) e as suas emendas de 2026-10-18 (AOS-530) e
+	// 2026-10-19 (AOS-536): o catálogo de produção tem exactamente `doc_read`, `ocr_read` e
+	// `video_read` — as duas últimas são as únicas tools de egress externo, por nome e forma.
 	quer := map[string]entradaDoCatalogo{
-		"doc_read": {Name: "doc_read", Egress: "none", Reversibility: "reversible", Mutation: "none", Version: "1.0.0"},
-		"ocr_read": {Name: "ocr_read", Egress: "external", Reversibility: "reversible", Mutation: "none", Version: "1.0.0"},
+		"doc_read":   {Name: "doc_read", Egress: "none", Reversibility: "reversible", Mutation: "none", Version: "1.0.0"},
+		"ocr_read":   {Name: "ocr_read", Egress: "external", Reversibility: "reversible", Mutation: "none", Version: "1.0.0"},
+		"video_read": {Name: "video_read", Egress: "external", Reversibility: "reversible", Mutation: "none", Version: "1.0.0"},
 	}
 	if len(cat) != len(quer) {
-		t.Errorf("o manifesto de produção oferece %d tools (%+v) — por decisão do dono são doc_read e ocr_read (ADR-034 §2.7, emenda de 2026-10-18)", len(cat), cat)
+		t.Errorf("o manifesto de produção oferece %d tools (%+v) — por decisão do dono são doc_read, ocr_read e video_read (ADR-034 §2.7, emendas de 2026-10-18 e 2026-10-19)", len(cat), cat)
 	}
 	for nome, q := range quer {
 		e, ok := porNome[nome]
@@ -245,7 +247,7 @@ func TestAOS441EgressAusenteSaiUnknown(t *testing.T) {
 // TestAOS277ServeAPIEnforcaOsLimitesLidos fechou para os limites de ingresso).
 //
 // Serve o catálogo do manifesto de produção INTEIRO: desde a emenda de 2026-10-18 ao ADR-034
-// §2.7 ele tem a `ocr_read`, que só arranca com o Model Gateway composto (ADR-042 §2.1) — por
+// §2.7 ele tem a `ocr_read` (e, desde a de 2026-10-19, a `video_read`), que só arrancam com o Model Gateway composto (ADR-042 §2.1) — por
 // isso o nó é o do harness do AOS-530 ([aos530NoComOManifestoDeProducao]) e não o newAPINode com
 // um cliente de modelo injectado.
 func TestAOS441ServeAPIServeOCatalogo(t *testing.T) {
@@ -282,7 +284,7 @@ func TestAOS441ServeAPIServeOCatalogo(t *testing.T) {
 	for _, e := range corpo.Tools {
 		nomes = append(nomes, e.Name)
 	}
-	if !reflect.DeepEqual(nomes, []string{"doc_read", "ocr_read"}) {
+	if !reflect.DeepEqual(nomes, []string{"doc_read", "ocr_read", "video_read"}) {
 		t.Fatalf("o servidor de serveAPI tinha de servir o catálogo do manifesto de produção, serviu %v", nomes)
 	}
 }
