@@ -1249,6 +1249,50 @@ disponível nesse contexto.
 
 ---
 
+## AOS-539 — O egress declarado no manifesto chega ao classificador de risco, sem pôr cada OCR e cada vídeo atrás de aprovação humana
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-07 — Segurança e Isolamento |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — resíduo da discovery do AOS-538 |
+| Tipo | fix |
+| Prioridade | P2: o gate de taint já nega a `ocr_read` e a `video_read` com o contexto `untrusted`; isto é a segunda camada |
+| Estimativa | S |
+| Dependências | AOS-538 |
+| Responsável sugerido | Engenheiro de Segurança |
+| Documentos de referência | `packages/kernel/reference-monitor/risk_gate.go` (`egressForCall`); `packages/cmd/aos/modeltools.go`; `packages/control-plane/pdp/autonomy.go`; ADR-034 (emenda de 2026-10-19, AOS-538) |
+
+### Contexto
+
+O classificador de risco deduz o egress de uma call pela capability (`egressForCall`), e não lê o
+egress que o manifesto declara. A `ocr_read` e a `video_read` usam `cap:fs.read` e declaram
+`egress: "external"`, mas o risco vê-as como locais (`gray`). O AOS-538 fez chegar o egress
+declarado ao classificador (commit `4cf55ae1`) e o dono mandou retirá-lo (2026-10-19, opção A): com a
+sensibilidade vazia que o loop entrega, que se lê como sensível, as duas tools subiam a `danger`, e
+em L4 (o nível de produção do domínio `fs`) `danger` escala para aprovação humana — cada OCR e cada
+vídeo, mesmo pedido directamente pelo dono, ficava à espera de quatro olhos.
+
+### Critérios de Aceitação
+
+- [ ] O egress declarado no manifesto chega ao classificador de risco e só pode **elevar** o egress
+      derivado da capability.
+- [ ] A sensibilidade do recurso de uma tool que lê a pasta semeada pelo dono é declarada (no
+      manifesto ou no binding) e chega ao classificador; um recurso sem sensibilidade declarada
+      continua a ler-se como sensível (fail-closed).
+- [ ] Com o manifesto de produção e os níveis de produção, um OCR ou um vídeo pedidos com o
+      contexto trusted **não** exigem aprovação humana; um recurso sem sensibilidade declarada com
+      egress externo exige.
+- [ ] O `aos-orq` e o nó derivam a mesma classe para a mesma tool (o snapshot e o manifesto não
+      divergem).
+- [ ] A cablagem de produção tem teste no nó composto (a revisão do AOS-538 mostrou que a ligação em
+      `integration/secured.go` sem destinos deixava as suites verdes).
+
+### Fora de âmbito
+
+- Mudar os níveis de autonomia de produção.
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -1260,3 +1304,4 @@ disponível nesse contexto.
 | 1.4 | 2026-10-19 | +AOS-538: o gate de taint decide pelo destino da tool (emenda de 2026-10-19 ao ADR-034, decisão do dono): ler fica livre, enviar e mudar continuam bloqueados | Equipa AOS |
 | 1.5 | 2026-10-19 | AOS-538 implementado no ramo `feature/AOS-538-taint-por-destino`: o `TaintGate` classifica pelo destino declarado (`DestinationPrivileged`, pelo `ToolID`), o evento sela a razão (`context.taint_privilege`), o banner nomeia as tools livres por leitura local e o egress declarado chega ao anotador de risco (a `ocr_read` e a `video_read` passam a `danger` no RM) | Equipa AOS |
 | 1.6 | 2026-10-19 | AOS-538: o egress declarado no classificador de risco é revertido e passa ao AOS-539 (decisão do dono); correcções da revisão adversarial — a capability ou o recurso que denunciem egress tiram a excepção de leitura local, uma tool com o bloco `modelo` tem de declarar `egress: "external"`, o RM apaga a razão do gate posta pelo chamador, e a frase sobre o que sai do servidor fica exacta | Equipa AOS |
+| 1.7 | 2026-10-20 | +AOS-539: o egress declarado chega ao risco sem pôr cada OCR e cada vídeo atrás de aprovação humana (retirado do AOS-538 por decisão do dono) | Equipa AOS |
