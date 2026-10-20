@@ -148,6 +148,11 @@ type turnPayload struct {
 	// antes de ler, e quantas tool calls fizeram nesse turno — e nada no runtime o lê.
 	// `omitempty`: todo o outro turno, e todo o run de outro layout, grava os bytes de sempre.
 	PlanInputsDeferred int `json:"plan_inputs_deferred,omitempty"`
+	// PlanInputsDigest é o digest dos `plan_input` adiados desse turno, tal como entram no tail no
+	// turno seguinte (`sha256:<hex>`). O `prompt_hash` do turno não depende deles; é por este
+	// digest que a medição da nova tentativa de um nó (AOS-502/506) continua a ver que as entradas
+	// mudaram. Só com [turnPayload.PlanInputsDeferred]; `omitempty` como ele.
+	PlanInputsDigest string `json:"plan_inputs_digest,omitempty"`
 }
 
 // TurnRecord é o input que o [Runtime] passa ao [TurnRecorder] por turno.
@@ -172,7 +177,9 @@ type TurnRecord struct {
 	ResponseShape *ResponseShape
 	// PlanInputsDeferred — ver [turnPayload.PlanInputsDeferred].
 	PlanInputsDeferred int
-	Producer           eventstore.Producer
+	// PlanInputsDigest — ver [turnPayload.PlanInputsDigest].
+	PlanInputsDigest string
+	Producer         eventstore.Producer
 }
 
 // TurnRecorder grava cada turno como um evento "turn.recorded" no Event Store,
@@ -224,6 +231,7 @@ func (r *TurnRecorder) Record(ctx context.Context, rec TurnRecord) (uint64, erro
 	// Uma contagem negativa não existe; não chega ao registo.
 	if rec.PlanInputsDeferred > 0 {
 		payload.PlanInputsDeferred = rec.PlanInputsDeferred
+		payload.PlanInputsDigest = NormalizeRouteProfileDigest(rec.PlanInputsDigest)
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

@@ -647,6 +647,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		// ver os dados de que ela depende era obter a chamada sem o conteúdo — a regra do AOS-526
 		// volta a valer no turno seguinte, enquanto o run não tiver pedido tool nenhuma.
 		entradasAdiadas := sequencia.DeferredPlanInputs()
+		digestDasAdiadas := sequencia.DeferredPlanInputsDigest()
 		if entradasAdiadas > 0 {
 			view.CompletionToForce = nil
 		}
@@ -739,7 +740,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		res.CustoNaoDerivado = res.CustoNaoDerivado || resp.CustoNaoDerivado
 
 		// Gravar o turno com o manifesto por trajectória.
-		seq, err := rt.recordTurn(ctx, goal, win.SystemHash(), lay.version, conclusao, stepID, turn, view, resp, producer, entradasAdiadas)
+		seq, err := rt.recordTurn(ctx, goal, win.SystemHash(), lay.version, conclusao, stepID, turn, view, resp, producer, entradasAdiadas, digestDasAdiadas)
 		if err != nil {
 			return res, err
 		}
@@ -1057,7 +1058,7 @@ func (rt *Runtime) callModel(ctx context.Context, goal Goal, stepID string, view
 }
 
 // recordTurn constrói o manifesto e grava o evento "turn.recorded".
-func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash, assemblyVersion string, conclusao *Completion, stepID string, turn int, view PromptView, resp ModelResponse, producer eventstore.Producer, entradasAdiadas int) (uint64, error) {
+func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash, assemblyVersion string, conclusao *Completion, stepID string, turn int, view PromptView, resp ModelResponse, producer eventstore.Producer, entradasAdiadas int, digestDasAdiadas string) (uint64, error) {
 	manifest := Manifest{
 		PromptHash: view.PromptHash,
 		SystemHash: systemHash,
@@ -1108,6 +1109,7 @@ func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash, assemb
 		// 1.6.0: quantos `plan_input` o prompt deste turno NÃO teve. Zero — e o evento com os
 		// bytes de sempre — em todo o turno que não seja o primeiro de um run que os adia.
 		PlanInputsDeferred: entradasAdiadas,
+		PlanInputsDigest:   digestDasAdiadas,
 		Producer:           producer,
 	})
 	if err != nil {

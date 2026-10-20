@@ -520,6 +520,11 @@ func TailFromRetryNotice(aviso RetryNotice) (TailSegment, bool) { return tailFro
 // a seguir aos resultados das tool calls deste ([TailSequence.TurnWithState]); e a resposta deste
 // turno não termina a tarefa ([TailSequence.TurnEndsRun]). O conselho («request them now») é o
 // que a ordem nova existe para permitir.
+//
+// Caso aceite: um turno 1 VAZIO (sem texto e sem tool calls) não acrescenta segmento nenhum, e na
+// projecção nativa o aviso e os dados acabam na MESMA mensagem `user` — o modelo lê «arrives in
+// your next turn» ao lado dos dados já entregues. Os rótulos `about` dos dois avisos dizem o que é
+// cada um; deixa-se assim.
 const avisoDeEntradasAdiadas160 = "This task also has data from earlier steps of the plan (plan_input segments). That data is not in this context yet: it arrives in your next turn, after the results of any tool calls you make in this turn. If the objective names documents or other resources that you will need, request them now with tool calls. Your reply in this turn does not end the task."
 
 // avisoDeEntradasEntregues160 é o corpo FIXO do `notice` que se segue aos `plan_input` quando
@@ -600,8 +605,21 @@ func abrirTailDoRun(goal Goal, lay layout) ([]TailSegment, *TailSequence, error)
 	seq := lay.novaSequencia()
 	if adiaEntradas(goal, lay) {
 		seq.adiadas = append([]PlanInput(nil), goal.Inputs...)
+		seq.digestDasAdiadas = digestDasEntradas(seq.adiadas, lay)
 	}
 	return semente, seq, nil
+}
+
+// digestDasEntradas é o digest dos segmentos `plan_input` tal como o layout os materializa, pela
+// ordem, cada um com o comprimento à frente. Vai no `turn.recorded` do turno que NÃO os teve
+// ([TailSequence.DeferredPlanInputsDigest]): o `prompt_hash` desse turno não depende deles, e é
+// este digest que deixa quem compara duas tentativas do mesmo nó ver que as entradas mudaram.
+func digestDasEntradas(inputs []PlanInput, lay layout) string {
+	h := sha256.New()
+	for _, in := range inputs {
+		campoDeHash(h, appendSegmento(nil, tailFromPlanInput(in), lay))
+	}
+	return hashPrefix + hex.EncodeToString(h.Sum(nil))
 }
 
 // OpenRunTail é a semente e a [TailSequence] de um run com este [Goal], no layout da versão dada
@@ -658,12 +676,24 @@ type TailSequence struct {
 	// entregouNoUltimoTurno: o último [TailSequence.TurnWithState] acrescentou os `plan_input`
 	// adiados. É o que diz a [TailSequence.TurnEndsRun] que esse turno não acaba o run.
 	entregouNoUltimoTurno bool
+	// digestDasAdiadas é o [digestDasEntradas] das adiadas, calculado na abertura e mantido até à
+	// entrega (o turno que se monta sem elas é o que o grava).
+	digestDasAdiadas string
 }
 
 // DeferredPlanInputs devolve quantos `plan_input` do run ainda não entraram no tail: o número
 // que o prompt do turno que se vai montar NÃO tem. Zero fora da 1.6.0, num run sem entradas e a
 // partir do segundo turno. É medição e é o que tira o forçar do contrato no turno 1 (o loop).
 func (s *TailSequence) DeferredPlanInputs() int { return len(s.adiadas) }
+
+// DeferredPlanInputsDigest é o digest dos `plan_input` que o prompt do turno que se vai montar NÃO
+// tem ([digestDasEntradas]); vazio sempre que [TailSequence.DeferredPlanInputs] é zero.
+func (s *TailSequence) DeferredPlanInputsDigest() string {
+	if len(s.adiadas) == 0 {
+		return ""
+	}
+	return s.digestDasAdiadas
+}
 
 type chamadaVista struct {
 	// vezes: quantas vezes a chamada foi feita no run, com qualquer desfecho — a medição.

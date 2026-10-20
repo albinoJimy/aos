@@ -1155,6 +1155,14 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	if req.MaxTurns <= 0 || req.MaxTurns > h.cfg.maxTurnsCeiling {
 		req.MaxTurns = h.cfg.maxTurnsCeiling
 	}
+	// PEDIR ANTES DE LER (ADR-034 §4, AOS-540): num nó com o interruptor ligado, um run com
+	// `plan_input` fica no layout 1.6.0, cujo primeiro turno nunca termina o run — os dados só
+	// entram no segundo. Com menos de dois turnos o run morria no tecto sem nunca ver os dados.
+	// Recusa-se aqui, explícito, em vez de elevar o valor que o cliente pediu.
+	if h.node != nil && h.node.pedirAntesDeLer && len(req.Inputs) > 0 && req.MaxTurns < 2 {
+		writeError(w, http.StatusBadRequest, "max_turns tem de ser pelo menos 2 num run com inputs: com AOS_PLAN_INPUT_DEPOIS_DO_PRIMEIRO_TURNO=on o primeiro turno nao ve os inputs e nao termina o run")
+		return
+	}
 
 	goal := agentruntime.Goal{
 		RunID:      req.RunID,
