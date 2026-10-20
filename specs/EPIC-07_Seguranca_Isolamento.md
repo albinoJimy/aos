@@ -1294,7 +1294,13 @@ vídeo, mesmo pedido directamente pelo dono, ficava à espera de quatro olhos.
       (`TestAOS539_TextoDaCallSoElevaASensibilidadeDeclarada`); sem declaração, vazio ⇒ sensível
       (`TestAOS539_ClasseDeRiscoPeloDestinoDeclarado`, casos `*_sem_sensibilidade`). Numa tool de
       rede ou que muta a declaração não vale (`TestAOS539_SensibilidadeSoValeParaUmaLeitura`): o
-      que sai é o que o modelo escreve, e «a pasta é pública» não o classifica.
+      que sai é o que o modelo escreve, e «a pasta é pública» não o classifica. Correcção da
+      revisão (M-1): o classificador confia no registo, e o validador do nó recusa no arranque as
+      formas que ele não vê — `resource_sensitivity` com egress não `none` sem o bloco `modelo`,
+      com `args_from` no sandbox, ou com `resource_type` de rede; e, para todas as tools,
+      `mutation: "none"` com um verbo de escrita na capability ou no comando do sandbox
+      (`TestAOS539_ValidadorRecusaAsFormasDoRevisor`, `TestAOS539_MutacaoNoneComVerboDeEscritaAborta`;
+      o manifesto de produção continua válido, `TestAOS539_ManifestoDeProducaoContinuaValido`).
 - [x] Com o manifesto de produção e os níveis de produção, um OCR ou um vídeo pedidos com o
       contexto trusted **não** exigem aprovação humana; um recurso sem sensibilidade declarada com
       egress externo exige.
@@ -1304,7 +1310,11 @@ vídeo, mesmo pedido directamente pelo dono, ficava à espera de quatro olhos.
       (`TestAOS539_ManifestoDeProducao_ClasseDeRiscoEEscaladaEmL4`: `ocr_read`/`video_read` `gray`,
       `doc_read` `safe`, nenhuma exige humano em L4;
       `TestAOS539_SemSensibilidadeDeclaradaComEgressExternoEscalaEmL4`: sem o campo, `danger` e
-      escala) e, no nó composto, `TestAOS539_NoComposto_ClasseDeRiscoEEscaladaEmL4`.
+      escala) e, no nó composto, `TestAOS539_NoComposto_ClasseDeRiscoEEscaladaEmL4` (a `doc_read`)
+      e `TestAOS539_NoComposto_OCRRealEmL4` (a `ocr_read` real, pelo gateway do nó: `gray` e corre;
+      sem a sensibilidade, `danger`, escala e o modelo de visão não é chamado). A `video_read` usa o
+      mesmo caminho (bloco `modelo`, `cap:fs.read`, `doc://{doc_id}`) e prova-se sobre o manifesto
+      de produção, não no nó composto.
 - [x] O `aos-orq` e o nó derivam a mesma classe para a mesma tool (o snapshot e o manifesto não
       divergem).
       *Evidência:* `packages/cmd/aos-orq/aos539_classe_no_vs_orq_test.go`
@@ -1313,7 +1323,12 @@ vídeo, mesmo pedido directamente pelo dono, ficava à espera de quatro olhos.
       do RM com o destino do manifesto real — igual tool a tool, com e sem a sensibilidade declarada
       nos dois lados. O snapshot de produção não está no repositório; a conferência do arranque
       (`compararSnapshotComCatalogo`) continua a não comparar a sensibilidade, porque o nó não a
-      serve no `GET /tools` (resíduo: servi-la e conferi-la é mudança do fio).
+      serve no `GET /tools`.
+      **Resíduo (B-1 da revisão):** a paridade usa um snapshot SINTETIZADO na forma documentada,
+      não o `orq/snapshot.json` de produção (que não está no repositório); e o arranque do
+      `aos-orq` não confere a sensibilidade contra o nó — se o snapshot de produção e o
+      `tools.json` divergirem na sensibilidade, nada o recusa. Servi-la no `GET /tools` e
+      conferi-la é mudança do fio, por fazer.
 - [x] A cablagem de produção tem teste no nó composto (a revisão do AOS-538 mostrou que a ligação em
       `integration/secured.go` sem destinos deixava as suites verdes).
       *Evidência:* `packages/cmd/aos/aos539_risco_no_composto_test.go`
@@ -1328,9 +1343,14 @@ vídeo, mesmo pedido directamente pelo dono, ficava à espera de quatro olhos.
 níveis): a `ocr_read` e a `video_read` continuam `gray` (agora com egress externo e a pasta
 declarada pública, antes por se julgarem locais) e continuam a correr sem humano em L4; a
 `doc_read` passa de `gray` a `safe` — a classe que o `aos-orq` já lhe dava —, o que só muda alguma
-coisa abaixo de L4 (em L3 deixa de ir a lote); nenhuma tool passa a escalar. Com o contexto
-`untrusted` a `ocr_read`/`video_read` classificam `danger` (o taint eleva a sensibilidade um nível),
-mas o gate de taint já as nega (ou escala, com o AOS-541) antes de a autonomia contar. A simulação de
+coisa abaixo de L4 (em L3 deixa de ir a lote); nenhuma tool passa a escalar.
+
+**Com o contexto `untrusted`** (M-2 da revisão), a declaração absorve um degrau do aumento do taint
+(o taint eleva a sensibilidade um nível, depois do piso do egress): a `doc_read` untrusted era
+`gray` (o vazio já era o topo) e passa a `safe` — só muda comportamento em L3, de lote para correr;
+a `ocr_read` e a `video_read` untrusted passam de `gray` a `danger` — só endurecimento, porque o
+gate de taint já as nega (ou escala, com o AOS-541) antes de a autonomia contar. Fixado em
+`TestAOS539_MatrizSensibilidadeEgressTaint`. A simulação de
 autonomia (`POST /autonomy/simular`) reclassifica com o mesmo destino.
 
 ### Fora de âmbito
@@ -1519,3 +1539,4 @@ passar uma call aprovada. Falta o gate de taint escalar em vez de negar.
 | 1.11 | 2026-10-20 | AOS-541 implementado no ramo `feature/AOS-541-taint-escala`: `AOS_TAINT_ESCALA=on` faz o gate de taint escalar (four-eyes obrigatório, `escalated_by=taint` no pendente); expirada ou recusada, a retoma faz o run falhar com a causa nomeada; sem aprovadores o nó recusa arrancar; resíduo medido do replay depois de uma retoma aprovada (anterior ao ticket) | Equipa AOS |
 | 1.12 | 2026-10-20 | AOS-541, revisão adversarial e decisão do dono («mantenha uma pessoa»): as escaladas do taint pedem a aprovação de uma pessoa (o duplo controlo fica como era); a escalada da autonomia sobre uma call que o taint escalaria passa a dizer `escalated_by=taint`; o MÉDIO dos argumentos não mostrados e as três divergências registados | Equipa AOS |
 | 1.13 | 2026-10-20 | AOS-539 implementado no ramo `feature/AOS-539-egress-no-risco`: o egress declarado só eleva o derivado da capability no classificador de risco; `resource_sensitivity` por tool no manifesto (fail-closed sem ela, recusa no arranque fora do vocabulário ou fora de uma leitura); `doc_read`/`ocr_read`/`video_read` de produção declaram `public` — OCR e vídeo ficam `gray` e não escalam em L4, a `doc_read` passa a `safe`; paridade nó×`aos-orq` e cablagem do nó composto testadas | Equipa AOS |
+| 1.14 | 2026-10-20 | AOS-539, revisão adversarial: o validador do registo de tools recusa `resource_sensitivity` com egress não `none` sem bloco `modelo`, com `args_from` ou com recurso de rede, e `mutation: "none"` com verbo de escrita na capability ou no comando (M-1); a absorção de um degrau do taint pela declaração documentada (M-2); a `ocr_read` real no nó composto; o snapshot sintetizado da paridade e a falta de conferência da sensibilidade no arranque registados como resíduo (B-1) | Equipa AOS |

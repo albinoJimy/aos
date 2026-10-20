@@ -188,11 +188,14 @@ func sensitivityForCall(call *Call, egress risk.Egress) risk.Sensitivity {
 //     vazio só pode ELEVAR a declarada ([maxSensitivity]; um texto ilegível é o topo). Sem
 //     declaração, fica a regra de antes: vazio ⇒ sensível (fail-closed). O piso derivado do egress
 //     (≥ interna com egress externo) aplica-se por cima, como sempre.
-//   - A declaração de sensibilidade SÓ VALE PARA UMA LEITURA ([ToolDestination.ResourceSensitivityApplies]):
-//     `mutation: "none"` explícito e nem a capability nem o recurso da call denunciam egress. É o
-//     caso em que o que pode sair é o próprio recurso declarado (a imagem do OCR). Numa tool de
-//     rede ou que muta, o que sai é o que o modelo escreve, e a sensibilidade da pasta não diz nada
-//     sobre isso — declará-la pública não pode baixar um `web_post` de `danger`.
+//   - O CLASSIFICADOR só ignora a declaração quando a tool não é uma leitura para ele
+//     ([ToolDestination.ResourceSensitivityApplies]: `mutation` não `none` explícito, ou capability
+//     ou recurso da call de rede) — aí uma `resource_sensitivity: public` não baixa um `web_post`
+//     de `danger`. Ele NÃO distingue, por si, uma leitura local cujo egress declarado envia o próprio
+//     recurso (a `ocr_read`) de uma que envia outra coisa, nem um `mutation: "none"` mentiroso: confia
+//     no registo de tools, e é o validador do registo no nó (cmd/aos, `validateResourceSensitivity`
+//     e `validateMutation`) que recusa no arranque essas formas — egress não `none` sem o bloco
+//     `modelo`, `args_from` no sandbox, e `none` com verbo de escrita na capability ou no comando.
 //
 // Tool sem entrada no registo, ou pedida com uma capability diferente da do binding ⇒ os eixos de
 // antes ([egressForCall], [sensitivityForCall]).

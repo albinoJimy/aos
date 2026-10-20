@@ -25,8 +25,9 @@ import (
 // destino das tools ao anotador de risco em `integration/secured.go` podia sair sem que nenhuma
 // suite avermelhasse. Aqui levanta-se o nó REAL (Bootstrap + API, execução durável, PDP com o
 // oráculo de autonomia, a classe da NHI em L4 no domínio fs — o nível de produção) e corre-se um
-// run cujo modelo pede a tool `counter` declarada no AOS_MODEL_TOOLS com os eixos de uma entrada do
-// manifesto de PRODUÇÃO. Mede-se o que o nó SELOU: a classe de risco da mediação e se escalou.
+// run: com a tool `counter` declarada com os eixos da `doc_read` de PRODUÇÃO, e com a `ocr_read`
+// REAL (bloco `modelo`, gateway do nó, harness do AOS-530). Mede-se o que o nó SELOU: a classe de
+// risco da mediação e se correu ou escalou.
 //
 // Sem o destino na cadeia (a mutação «secured.go sem destinos»), a `ocr_read` sem sensibilidade
 // deixa de dar `danger` (fica `gray`, egress derivado da capability) e a `doc_read` deixa de dar
@@ -192,32 +193,29 @@ func aos539Node(t *testing.T, nivel autonomy.Level) aos539Mediacao {
 		t.Fatalf("nenhuma mediacao selada no stream do run %q (%d eventos)", runID, len(events))
 	}
 	for _, r := range lerMediacoes(ctx, node.WORM, 1000) {
-		if r.ToolID == "counter" {
+		if r.ToolID == "counter" && r.Capability == durCap { // só a mediação, não a revalidação
 			out.simulada = reclassificar(r, node.toolDestinations).String()
 		}
 	}
 	return out
 }
 
-// TestAOS539_NoComposto_ClasseDeRiscoEEscaladaEmL4 — o critério de produção no nó composto: em L4,
-// a `ocr_read` e a `video_read` (egress externo, pasta declarada pública) selam `gray` e correm
-// sem humano; a `doc_read` sela `safe`; um recurso sem sensibilidade declarada com egress externo
-// sela `danger` e ESCALA em vez de correr.
+// TestAOS539_NoComposto_ClasseDeRiscoEEscaladaEmL4 — o critério de produção no nó composto, em L4:
+// a `doc_read` de produção sela `safe` e corre; sem a sensibilidade declarada sela `gray` (o vazio é
+// sensível) e corre. A `ocr_read` REAL (bloco `modelo`, gateway do nó) é exercida em
+// [TestAOS539_NoComposto_OCRRealEmL4].
 func TestAOS539_NoComposto_ClasseDeRiscoEEscaladaEmL4(t *testing.T) {
 	casos := []struct {
-		nome, tool       string
+		nome             string
 		semSensibilidade bool
 		classe           string
-		escala           bool
 	}{
-		{"ocr_read", "ocr_read", false, "gray", false},
-		{"video_read", "video_read", false, "gray", false},
-		{"doc_read", "doc_read", false, "safe", false},
-		{"ocr_read-sem-sensibilidade", "ocr_read", true, "danger", true},
+		{"doc_read", false, "safe"},
+		{"doc_read-sem-sensibilidade", true, "gray"},
 	}
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
-			aos539ManifestoDe(t, c.tool, c.semSensibilidade)
+			aos539ManifestoDe(t, "doc_read", c.semSensibilidade)
 			m := aos539Node(t, autonomy.L4)
 			if m.classe != c.classe {
 				t.Fatalf("classe selada %q, queria %q (evento %s, denied_by %q)", m.classe, c.classe, m.tipo, m.deniedBy)
@@ -226,17 +224,105 @@ func TestAOS539_NoComposto_ClasseDeRiscoEEscaladaEmL4(t *testing.T) {
 			if m.simulada != m.classe {
 				t.Fatalf("a simulacao de autonomia reclassifica %q e o no selou %q", m.simulada, m.classe)
 			}
-			if c.escala {
-				if m.tipo == referencemonitor.EventTypeMediated || m.execs != 0 {
-					t.Fatalf("em L4 um recurso sem sensibilidade com egress externo tinha de ESCALAR, nao correr: evento=%s execs=%d", m.tipo, m.execs)
+			if m.tipo != referencemonitor.EventTypeMediated || m.execs != 1 {
+				t.Fatalf("em L4 a call %s tinha de correr sem humano: evento=%s denied_by=%q execs=%d", c.classe, m.tipo, m.deniedBy, m.execs)
+			}
+		})
+	}
+}
+
+// aos539ManifestoOCR é o registo de tools com a `ocr_read` na forma de PRODUÇÃO (egress externo,
+// reversível, sem mutação, bloco `modelo`), com ou sem a `resource_sensitivity`, para o harness do
+// AOS-530 (o alias e a região dele).
+func aos539ManifestoOCR(t *testing.T, sensibilidade string) string {
+	t.Helper()
+	sens := ""
+	if sensibilidade != "" {
+		sens = `"resource_sensitivity":"` + sensibilidade + `",`
+	}
+	return writeTools(t, `[`+
+		`{"name":"doc_read","description":"le um documento","capability":"`+durCap+`","resource_type":"file","resource_value":"doc://{doc_id}","resource_region":"eu"},`+
+		`{"name":"ocr_read","description":"transcreve o texto de uma imagem","parameters":{"type":"object","properties":{"doc_id":{"type":"string"}},"required":["doc_id"]},`+
+		`"capability":"`+durCap+`","resource_type":"file","resource_value":"doc://{doc_id}","resource_region":"eu",`+
+		`"reversibility":"reversible","mutation":"none",`+sens+`"egress":"external","modelo":{"alias":"`+aos530AliasTool+`"}}]`)
+}
+
+// TestAOS539_NoComposto_OCRRealEmL4 — a `ocr_read` REAL no nó composto (gateway do nó, harness do
+// AOS-530), com o oráculo de autonomia e a classe em L4: com a pasta declarada pública sela `gray`
+// e corre sem humano (a chamada ao modelo de visão acontece); sem a sensibilidade declarada sela
+// `danger` e ESCALA — não corre e o modelo de visão não é chamado.
+func TestAOS539_NoComposto_OCRRealEmL4(t *testing.T) {
+	for _, c := range []struct {
+		nome, sens, classe string
+		escala             bool
+	}{
+		{"public", "public", "gray", false},
+		{"sem-sensibilidade", "", "danger", true},
+	} {
+		t.Run(c.nome, func(t *testing.T) {
+			n := aos530Compor(t, aos530Opcoes{autonomiaL4: true, ambiente: map[string]string{"AOS_MODEL_TOOLS": aos539ManifestoOCR(t, c.sens)}})
+			n.upstream.mu.Lock()
+			n.upstream.guiao = [][2]string{{ocrToolName, `{"doc_id":"` + aos530Doc + `"}`}}
+			n.upstream.mu.Unlock()
+			const runID = "run-539-ocr"
+			rec := postJSON(n.h, "POST", "/runs", map[string]any{
+				"run_id": runID, "objective": "Le a fatura e diz o total", "principal_nhi": durAgent, "credential": n.tok, "max_turns": 4,
+			})
+			if rec.Code != http.StatusCreated {
+				t.Fatalf("POST /runs: %d (%s)", rec.Code, rec.Body.String())
+			}
+			wctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			_, _, _ = n.svc.Wait(wctx, runID)
+			evs, err := n.node.EventStore.Read(context.Background(), runID, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var tipo, classe string
+			for _, e := range evs {
+				if e.Type != referencemonitor.EventTypeDenied && e.Type != referencemonitor.EventTypeMediated && e.Type != referencemonitor.EventTypeEscalated {
+					continue
 				}
-				if m.tipo != referencemonitor.EventTypeEscalated && m.deniedBy != "policy" {
-					t.Fatalf("a call danger em L4 devia ter sido escalada pela politica, veio evento=%s denied_by=%q", m.tipo, m.deniedBy)
+				var p struct {
+					ToolID  string `json:"tool_id"`
+					Context struct {
+						RiskClass string `json:"risk_class"`
+					} `json:"context"`
+				}
+				if err := json.Unmarshal(e.Payload, &p); err != nil {
+					t.Fatal(err)
+				}
+				if p.ToolID == ocrToolName {
+					tipo, classe = e.Type, p.Context.RiskClass
+					break
+				}
+			}
+			if classe != c.classe {
+				t.Fatalf("a ocr_read selou a classe %q (evento %q), queria %q", classe, tipo, c.classe)
+			}
+			_, chamadas := n.upstream.separar(t)
+			if c.escala {
+				if tipo != referencemonitor.EventTypeEscalated || len(chamadas) != 0 {
+					t.Fatalf("em L4 a ocr_read sem sensibilidade tinha de ESCALAR sem chamar o modelo de visao: evento=%s chamadas=%d", tipo, len(chamadas))
 				}
 				return
 			}
-			if m.tipo != referencemonitor.EventTypeMediated || m.execs != 1 {
-				t.Fatalf("em L4 a call %s tinha de correr sem humano: evento=%s denied_by=%q execs=%d", c.classe, m.tipo, m.deniedBy, m.execs)
+			if tipo != referencemonitor.EventTypeMediated || len(chamadas) != 1 {
+				t.Fatalf("em L4 a ocr_read de producao tinha de correr sem humano: evento=%s chamadas ao modelo de visao=%d", tipo, len(chamadas))
+			}
+			simulou := false
+			for _, r := range lerMediacoes(context.Background(), n.node.WORM, 1000) {
+				// Só o selo da MEDIAÇÃO (o WORM guarda também a revalidação do registo, com outra
+				// capability).
+				if r.ToolID == ocrToolName && r.Capability == durCap {
+					simulou = true
+					if got := reclassificar(r, n.node.toolDestinations).String(); got != classe {
+						t.Fatalf("a simulacao de autonomia reclassifica %q e o no selou %q", got, classe)
+					}
+				}
+			}
+			if !simulou {
+				t.Fatal("nenhum selo WORM da mediacao da ocr_read para a simulacao reclassificar")
 			}
 		})
 	}

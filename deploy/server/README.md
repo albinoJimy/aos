@@ -2200,7 +2200,10 @@ todos estão feitos (as recusas estão abaixo).
    isso `"resource_sensitivity": "public"`, o mesmo valor que o `orq/snapshot.json` lhes dá em
    `sensitivity`: o nó e o `aos-orq` derivam a mesma classe (`doc_read` `safe`; `ocr_read` e
    `video_read` `gray`, que em L4 correm sem humano). Vocabulário fechado `public|internal|sensitive`;
-   outro valor recusa o arranque. Uma tool nova de egress externo **sem** o campo sai `danger` e
+   outro valor recusa o arranque, e o campo só é aceite numa leitura: `mutation: "none"`, recurso
+   local, sem `args_from` no sandbox e, com egress não `none`, só numa tool com o bloco `modelo`
+   (o que sai é o próprio ficheiro). Para qualquer tool, `mutation: "none"` com um verbo de escrita
+   na capability ou no `command` do sandbox (`write`, `upload`, `delete`, …) recusa o arranque. Uma tool nova de egress externo **sem** o campo sai `danger` e
    escala em L4 — é o comportamento pretendido para um recurso que ninguém classificou. Mudar o
    valor de uma tool é mudar a classe de risco dela: muda-se nos dois ficheiros ao mesmo tempo.
 8. **Recriar o nó** e confirmar: a linha de arranque `tool ocr_read LIGADA (EPIC-07/AOS-530,

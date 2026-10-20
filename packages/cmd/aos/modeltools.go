@@ -322,12 +322,25 @@ func loadModelToolsFromEnv() ([]port.Tool, map[string]toolBinding, error) {
 	return tools, bindings, nil
 }
 
-// validateResourceSensitivity valida a `resource_sensitivity` declarada (AOS-539): vazia (não
-// declarada, lê-se sensível) ou uma das formas de [referencemonitor.ResourceSensitivities], e só
-// numa LEITURA ([referencemonitor.ToolDestination.ResourceSensitivityApplies]: `mutation: "none"`
-// explícito, capability e recurso sem egress). Tudo o resto é erro — um `publico` mal escrito não
-// pode cair em silêncio no fail-closed, nem uma declaração que o classificador ignoraria (um
-// `web_post` dito «public») deixar o operador a julgar que classificou a tool.
+// validateResourceSensitivity valida a `resource_sensitivity` declarada (AOS-539). Vazia ⇒ não
+// declarada (lê-se sensível). Declarada, tem de cumprir TODAS estas regras, ou o arranque aborta:
+//
+//  1. o valor é uma das formas de [referencemonitor.ResourceSensitivities];
+//  2. a tool é uma LEITURA para o classificador
+//     ([referencemonitor.ToolDestination.ResourceSensitivityApplies]: `mutation: "none"`
+//     explícito, capability e `resource_type` sem egress) — fora disso o classificador ignorá-la-ia;
+//  3. o egress declarado é `none` explícito, OU a tool tem o bloco `modelo` (a `ocr_read` e a
+//     `video_read`, cujo efeito é código do nó: o que sai é o PRÓPRIO ficheiro semeado que a
+//     sensibilidade descreve). Numa tool de capability local com egress externo e outro executor,
+//     o que sai é decidido pelo executor e pelos argumentos do modelo, e a sensibilidade da pasta
+//     não o classifica (achado M-1 da revisão: um `fs_sync` com sandbox `upload` ficava `gray`);
+//  4. o sandbox, se existir, não tem `args_from`: argumentos livres do modelo no comando são
+//     conteúdo que o modelo escreve, não o recurso declarado.
+//
+// A coerência entre `mutation: "none"` e uma capability ou comando de escrita é verificada para
+// TODAS as tools em [validateMutation]. O vocabulário é estrito (minúsculas): um `publico` mal
+// escrito não pode cair em silêncio no fail-closed e deixar o operador a julgar que declarou a
+// pasta pública.
 func validateResourceSensitivity(s modelToolSpec) error {
 	v := strings.TrimSpace(s.ResourceSensitivity)
 	if v == "" {
@@ -345,6 +358,12 @@ func validateResourceSensitivity(s modelToolSpec) error {
 	d := referencemonitor.ToolDestination{Capability: strings.TrimSpace(s.Capability), Mutation: s.Mutation}
 	if !d.ResourceSensitivityApplies(strings.TrimSpace(s.ResourceType)) {
 		return fmt.Errorf("resource_sensitivity so se declara numa leitura (mutation \"none\" explicito, capability e resource_type sem egress) — o classificador ignora-la-ia")
+	}
+	if strings.ToLower(strings.TrimSpace(s.Egress)) != "none" && s.Modelo == nil {
+		return fmt.Errorf("resource_sensitivity com egress %q so numa tool com o bloco `modelo` (o que sai e o proprio ficheiro declarado); declare egress \"none\" ou retire o campo", s.Egress)
+	}
+	if s.Sandbox != nil && len(s.Sandbox.ArgsFrom) > 0 {
+		return fmt.Errorf("resource_sensitivity numa tool cujo sandbox recebe args_from %v do modelo — o que o comando faz com eles nao e o recurso declarado", s.Sandbox.ArgsFrom)
 	}
 	return nil
 }
@@ -541,7 +560,7 @@ func validateReversibility(s string) (string, error) {
 
 // ErrBadMutation — `mutation` no registry fora do vocabulário, ou a contradizer o binding de
 // sandbox (AOS-409).
-var ErrBadMutation = errors.New("aos: mutation invalida no registry de tools (esperado \"none\", \"mutates\" ou ausente; \"none\" e incompativel com sandbox.write_arg)")
+var ErrBadMutation = errors.New("aos: mutation invalida no registry de tools (esperado \"none\", \"mutates\" ou ausente; \"none\" e incompativel com sandbox.write_arg e com um verbo de escrita na capability ou no comando de sandbox)")
 
 // validateMutation valida o eixo de MUTAÇÃO DECLARADO de uma tool (AOS-409) e devolve-o
 // normalizado: "none" ou "mutates" — o AUSENTE vale "mutates".
@@ -567,8 +586,47 @@ func validateMutation(s modelToolSpec) (string, error) {
 		if s.Sandbox != nil && strings.TrimSpace(s.Sandbox.WriteArg) != "" {
 			return "", fmt.Errorf("%w: declara \"none\" mas o sandbox escreve o argumento %q", ErrBadMutation, strings.TrimSpace(s.Sandbox.WriteArg))
 		}
+		// AOS-539 (achado M-1): "none" numa capability ou num comando de sandbox cujo VERBO é de
+		// escrita é a mesma contradição — um `cap:fs.write` dito leitura ganhava a excepção de
+		// leitura local do gate de taint e a sensibilidade da pasta no classificador de risco.
+		if verbo, ok := verboDeEscrita(s.Capability); ok {
+			return "", fmt.Errorf("%w: declara \"none\" mas a capability %q tem o verbo de escrita %q", ErrBadMutation, strings.TrimSpace(s.Capability), verbo)
+		}
+		if s.Sandbox != nil {
+			if verbo, ok := verboDeEscrita(s.Sandbox.Command); ok {
+				return "", fmt.Errorf("%w: declara \"none\" mas o comando de sandbox %q tem o verbo de escrita %q", ErrBadMutation, strings.TrimSpace(s.Sandbox.Command), verbo)
+			}
+		}
 		return v, nil
 	default:
 		return "", fmt.Errorf("%w: %q", ErrBadMutation, s.Mutation)
 	}
+}
+
+// verbosDeEscrita são os VERBOS que, num segmento de uma capability (`cap:fs.write`,
+// `cap:crm.contact.update`) ou no `command` de um sandbox, denotam uma acção que altera estado ou
+// envia (AOS-539). Uma tool com um destes verbos não se pode declarar `mutation: "none"`. Inclui o
+// comando `write` dos drivers de sandbox (o outro comando que eles conhecem é `read`) e os verbos
+// de envio/publicação, que mudam estado fora do nó. A lista é deliberadamente larga: o custo de um
+// falso positivo é o operador declarar `mutates` numa tool que só lê — mais fricção, nunca menos.
+var verbosDeEscrita = map[string]struct{}{
+	"write": {}, "put": {}, "post": {}, "patch": {}, "create": {}, "update": {}, "upsert": {},
+	"insert": {}, "append": {}, "upload": {}, "send": {}, "publish": {}, "push": {}, "sync": {},
+	"set": {}, "save": {}, "store": {}, "move": {}, "mv": {}, "rename": {}, "copy": {}, "cp": {},
+	"mkdir": {}, "delete": {}, "del": {}, "remove": {}, "rm": {}, "destroy": {}, "drop": {},
+	"purge": {}, "wipe": {}, "erase": {}, "truncate": {}, "transfer": {}, "exec": {}, "run": {},
+}
+
+// verboDeEscrita devolve o primeiro segmento de `nome` (sem o prefixo `cap:`, partido em `.`, `:`,
+// `/`, `-` e `_`, em minúsculas) que é um verbo de escrita.
+func verboDeEscrita(nome string) (string, bool) {
+	c := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(nome)), "cap:")
+	for _, seg := range strings.FieldsFunc(c, func(r rune) bool {
+		return r == '.' || r == ':' || r == '/' || r == '-' || r == '_'
+	}) {
+		if _, ok := verbosDeEscrita[seg]; ok {
+			return seg, true
+		}
+	}
+	return "", false
 }

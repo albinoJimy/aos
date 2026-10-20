@@ -188,3 +188,68 @@ func TestAOS539_SensibilidadeSoValeParaUmaLeitura(t *testing.T) {
 		t.Fatalf("ocr_read com recurso de rede: %q, queria danger (a pasta declarada não classifica um URL)", call.Context.RiskClass)
 	}
 }
+
+// A matriz completa da sensibilidade declarada × egress declarado × taint (achado da revisão:
+// sem ela, a ordem piso→taint e a absorção de um degrau do taint pela declaração não estavam
+// fixadas). Com o contexto untrusted o taint eleva UM nível DEPOIS do piso do egress externo:
+//   - egress none: public⇒internal (safe), internal⇒sensitive (gray), sensitive (gray);
+//   - egress external: tudo ⇒ sensitive ⇒ danger.
+//
+// A declaração absorve, portanto, um degrau do aumento do taint: a doc_read untrusted era gray
+// (vazio já é o topo) e passa a safe; a ocr_read/video_read untrusted passam de gray a danger
+// (só endurecimento — o gate de taint já as nega ou escala).
+func TestAOS539_MatrizSensibilidadeEgressTaint(t *testing.T) {
+	quer := map[string]map[string]map[string]string{ // egress → sensibilidade → taint → classe
+		"none": {
+			"public":    {"trusted": "safe", "untrusted": "safe"},
+			"internal":  {"trusted": "safe", "untrusted": "gray"},
+			"sensitive": {"trusted": "gray", "untrusted": "gray"},
+			"":          {"trusted": "gray", "untrusted": "gray"},
+		},
+		"external": {
+			"public":    {"trusted": "gray", "untrusted": "danger"},
+			"internal":  {"trusted": "gray", "untrusted": "danger"},
+			"sensitive": {"trusted": "danger", "untrusted": "danger"},
+			"":          {"trusted": "danger", "untrusted": "danger"},
+		},
+	}
+	for eg, porSens := range quer {
+		for sens, porTaint := range porSens {
+			d := NewToolDestinations(map[string]ToolDestination{
+				"t": {Capability: "cap:fs.read", Egress: eg, Mutation: "none", Reversibility: "reversible", Sensitivity: sens},
+			})
+			for tn, q := range porTaint {
+				lbl := taint.StringTrusted
+				if tn == "untrusted" {
+					lbl = taint.StringUntrusted
+				}
+				call := &Call{ToolID: "t", Capability: "cap:fs.read", Resource: Resource{Type: "file", Value: "doc://x"},
+					Context: CallContext{Taint: lbl, Reversibility: "reversible"}}
+				if _, err := NewRiskClassifier(nil).WithToolDestinations(d).Evaluate(context.Background(), call); err != nil {
+					t.Fatal(err)
+				}
+				if call.Context.RiskClass != q {
+					t.Errorf("egress %s, sensibilidade %q, %s: %q, queria %q", eg, sens, tn, call.Context.RiskClass, q)
+				}
+			}
+		}
+	}
+}
+
+// Uma call com o nome de uma tool registada mas OUTRA capability (local) fica com os eixos de antes,
+// e aqui a classe MUDA com isso: a doc_read declarada pública é safe com a capability do binding e
+// gray com `cap:fs.list` (sem destino, vazio ⇒ sensível).
+func TestAOS539_CapabilityDivergenteFicaComOsEixosDeAntes(t *testing.T) {
+	d := aos539Destinos()
+	if got := aos539Classe(t, &d, "doc_read", "cap:fs.read", ""); got != "safe" {
+		t.Fatalf("controlo: doc_read com a capability do binding devia ser safe, veio %q", got)
+	}
+	if got := aos539Classe(t, &d, "doc_read", "cap:fs.list", ""); got != "gray" {
+		t.Fatalf("doc_read com capability divergente devia ficar com os eixos de antes (gray), veio %q", got)
+	}
+	// E a ocr_read com capability local divergente perde o egress declarado: com a sensibilidade de
+	// texto «public» é safe (local) e não gray.
+	if got := aos539Classe(t, &d, "ocr_read", "cap:fs.list", "public"); got != "safe" {
+		t.Fatalf("ocr_read com capability divergente nao pode herdar o egress declarado: %q", got)
+	}
+}

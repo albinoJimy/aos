@@ -243,9 +243,11 @@ var ResourceSensitivities = []string{"public", "internal", "sensitive"}
 
 // ResourceSensitivityApplies diz se a sensibilidade do recurso declarada pode valer para esta tool
 // (AOS-539): só numa LEITURA — `mutation: "none"` explícito — cuja capability e tipo de recurso
-// não denunciam egress (a mesma derivação do classificador de risco). Numa tool de rede ou que
-// muta, o que sai ou se escreve é o que o modelo pede, e a sensibilidade da pasta não o classifica.
-// O registo de tools recusa no arranque uma declaração onde isto dá false; o classificador ignora-a.
+// não denunciam egress (a mesma derivação do classificador de risco). É condição NECESSÁRIA e não
+// suficiente: lê a mutação DECLARADA (um `none` mentiroso passa) e não sabe o que o egress
+// declarado envia. O registo de tools no nó recusa no arranque uma declaração onde isto dá false e
+// as formas que isto não vê (ver `validateResourceSensitivity` em cmd/aos); o classificador ignora-a
+// quando dá false.
 func (d ToolDestination) ResourceSensitivityApplies(resourceType string) bool {
 	if normalizeAxis(d.Mutation) != "none" {
 		return false

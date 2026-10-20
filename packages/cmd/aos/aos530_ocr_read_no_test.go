@@ -202,6 +202,9 @@ type aos530Opcoes struct {
 	// soberano compõe o gate soberano de leitura (board→região) e o four-eyes (que compõe o registo
 	// de retoma): é o que o `GET /runs/{id}/replay` do AOS-533 exige.
 	soberano bool
+	// autonomiaL4 liga o oráculo de autonomia ao PDP e põe a classe da NHI em L4 no domínio fs — o
+	// nível de produção (AOS-539).
+	autonomiaL4 bool
 }
 
 // aos530No é o nó composto com a `ocr_read`.
@@ -307,7 +310,12 @@ func aos530Compor(t *testing.T, o aos530Opcoes) *aos530No {
 	cfg.SignedToolRegistry = nodeSignedRegistrySpec(signer, nil, entries...)
 	cfg.IssuerClasses = map[string]identity.ClassPolicy{durClass: {TTL: 15 * time.Minute, Scope: []string{durCap, "model:invoke"}}}
 	cfg.Policy = integration.StaticPolicy{MaxEgress: domain.EgressInternal}
-	if cfg.PDP, err = pdp.Open(pdpPoliciesDir); err != nil {
+	var pdpOpts []pdp.Option
+	if o.autonomiaL4 {
+		cfg.Autonomy = buildAutonomyOracle([]autonomyLevelSpec{{agent: autonomy.ClassPrefix + durClass, domain: "fs", level: autonomy.L1}}, autonomy.L0)
+		pdpOpts = append(pdpOpts, pdp.WithAutonomyOracle(cfg.Autonomy.oracle()))
+	}
+	if cfg.PDP, err = pdp.Open(pdpPoliciesDir, pdpOpts...); err != nil {
 		t.Fatal(err)
 	}
 	cfg.Authority = authz.NewStaticAuthoritySource().
@@ -325,6 +333,12 @@ func aos530Compor(t *testing.T, o aos530Opcoes) *aos530No {
 		t.Fatalf("Bootstrap: %v", err)
 	}
 	t.Cleanup(func() { _ = node.Close() })
+	if o.autonomiaL4 {
+		// A subida a L4 pelo ambiente exige provas assinadas (AOS-377); o efeito na decisão é o mesmo.
+		if _, err := node.Autonomy.registry.SetLevel(ctx, autonomy.ClassPrefix+durClass, "fs", autonomy.L4, "AOS-539: nivel de producao", "op:teste"); err != nil {
+			t.Fatal(err)
+		}
+	}
 	n := &aos530No{node: node, upstream: up, log: log, imagem: imagem, docReads: new(int64), dir: dir}
 	if err := node.Runtime.Register("doc_read", func(context.Context, []byte) ([]byte, error) {
 		atomic.AddInt64(n.docReads, 1)

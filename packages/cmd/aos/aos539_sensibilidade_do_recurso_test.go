@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -151,11 +152,132 @@ func TestAOS539_SensibilidadeIlegivelOuForaDeUmaLeituraAbortaOArranque(t *testin
 			}
 		})
 	}
-	// Controlo: os três valores do vocabulário passam.
-	for _, v := range rm.ResourceSensitivities {
+	// Controlo: os três valores do vocabulário passam — escritos aqui por extenso, para que encolher
+	// ou alargar `ResourceSensitivities` avermelhe em vez de arrastar o teste com ela.
+	for _, v := range []string{"public", "internal", "sensitive"} {
 		aos539ManifestoDerivado(t, "doc_read", func(s map[string]any) { s["resource_sensitivity"] = v })
 		if _, err := readModelToolSpecs(); err != nil {
 			t.Fatalf("resource_sensitivity %q devia passar: %v", v, err)
 		}
+	}
+}
+
+// aos539ManifestoComUmaTool escreve um AOS_MODEL_TOOLS com uma só tool, dada em JSON.
+func aos539ManifestoComUmaTool(t *testing.T, tool string) {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "tools.json")
+	if err := os.WriteFile(p, []byte("["+tool+"]"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AOS_MODEL_TOOLS", p)
+}
+
+// Achado M-1 da revisão: as formas que a regra «só numa leitura» do classificador deixava passar
+// com `resource_sensitivity: public` — e que ficavam `gray` — são recusadas no ARRANQUE.
+func TestAOS539_ValidadorRecusaAsFormasDoRevisor(t *testing.T) {
+	casos := []struct {
+		nome, tool string
+		erro       error
+		diz        string
+	}{
+		{
+			// Capability local, egress externo, sandbox `upload` com args do modelo: o que sai é
+			// escrito pelo modelo, não o ficheiro declarado.
+			nome: "fs_sync-upload-com-args_from",
+			tool: `{"name":"fs_sync","capability":"cap:fs.read","resource_type":"file","resource_value":"doc://{doc_id}",
+				"resource_region":"eu-west","egress":"external","mutation":"none","reversibility":"reversible",
+				"resource_sensitivity":"public","sandbox":{"command":"upload","path_arg":"doc_id","args_from":["dest"]}}`,
+			erro: ErrBadMutation, diz: "upload",
+		},
+		{
+			// O mesmo sem o verbo de escrita no comando: egress externo sem o bloco `modelo`.
+			nome: "fs_sync-egress-externo-sem-modelo",
+			tool: `{"name":"fs_sync","capability":"cap:fs.read","resource_type":"file","resource_value":"doc://{doc_id}",
+				"resource_region":"eu-west","egress":"external","mutation":"none","reversibility":"reversible",
+				"resource_sensitivity":"public","sandbox":{"command":"read","path_arg":"doc_id"}}`,
+			erro: ErrBadModelTools, diz: "modelo",
+		},
+		{
+			// Leitura local com args do modelo no comando.
+			nome: "args_from-numa-leitura-local",
+			tool: `{"name":"doc_grep","capability":"cap:fs.read","resource_type":"file","resource_value":"doc://{doc_id}",
+				"resource_region":"eu-west","egress":"none","mutation":"none","reversibility":"reversible",
+				"resource_sensitivity":"public","sandbox":{"command":"read","path_arg":"doc_id","args_from":["padrao"]}}`,
+			erro: ErrBadModelTools, diz: "args_from",
+		},
+		{
+			// `cap:fs.write` com `mutation: none` mentiroso e sandbox `write`.
+			nome: "fs_wr-mutation-none-mentiroso",
+			tool: `{"name":"fs_wr","capability":"cap:fs.write","resource_type":"file","resource_value":"doc://{doc_id}",
+				"resource_region":"eu-west","egress":"none","mutation":"none","reversibility":"reversible",
+				"resource_sensitivity":"public","sandbox":{"command":"write","path_arg":"doc_id"}}`,
+			erro: ErrBadMutation, diz: "write",
+		},
+		{
+			// Capability local com um recurso de rede (`url`): o classificador vê egress.
+			nome: "resource_type-url",
+			tool: `{"name":"doc_url","capability":"cap:fs.read","resource_type":"url","resource_value":"https://x.example/{doc_id}",
+				"resource_region":"eu-west","egress":"none","mutation":"none","reversibility":"reversible",
+				"resource_sensitivity":"public"}`,
+			erro: ErrBadModelTools, diz: "resource_sensitivity",
+		},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			aos539ManifestoComUmaTool(t, c.tool)
+			_, err := readModelToolSpecs()
+			if !errors.Is(err, c.erro) || !strings.Contains(err.Error(), c.diz) {
+				t.Fatalf("o validador tinha de recusar (%v, a dizer %q), veio %v", c.erro, c.diz, err)
+			}
+			if _, err := toolDestinationsFromEnv(); err == nil {
+				t.Fatal("toolDestinationsFromEnv (o caminho do Bootstrap) aceitou o manifesto")
+			}
+		})
+	}
+}
+
+// A coerência de `mutation: "none"` vale para TODAS as tools, com ou sem sensibilidade: um verbo
+// de escrita na capability ou no comando recusa; os verbos de leitura passam.
+func TestAOS539_MutacaoNoneComVerboDeEscritaAborta(t *testing.T) {
+	for _, c := range []struct {
+		capability, command string
+		recusa              bool
+	}{
+		{"cap:fs.write", "", true},
+		{"cap:crm.contact.update", "", true},
+		{"cap:doc.delete", "", true},
+		{"cap:fs.read", "write", true},
+		{"cap:fs.read", "upload", true},
+		{"cap:fs.read", "read", false},
+		{"cap:fs.read", "", false},
+		{"cap:fs.list", "", false},
+	} {
+		sb := ""
+		if c.command != "" {
+			sb = fmt.Sprintf(`,"sandbox":{"command":%q,"path_arg":"doc_id"}`, c.command)
+		}
+		aos539ManifestoComUmaTool(t, fmt.Sprintf(`{"name":"x","capability":%q,"resource_type":"file","resource_value":"doc://{doc_id}",
+			"resource_region":"eu-west","egress":"none","mutation":"none","reversibility":"reversible"%s}`, c.capability, sb))
+		_, err := readModelToolSpecs()
+		if c.recusa && !errors.Is(err, ErrBadMutation) {
+			t.Errorf("%s/%q com mutation none devia abortar com ErrBadMutation, veio %v", c.capability, c.command, err)
+		}
+		if !c.recusa && err != nil {
+			t.Errorf("%s/%q com mutation none devia passar, veio %v", c.capability, c.command, err)
+		}
+	}
+}
+
+// O manifesto de PRODUÇÃO continua a arrancar com as regras apertadas.
+func TestAOS539_ManifestoDeProducaoContinuaValido(t *testing.T) {
+	t.Setenv("AOS_MODEL_TOOLS", toolsJSONProducao)
+	if _, err := readModelToolSpecs(); err != nil {
+		t.Fatalf("o manifesto de producao deixou de ser aceite: %v", err)
+	}
+	if _, err := toolDestinationsFromEnv(); err != nil {
+		t.Fatalf("toolDestinationsFromEnv: %v", err)
+	}
+	if _, _, err := loadModelToolsFromEnv(); err != nil {
+		t.Fatalf("loadModelToolsFromEnv: %v", err)
 	}
 }
