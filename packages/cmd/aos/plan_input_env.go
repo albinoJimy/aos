@@ -18,7 +18,13 @@ package main
 //     layout de sempre.
 //
 // CUSTO: com `on`, um nó com `plan_input` dá pelo menos dois turnos de modelo — o primeiro não
-// termina o run, mesmo que responda só com texto.
+// termina o run, mesmo que responda só com texto. Um `max_turns` menor do que 2 num run com
+// `plan_input` é recusado com 400.
+//
+// SEGURANÇA: no turno 1 o OBJECTIVO pode autorizar QUALQUER tool call privilegiada — uma leitura
+// ou um efeito (`cap:http.post`, escrita) —, como num nó sem `plan_input`: é o resíduo R7 do
+// ADR-034, alargado aos nós consumidores. O que um `plan_input` injectado consegue continua a ser
+// nada: no turno 1 o modelo não o viu, e do turno 2 em diante o contexto é untrusted.
 //
 // RECUO: voltar a `off`. Os runs começados em 1.6.0 continuam nela até ao fim (o layout é fixado
 // por run e vai no registo de retoma) e reproduzem-se como foram gravados.
@@ -62,7 +68,7 @@ func planInputDepoisBanner(ligado bool) []string {
 	if !ligado {
 		return nil
 	}
-	return []string{fmt.Sprintf("pedir antes de ler (ADR-034 §4): AOS_PLAN_INPUT_DEPOIS_DO_PRIMEIRO_TURNO=on — um run NOVO com plan_input fica no layout %s: o primeiro turno ve so o objectivo (e um aviso de que os dados do passo anterior chegam no turno seguinte), e as tool calls que o modelo pedir nele sao autorizadas com o contexto TRUSTED; os plan_input entram a partir do segundo turno, e dai em diante o contexto e untrusted, como sempre. CUSTO: um no com plan_input da pelo menos DOIS turnos de modelo — o primeiro nao termina o run, mesmo so com texto. Medicao: plan_inputs_deferred no turn.recorded do primeiro turno e a serie assembly_version=%q de aos_runs_hosted_total. Runs sem plan_input e runs retomados nao mudam. Recuo: off",
+	return []string{fmt.Sprintf("pedir antes de ler (ADR-034 §4): AOS_PLAN_INPUT_DEPOIS_DO_PRIMEIRO_TURNO=on — um run NOVO com plan_input fica no layout %s: o primeiro turno ve so o objectivo (e um aviso de que os dados do passo anterior chegam no turno seguinte), e as tool calls que o modelo pedir nele sao autorizadas com o contexto TRUSTED — QUALQUER tool call privilegiada, leitura ou efeito, como num no sem plan_input: o objectivo de quem submete passa a poder autoriza-las num no consumidor (ADR-034 R7); os plan_input entram a partir do segundo turno, e dai em diante o contexto e untrusted, como sempre. CUSTO: um no com plan_input da pelo menos DOIS turnos de modelo — o primeiro nao termina o run, mesmo so com texto; max_turns < 2 com plan_input e recusado (400). Medicao: plan_inputs_deferred no turn.recorded do primeiro turno e a serie assembly_version=%q de aos_runs_hosted_total. Runs sem plan_input e runs retomados nao mudam. Recuo: off",
 		agentruntime.AssemblyVersion160, agentruntime.AssemblyVersion160)}
 }
 
