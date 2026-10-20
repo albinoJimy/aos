@@ -3,6 +3,8 @@ package referencemonitor
 import (
 	"sort"
 	"strings"
+
+	"github.com/aos-ref/kernel/reference-monitor/risk"
 )
 
 // ToolDestination são os eixos de DESTINO que o registo de tools (config trusted do operador,
@@ -17,11 +19,16 @@ import (
 // Capability é a capability do binding REGISTADO. A classificação só vale para uma call cuja
 // capability é essa: uma call que diga o nome da tool com outra capability não veio daquele
 // binding, e fica com a regra de antes.
+//
+// Sensitivity é a SENSIBILIDADE DO RECURSO que a tool lê, declarada pelo operador (AOS-539): o
+// eixo de sensibilidade do classificador de risco, no vocabulário dele (public | internal |
+// sensitive). Não entra no gate de taint — só no classificador de risco ([RiskClassifier]).
 type ToolDestination struct {
 	Capability    string
 	Egress        string // none | internal | external; "" implícito
 	Mutation      string // none | mutates; "" implícito
 	Reversibility string // reversible | irreversible; "" implícito
+	Sensitivity   string // public | internal | sensitive; "" implícito (lê-se sensível)
 }
 
 func normalizeAxis(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
@@ -67,6 +74,7 @@ func NewToolDestinations(in map[string]ToolDestination) ToolDestinations {
 			Egress:        normalizeAxis(d.Egress),
 			Mutation:      normalizeAxis(d.Mutation),
 			Reversibility: normalizeAxis(d.Reversibility),
+			Sensitivity:   normalizeAxis(d.Sensitivity),
 		}
 	}
 	return ToolDestinations{m: m}
@@ -192,3 +200,71 @@ func (d DestinationPrivileged) ClassifyCall(call *Call) (bool, string) {
 // fail-closed). Uma declaração `egress: "none"` não desfaz isto: um `cap:http.post` declarado
 // leitura local continua privilegiado (AOS-538, achado M-4 da revisão).
 func derivesEgress(call *Call) bool { return egressForCall(call).IsExternal() }
+
+// declaredEgress projecta o egress DECLARADO no eixo do classificador de risco (AOS-539). Implícito
+// ou fora do vocabulário ⇒ [risk.EgressUnknown]; quem o consome só o usa para ELEVAR (ver
+// [raiseEgress]), pelo que um valor ilegível nunca baixa nada.
+func (d ToolDestination) declaredEgress() risk.Egress {
+	switch normalizeAxis(d.Egress) {
+	case "none":
+		return risk.EgressNone
+	case "internal":
+		return risk.EgressInternal
+	case "external":
+		return risk.EgressExternal
+	default:
+		return risk.EgressUnknown
+	}
+}
+
+// raiseEgress aplica o egress DECLARADO ao derivado da capability e do recurso: só ELEVA, nunca
+// baixa. Um derivado já externo (ou indeterminado, que conta como externo) fica; um declarado
+// externo ou interno sobe o derivado. Um `none` declarado não desfaz um egress que a capability ou
+// o recurso já denunciam — a declaração do operador não é mentível para baixo (SAROC-01).
+func raiseEgress(derived, declared risk.Egress) risk.Egress {
+	if derived.IsExternal() {
+		return derived
+	}
+	switch declared {
+	case risk.EgressExternal:
+		return risk.EgressExternal
+	case risk.EgressInternal:
+		if derived == risk.EgressNone {
+			return risk.EgressInternal
+		}
+	}
+	return derived
+}
+
+// ResourceSensitivities é o vocabulário FECHADO da sensibilidade do recurso que o registo de tools
+// pode declarar (AOS-539): as formas canónicas do eixo do classificador ([risk.Sensitivity.String]).
+// Quem lê o registo recusa qualquer outro valor; o vazio é «não declarado» e lê-se sensível.
+var ResourceSensitivities = []string{"public", "internal", "sensitive"}
+
+// ResourceSensitivityApplies diz se a sensibilidade do recurso declarada pode valer para esta tool
+// (AOS-539): só numa LEITURA — `mutation: "none"` explícito — cuja capability e tipo de recurso
+// não denunciam egress (a mesma derivação do classificador de risco). Numa tool de rede ou que
+// muta, o que sai ou se escreve é o que o modelo pede, e a sensibilidade da pasta não o classifica.
+// O registo de tools recusa no arranque uma declaração onde isto dá false; o classificador ignora-a.
+func (d ToolDestination) ResourceSensitivityApplies(resourceType string) bool {
+	if normalizeAxis(d.Mutation) != "none" {
+		return false
+	}
+	return !derivesEgress(&Call{Capability: d.Capability, Resource: Resource{Type: resourceType}})
+}
+
+// declaredSensitivity projecta a sensibilidade DECLARADA no eixo do classificador. Só as formas de
+// [ResourceSensitivities] contam como declaração; o vazio ou um valor fora do vocabulário dão
+// (_, false) e o classificador fica com o de antes — o texto da call, que vazio se lê sensível.
+func (d ToolDestination) declaredSensitivity() (risk.Sensitivity, bool) {
+	switch normalizeAxis(d.Sensitivity) {
+	case "public":
+		return risk.SensitivityPublic, true
+	case "internal":
+		return risk.SensitivityInternal, true
+	case "sensitive":
+		return risk.SensitivitySensitive, true
+	default:
+		return risk.SensitivityUnknown, false
+	}
+}

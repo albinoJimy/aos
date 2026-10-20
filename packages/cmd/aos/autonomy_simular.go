@@ -135,7 +135,7 @@ func (h *apiHandler) handleAutonomySimular(w http.ResponseWriter, r *http.Reques
 	efeitos := make([]simularEfeito, 0, len(registos))
 	var correm, escalam int
 	for _, rec := range registos {
-		classe := reclassificar(rec)
+		classe := reclassificar(rec, h.node.toolDestinations)
 		dominio := autonomy.DomainOf(rec.Capability, rec.Resource.Value)
 		// A classe do agente NÃO está no selo WORM ([classeNaoSeladaNoWORM]): resolve-se por
 		// instância + piso, saltando o degrau `class:` da cascata. É declarado no efeito
@@ -243,15 +243,21 @@ func lerMediacoes(ctx context.Context, worm audit.Store, max int) []audit.AuditR
 // aqui. Uma segunda implementação divergiria da primeira, e a simulação passaria a prever um
 // sistema que não é este — que é pior do que não simular, porque produz confiança em vez de a
 // medir.
-func reclassificar(rec audit.AuditRecord) risk.Class {
+//
+// Com o destino das tools (AOS-539): o anotador da cadeia leva o egress e a sensibilidade do
+// recurso que o registo declara, e a reclassificação também — pelo ToolID que o selo guarda —,
+// senão a simulação via a `ocr_read` como local e a `doc_read` como sensível, e previa outra
+// classe que a que o nó decide.
+func reclassificar(rec audit.AuditRecord, dests rm.ToolDestinations) risk.Class {
 	call := &rm.Call{
+		ToolID:     rec.ToolID,
 		Capability: rec.Capability,
 		Resource:   rm.Resource{Type: rec.Resource.Type, Value: rec.Resource.Value, Region: rec.Resource.Region},
 	}
 	call.Context.Taint = rec.Context.Taint
 	call.Context.Reversibility = rec.Context.Reversibility
 	call.Context.Sensitivity = rec.Context.Sensitivity
-	c := rm.NewRiskClassifier(nil)
+	c := rm.NewRiskClassifier(nil).WithToolDestinations(dests)
 	if _, err := c.Evaluate(context.Background(), call); err != nil {
 		return risk.ClassDanger // fail-closed: sem classificação, o pior caso
 	}

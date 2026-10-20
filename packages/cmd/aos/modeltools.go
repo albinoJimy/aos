@@ -70,9 +70,16 @@ type modelToolSpec struct {
 	// eixo de mutação do snapshot pinado (o snapshot não pode declarar menos mutação do que o
 	// nó). Um `sandbox.write_arg` é o binding trusted que ESCREVE no recurso, e por isso uma tool
 	// que o tenha e declare "none" aborta o arranque — ver [validateMutation].
-	Mutation         string   `json:"mutation"`
-	Egress           string   `json:"egress"`
-	CredentialScopes []string `json:"credential_scopes"`
+	Mutation string `json:"mutation"`
+	// ResourceSensitivity DECLARA a sensibilidade do recurso que a tool lê (AOS-539), no
+	// vocabulário do classificador de risco ([referencemonitor.ResourceSensitivities]: public |
+	// internal | sensitive). Chega ao classificador pelo destino da tool ([toolDestinationsFromEnv])
+	// e substitui o vazio que o loop entrega, que se lê SENSÍVEL. Ausente ⇒ continua sensível
+	// (fail-closed); fora do vocabulário ⇒ o arranque aborta. Não muda o digest do contrato nem a
+	// decisão Cedar: só a classe de risco que o oráculo de autonomia lê.
+	ResourceSensitivity string   `json:"resource_sensitivity,omitempty"`
+	Egress              string   `json:"egress"`
+	CredentialScopes    []string `json:"credential_scopes"`
 	// Sandbox, quando presente, LIGA a tool à execução mediada em sandbox (AOS-005/AOS-064):
 	// declara COMO os args OPACOS do modelo viram um ExecRequest (Command FIXO + slots
 	// nomeados). É config TRUSTED — o modelo nunca escolhe o Command. Ausente ⇒ a tool é
@@ -172,6 +179,10 @@ func readModelToolSpecs() ([]modelToolSpec, error) {
 		}
 		if _, err := validateMutation(s); err != nil {
 			return nil, fmt.Errorf("tool %q: %w", strings.TrimSpace(s.Name), err)
+		}
+		// AOS-539: a sensibilidade do recurso, quando declarada, no vocabulário do classificador.
+		if err := validateResourceSensitivity(s); err != nil {
+			return nil, fmt.Errorf("%w: tool %q: %v", ErrBadModelTools, strings.TrimSpace(s.Name), err)
 		}
 		// AOS-530: o bloco `modelo` — exclusivo de `sandbox`, só na `ocr_read`, com a capability e
 		// o recurso da tool.
@@ -311,10 +322,38 @@ func loadModelToolsFromEnv() ([]port.Tool, map[string]toolBinding, error) {
 	return tools, bindings, nil
 }
 
+// validateResourceSensitivity valida a `resource_sensitivity` declarada (AOS-539): vazia (não
+// declarada, lê-se sensível) ou uma das formas de [referencemonitor.ResourceSensitivities], e só
+// numa LEITURA ([referencemonitor.ToolDestination.ResourceSensitivityApplies]: `mutation: "none"`
+// explícito, capability e recurso sem egress). Tudo o resto é erro — um `publico` mal escrito não
+// pode cair em silêncio no fail-closed, nem uma declaração que o classificador ignoraria (um
+// `web_post` dito «public») deixar o operador a julgar que classificou a tool.
+func validateResourceSensitivity(s modelToolSpec) error {
+	v := strings.TrimSpace(s.ResourceSensitivity)
+	if v == "" {
+		return nil
+	}
+	conhecida := false
+	for _, ok := range referencemonitor.ResourceSensitivities {
+		if v == ok {
+			conhecida = true
+		}
+	}
+	if !conhecida {
+		return fmt.Errorf("resource_sensitivity %q fora do vocabulario (%s)", v, strings.Join(referencemonitor.ResourceSensitivities, "|"))
+	}
+	d := referencemonitor.ToolDestination{Capability: strings.TrimSpace(s.Capability), Mutation: s.Mutation}
+	if !d.ResourceSensitivityApplies(strings.TrimSpace(s.ResourceType)) {
+		return fmt.Errorf("resource_sensitivity so se declara numa leitura (mutation \"none\" explicito, capability e resource_type sem egress) — o classificador ignora-la-ia")
+	}
+	return nil
+}
+
 // toolDestinationsFromEnv lê os eixos de DESTINO que AOS_MODEL_TOOLS declara para cada tool —
-// `egress`, `mutation` e `reversibility`, TAL COMO ESCRITOS — para o gate de taint do Reference
-// Monitor (AOS-538, emenda de 2026-10-19 ao ADR-034). O classificador de risco não os recebe: o
-// egress declarado no risco passou ao AOS-539 por decisão do dono.
+// `egress`, `mutation`, `reversibility` e `resource_sensitivity`, TAL COMO ESCRITOS — para o gate
+// de taint do Reference Monitor (AOS-538, emenda de 2026-10-19 ao ADR-034) e para o anotador de
+// risco da cadeia (AOS-539: o egress declarado só eleva o derivado da capability; a sensibilidade
+// do recurso substitui o vazio que o loop entrega).
 //
 // PORQUE NÃO SE REUSA O [toolBinding]. O binding guarda o valor já RESOLVIDO (a mutação ausente
 // vale "mutates", o egress ausente vale "none" no contrato do digest), e a regra nova precisa de
@@ -346,6 +385,7 @@ func toolDestinationsFromEnv() (referencemonitor.ToolDestinations, error) {
 			Egress:        s.Egress,
 			Mutation:      s.Mutation,
 			Reversibility: s.Reversibility,
+			Sensitivity:   s.ResourceSensitivity,
 		}
 	}
 	return referencemonitor.NewToolDestinations(m), nil

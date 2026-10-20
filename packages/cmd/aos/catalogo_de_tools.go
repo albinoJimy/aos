@@ -33,8 +33,11 @@ package main
 // declarou); uma `reversibility` que não seja «reversible» é `irreversible` (a semântica do nó —
 // ver [modelToolSpec]); uma `mutation` que não seja «none» é `mutates` (AOS-409, [validateMutation]).
 //
-// NÃO se serve a SENSIBILIDADE, porque o manifesto do nó não a declara, e inventá-la aqui seria
-// fabricar um eixo de risco que o classificador consumiria como facto.
+// NÃO se serve a SENSIBILIDADE. Desde o AOS-539 o manifesto pode declará-la por tool
+// (`resource_sensitivity`) e o classificador de risco do NÓ usa-a; o `aos-orq` continua a tirá-la
+// do snapshot pinado. Que as duas derivações dão a mesma classe para o manifesto de produção
+// prova-se em teste (packages/cmd/aos-orq/aos539_classe_no_vs_orq_test.go), não na conferência
+// do arranque — servi-la e conferi-la aqui é uma mudança do fio que fica por fazer.
 //
 // # Porque é plano de DADOS, com a mesma autenticação do `GET /runs/{id}`
 //

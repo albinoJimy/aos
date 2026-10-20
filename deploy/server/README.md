@@ -2181,8 +2181,8 @@ todos estão feitos (as recusas estão abaixo).
    fornecedor do modelo (pelo gateway do nó e pelo proxy — ADR-042 §4). O que o declarado decide:
    **no gate de taint** do RM, uma tool só é leitura local (livre com o contexto untrusted) com
    `egress: "none"` explícito, e a `ocr_read` continua privilegiada (AOS-538); **na classe de
-   risco** do RM o egress ainda vem da capability (`cap:fs.*` ⇒ sem egress; levar o declarado ao
-   risco é o AOS-539); o campo entra também no contrato do catálogo assinado
+   risco** do RM o declarado só ELEVA o egress que a capability deriva (AOS-539: a `ocr_read` e a
+   `video_read` deixam de ser vistas como locais); o campo entra também no contrato do catálogo assinado
    (`AOS_MODEL_TOOLS_REGISTER`) e no `GET /tools`;
    **no `aos-orq`** o egress declarado conta para a classe de risco do nó do plano, e portanto
    para a aprovação automática. A `resource_region` alinha-se ao board, como a da `doc_read`.
@@ -2191,6 +2191,18 @@ todos estão feitos (as recusas estão abaixo).
    `reversibility` e `mutation` não menos arriscados do que os do nó (o `aos-orq` confere-os
    contra o catálogo do nó e recusa o snapshot com a divergência — `cmd/aos-orq/snapshot.go`,
    `compararSnapshotComCatalogo`).
+
+   **A sensibilidade da pasta — `"resource_sensitivity": "public"` (AOS-539).** Com o egress
+   externo na classe de risco, uma tool que não declara a sensibilidade do recurso lê-se
+   **sensível** (o loop não a conhece; o vazio é o topo, fail-closed), e egress externo de dados
+   sensíveis é `danger` — em L4 (o nível de produção do domínio `fs`) cada OCR ficaria à espera de
+   um humano. A `doc_read`, a `ocr_read` e a `video_read` do `tools.json` de produção declaram por
+   isso `"resource_sensitivity": "public"`, o mesmo valor que o `orq/snapshot.json` lhes dá em
+   `sensitivity`: o nó e o `aos-orq` derivam a mesma classe (`doc_read` `safe`; `ocr_read` e
+   `video_read` `gray`, que em L4 correm sem humano). Vocabulário fechado `public|internal|sensitive`;
+   outro valor recusa o arranque. Uma tool nova de egress externo **sem** o campo sai `danger` e
+   escala em L4 — é o comportamento pretendido para um recurso que ninguém classificou. Mudar o
+   valor de uma tool é mudar a classe de risco dela: muda-se nos dois ficheiros ao mesmo tempo.
 8. **Recriar o nó** e confirmar: a linha de arranque `tool ocr_read LIGADA (EPIC-07/AOS-530,
    ADR-042)` (com o alias, o digest do perfil e a postura do custo), e no `/metrics`
    `aos_ocr_read_total{resultado="..."}`.

@@ -256,7 +256,9 @@ func conferirSnapshotComONo(ctx context.Context, cli leitorDoCatalogo, path stri
 //
 // A VERSÃO não se compara: o manifesto do nó não versiona tools (o registo pina todas em 1.0.0),
 // pelo que uma diferença de versão não diria nada sobre a tool. A SENSIBILIDADE também não: o nó
-// não a declara, e o snapshot continua a ser a sua única fonte.
+// não a serve no catálogo (o manifesto dele pode declará-la desde o AOS-539, para o classificador
+// do próprio nó), e o snapshot continua a ser a única fonte do `aos-orq`. A paridade das duas
+// classes para o manifesto de produção prova-se em aos539_classe_no_vs_orq_test.go.
 //
 // Tools do nó que o snapshot não nomeia NÃO são divergência: o planeador simplesmente não as usa.
 func compararSnapshotComCatalogo(snap planvalidate.Snapshot, cat []toolDoNo) error {

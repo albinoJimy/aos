@@ -176,6 +176,47 @@ func sensitivityForCall(call *Call, egress risk.Egress) risk.Sensitivity {
 	return declared
 }
 
+// riskAxesForCall resolve os eixos de EGRESS e de SENSIBILIDADE da call com o destino que o
+// registo de tools declara para ela (AOS-539). É o ÚNICO sítio onde a declaração entra na
+// classificação, partilhado pelo anotador ([RiskClassifier]) e pelo gate ([RiskGate]), para que os
+// dois classifiquem igual a mesma call.
+//
+//   - EGRESS: o declarado só ELEVA o derivado da capability e do recurso ([raiseEgress]). A
+//     `ocr_read` e a `video_read` (`cap:fs.read`, `egress: "external"`) deixam de ser locais.
+//   - SENSIBILIDADE: a sensibilidade do recurso declarada (`resource_sensitivity`) substitui o
+//     texto da call SÓ quando este vem vazio — o caso do loop, que não a conhece. Um texto não
+//     vazio só pode ELEVAR a declarada ([maxSensitivity]; um texto ilegível é o topo). Sem
+//     declaração, fica a regra de antes: vazio ⇒ sensível (fail-closed). O piso derivado do egress
+//     (≥ interna com egress externo) aplica-se por cima, como sempre.
+//   - A declaração de sensibilidade SÓ VALE PARA UMA LEITURA ([ToolDestination.ResourceSensitivityApplies]):
+//     `mutation: "none"` explícito e nem a capability nem o recurso da call denunciam egress. É o
+//     caso em que o que pode sair é o próprio recurso declarado (a imagem do OCR). Numa tool de
+//     rede ou que muta, o que sai é o que o modelo escreve, e a sensibilidade da pasta não diz nada
+//     sobre isso — declará-la pública não pode baixar um `web_post` de `danger`.
+//
+// Tool sem entrada no registo, ou pedida com uma capability diferente da do binding ⇒ os eixos de
+// antes ([egressForCall], [sensitivityForCall]).
+func riskAxesForCall(call *Call, dests ToolDestinations) (risk.Egress, risk.Sensitivity) {
+	derived := egressForCall(call)
+	d, ok := dests.forCall(call)
+	if !ok {
+		return derived, sensitivityForCall(call, derived)
+	}
+	egress := raiseEgress(derived, d.declaredEgress())
+	resource, declared := d.declaredSensitivity()
+	if !declared || derived.IsExternal() || !d.ResourceSensitivityApplies(call.Resource.Type) {
+		return egress, sensitivityForCall(call, egress)
+	}
+	sens := resource
+	if strings.TrimSpace(call.Context.Sensitivity) != "" {
+		sens = maxSensitivity(resource, sensitivityFromText(call.Context.Sensitivity))
+	}
+	if egress.IsExternal() {
+		sens = maxSensitivity(sens, risk.SensitivityInternal)
+	}
+	return egress, sens
+}
+
 // reversibilityForCall resolve a reversibilidade EFECTIVA com um PISO derivado da
 // capability (SAROC-01): uma capability inerentemente irreversível (delete/send/
 // transfer/...) é SEMPRE irreversível, independentemente do texto do chamador. O
@@ -286,6 +327,7 @@ func principalSubject(p Principal) string {
 type RiskGate struct {
 	policy *risk.Policy
 	gate   *risk.Gate
+	dests  ToolDestinations
 }
 
 // NewRiskGate constrói o hook com a política de classificação e o gate SA-ROC
@@ -299,6 +341,14 @@ func NewRiskGate(policy *risk.Policy, gate *risk.Gate) RiskGate {
 	return RiskGate{policy: policy, gate: gate}
 }
 
+// WithToolDestinations devolve o gate com o destino que o registo de tools declara (AOS-539), o
+// MESMO que [RiskClassifier.WithToolDestinations] recebe — ver [riskAxesForCall]. Sem ele o gate
+// classifica pelos eixos de antes, e divergiria do anotador que o tivesse.
+func (g RiskGate) WithToolDestinations(d ToolDestinations) RiskGate {
+	g.dests = d
+	return g
+}
+
 // Name implementa [Hook]. É o valor gravado em [Decision.DeniedBy] quando o gate
 // nega, tornando a negação por risco distinguível na auditoria.
 func (RiskGate) Name() string { return "risk" }
@@ -306,9 +356,9 @@ func (RiskGate) Name() string { return "risk" }
 // Evaluate implementa [Hook]. Classifica a acção, sela a classe no contexto (para o
 // audit) e aplica o SA-ROC.
 func (g RiskGate) Evaluate(ctx context.Context, call *Call) (HookResult, error) {
-	egress := egressForCall(call)
+	egress, sensitivity := riskAxesForCall(call, g.dests)
 	action := risk.Action{
-		Sensitivity:   sensitivityForCall(call, egress),
+		Sensitivity:   sensitivity,
 		Egress:        egress,
 		Reversibility: reversibilityForCall(call),
 		Taint:         taint.ParseLabel(call.Context.Taint),
@@ -418,20 +468,35 @@ func DefaultHooksWithRisk(policy *risk.Policy, gate *risk.Gate) []Hook {
 //
 // A classificação é PURA e determinística, pelo que o RiskGate a recalcular a jusante obtém o
 // mesmo valor — não há estado partilhado além da anotação, que é reescrita com o mesmo conteúdo.
-type RiskClassifier struct{ policy *risk.Policy }
+type RiskClassifier struct {
+	policy *risk.Policy
+	dests  ToolDestinations
+}
 
 // NewRiskClassifier constrói o anotador. `policy` nil ⇒ [risk.DefaultPolicy] (o mesmo default de
 // [risk.Classify]), para que a anotação exista mesmo sem política versionada composta.
 func NewRiskClassifier(policy *risk.Policy) RiskClassifier { return RiskClassifier{policy: policy} }
+
+// WithToolDestinations devolve o anotador com o destino que o registo de tools DECLARA (AOS-539):
+// o egress declarado só ELEVA o derivado da capability, e a sensibilidade do recurso declarada
+// substitui o vazio que o loop entrega — ver [riskAxesForCall]. Era o defeito que a discovery do
+// AOS-538 encontrou: a `ocr_read` e a `video_read` declaram `egress: "external"` e o
+// classificador, que só via a `cap:fs.read`, classificava-as locais. Levar só o egress (a
+// tentativa revertida do AOS-538) punha-as em `danger` — vazio lê-se sensível — e cada OCR em L4
+// esperava por um humano; com a sensibilidade da pasta declarada, ficam `gray`.
+func (c RiskClassifier) WithToolDestinations(d ToolDestinations) RiskClassifier {
+	c.dests = d
+	return c
+}
 
 // Name implementa [Hook].
 func (RiskClassifier) Name() string { return "risk-classify" }
 
 // Evaluate implementa [Hook]: classifica, anota, e PERMITE — sempre.
 func (c RiskClassifier) Evaluate(_ context.Context, call *Call) (HookResult, error) {
-	egress := egressForCall(call)
+	egress, sensitivity := riskAxesForCall(call, c.dests)
 	classification := risk.Classify(c.policy, risk.Action{
-		Sensitivity:   sensitivityForCall(call, egress),
+		Sensitivity:   sensitivity,
 		Egress:        egress,
 		Reversibility: reversibilityForCall(call),
 		Taint:         taint.ParseLabel(call.Context.Taint),
