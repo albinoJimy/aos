@@ -19,11 +19,11 @@ import (
 // ADR-034 §2.8, em que um campo novo chega ao RM por uma via e não pela outra.
 
 // aos538Destinos são os destinos do manifesto de produção (doc_read, ocr_read) e dos demos
-// (web_post).
+// (web_post), com a sensibilidade do recurso que o manifesto de produção declara (AOS-539).
 func aos538Destinos() referencemonitor.ToolDestinations {
 	return referencemonitor.NewToolDestinations(map[string]referencemonitor.ToolDestination{
-		"doc_read": {Capability: "cap:fs.read", Egress: "none", Mutation: "none", Reversibility: "reversible"},
-		"ocr_read": {Capability: "cap:fs.read", Egress: "external", Mutation: "none", Reversibility: "reversible"},
+		"doc_read": {Capability: "cap:fs.read", Egress: "none", Mutation: "none", Reversibility: "reversible", Sensitivity: "public"},
+		"ocr_read": {Capability: "cap:fs.read", Egress: "external", Mutation: "none", Reversibility: "reversible", Sensitivity: "public"},
 		"web_post": {Capability: "cap:http.post", Egress: "external", Mutation: "mutates"},
 	})
 }
@@ -42,7 +42,7 @@ func (s *aos538Sink) RecordMediation(_ context.Context, rec referencemonitor.Med
 }
 
 // aos538Decisoes corre o goal (o modelo pede as três tools no turno 1) pela via dada e devolve,
-// ordenado, «tool efeito denied_by taint razão» de cada mediação.
+// ordenado, «tool efeito denied_by taint razão classe-de-risco» de cada mediação.
 func aos538Decisoes(t *testing.T, g agentruntime.Goal, duravel bool) []string {
 	t.Helper()
 	store, err := eventstore.New()
@@ -52,7 +52,10 @@ func aos538Decisoes(t *testing.T, g agentruntime.Goal, duravel bool) []string {
 	defer store.Close()
 	sink := &aos538Sink{}
 	priv := referencemonitor.NewDestinationPrivileged(referencemonitor.NewStaticPrivilegedSet("cap:http.post", "cap:fs.read"), aos538Destinos())
-	rm := referencemonitor.New(referencemonitor.WithHooks(referencemonitor.DefaultHooksWithTaint(priv)...), referencemonitor.WithEventSink(sink))
+	// O anotador de risco com o destino das tools à cabeça, como no ápice (AOS-539): a classe também
+	// tem de sair igual nas duas vias — o egress e a sensibilidade declarados chegam-lhe pelo ToolID.
+	hooks := append([]referencemonitor.Hook{referencemonitor.NewRiskClassifier(nil).WithToolDestinations(aos538Destinos())}, referencemonitor.DefaultHooksWithTaint(priv)...)
+	rm := referencemonitor.New(referencemonitor.WithHooks(hooks...), referencemonitor.WithEventSink(sink))
 	for _, id := range []string{"doc_read", "ocr_read", "web_post"} {
 		if err := rm.Register(id, func(_ context.Context, in []byte) ([]byte, error) { return in, nil }); err != nil {
 			t.Fatalf("Register: %v", err)
@@ -82,7 +85,7 @@ func aos538Decisoes(t *testing.T, g agentruntime.Goal, duravel bool) []string {
 	defer sink.mu.Unlock()
 	var out []string
 	for _, r := range sink.recs {
-		out = append(out, fmt.Sprintf("%s %s %s %s %s", r.ToolID, r.Effect, r.DeniedBy, r.Context.Taint, r.Context.TaintPrivilege))
+		out = append(out, fmt.Sprintf("%s %s %s %s %s %s", r.ToolID, r.Effect, r.DeniedBy, r.Context.Taint, r.Context.TaintPrivilege, r.Context.RiskClass))
 	}
 	sort.Strings(out)
 	return out
@@ -97,14 +100,14 @@ func TestAOS538_ViaDuravelDecideIgualAViaDirecta(t *testing.T) {
 		quer []string
 	}{
 		{"com-plan_input", comPlanInput, []string{
-			"doc_read permit  untrusted local_read",
-			"ocr_read deny taint untrusted capability",
-			"web_post deny taint untrusted capability",
+			"doc_read permit  untrusted local_read safe",
+			"ocr_read deny taint untrusted capability danger", // o taint eleva a sensibilidade um nivel (ADR-013)
+			"web_post deny taint untrusted capability danger",
 		}},
 		{"so-objectivo", portTestGoal(), []string{
-			"doc_read permit  trusted local_read",
-			"ocr_read permit  trusted capability",
-			"web_post permit  trusted capability",
+			"doc_read permit  trusted local_read safe",
+			"ocr_read permit  trusted capability gray",
+			"web_post permit  trusted capability danger",
 		}},
 	}
 	for _, c := range casos {

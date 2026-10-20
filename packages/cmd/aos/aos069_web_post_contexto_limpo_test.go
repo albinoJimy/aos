@@ -138,6 +138,9 @@ func TestAOS069_ExcepcaoDaOCRNaoCobreOutraTool(t *testing.T) {
 			}
 			if c["name"] == "ocr_read" {
 				delete(c, "modelo")
+				// AOS-539: sem o bloco `modelo`, uma tool de egress externo não pode declarar a
+				// sensibilidade do recurso — o manifesto seria recusado antes de medir a excepção.
+				delete(c, "resource_sensitivity")
 			}
 			out = append(out, c)
 		}

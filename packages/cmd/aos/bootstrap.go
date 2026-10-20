@@ -855,6 +855,10 @@ type Node struct {
 	// (gateway por ambiente) ou só preenche um goal vazio (modelo de referência).
 	modelID            string
 	modeloAutoritativo bool
+	// toolDestinations é o destino que AOS_MODEL_TOOLS declara por tool (AOS-538/AOS-539) — o
+	// MESMO que o anotador de risco da cadeia recebe, para a simulação de autonomia reclassificar
+	// com os mesmos factos. Zero sem tools declaradas.
+	toolDestinations referencemonitor.ToolDestinations
 	// PendingApprovals é o registo DURÁVEL das tool calls escaladas que aguardam aval
 	// humano — o que a superfície de administração expõe ao operador (polling). nil
 	// quando o four-eyes não está composto.
@@ -2595,10 +2599,13 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		// AOS-254: liga o registo de compensações ao dispatcher durável (WithCompensationRegistry
 		// na composição de produção). nil quando a execução durável está desligada.
 		CompensationRegistry: compensations,
-		FreezeOptions:        freezeOpts,  // toolset.WithTracer quando a observabilidade está ligada
-		RuntimeOptions:       runtimeOpts, // agentruntime.WithTracer (RT+RM partilham o tracer)
-		Tracer:               chainTracer, // AOS-210: o MESMO tracer para o dispatcher durável (aos.activity)
-		SteerSource:          loopSteer,   // AOS-218: liga o canal de steer ao loop de produção (ACHADO-2)
+		// AOS-539: o egress e a sensibilidade do recurso que o registo de tools declara chegam ao
+		// anotador de risco da cadeia — a classe que o oráculo de autonomia lê.
+		ToolDestinations: toolDests,
+		FreezeOptions:    freezeOpts,  // toolset.WithTracer quando a observabilidade está ligada
+		RuntimeOptions:   runtimeOpts, // agentruntime.WithTracer (RT+RM partilham o tracer)
+		Tracer:           chainTracer, // AOS-210: o MESMO tracer para o dispatcher durável (aos.activity)
+		SteerSource:      loopSteer,   // AOS-218: liga o canal de steer ao loop de produção (ACHADO-2)
 		// AOS-080/081: disjuntor do agente vivo. nil quando não há limiares configurados.
 		LivenessBreaker: livenessBreaker,
 		// AOS-021: bridge de aprovação. nil quando não há four-eyes ⇒ escalate degrada para
@@ -3387,6 +3394,8 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	return &Node{
 		BackupExporter: backupExporter, // AOS-101: nil ⇒ o nó não exporta backups (por omissão)
 		Runtime:        sec,
+		// AOS-539: o destino das tools que o anotador de risco usa, para a simulação de autonomia.
+		toolDestinations: toolDests,
 		// AOS-396: o modelo pedido que o nó declara em cada turno.
 		modelID:            modeloDoNo,
 		modeloAutoritativo: modeloAutoritativo,

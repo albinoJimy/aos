@@ -173,6 +173,14 @@ type SecuredConfig struct {
 	// é a barreira control/data-plane exigida por [referencemonitor.NewProductionSecure].
 	// nil ⇒ [referencemonitor.NewStaticPrivilegedSet] vazio (classificador real).
 	Privileged referencemonitor.PrivilegedAuthorizer
+	// ToolDestinations é o destino que o registo de tools declara por tool (egress, mutação,
+	// reversibilidade e sensibilidade do recurso; AOS-538/AOS-539). Leva o egress e a sensibilidade
+	// DECLARADOS ao anotador de risco da cadeia
+	// ([referencemonitor.RiskClassifier.WithToolDestinations]): o egress só eleva o derivado da
+	// capability, e a sensibilidade substitui o vazio que o loop entrega. Zero ⇒ os eixos de antes.
+	// O gate de taint recebe o destino pelo próprio Privileged
+	// ([referencemonitor.DestinationPrivileged]), não por aqui.
+	ToolDestinations referencemonitor.ToolDestinations
 	// TaintEscalate troca a NEGAÇÃO do gate de taint por ESCALADA para aprovação humana
 	// (AOS-541, [referencemonitor.NewEscalatingTaintGate]). Exige o ciclo de aprovação composto
 	// — [SecuredConfig.ApprovalVerifier], [SecuredConfig.ApprovalEvidence] e
@@ -477,7 +485,7 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 		// NÃO é o RiskGate. O RiskGate IMPÕE (SAROC-04, canal de confirmação) e, sem um
 		// risk.Gate composto — o caso deste nó — NEGA tudo o que não seja safe. Pô-lo aqui
 		// pararia o nó por inteiro. Este hook devolve sempre HookAllow.
-		referencemonitor.NewRiskClassifier(nil),
+		referencemonitor.NewRiskClassifier(nil).WithToolDestinations(cfg.ToolDestinations), // AOS-539: egress e sensibilidade declarados
 		pdp.NewPolicyCheck(policyDP),             // policy (PDP, AOS-004)
 		taintGate,                                // taint (AOS-069); escala com cfg.TaintEscalate (AOS-541)
 		referencemonitor.NewScopeGate(authority), // scope (AOS-071)

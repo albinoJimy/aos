@@ -40,6 +40,11 @@ func aos409ManifestoDerivado(t *testing.T, mutation any) string {
 		} else {
 			s["mutation"] = mutation
 		}
+		// AOS-539: a sensibilidade do recurso só se declara numa leitura; uma tool que (já) não se
+		// declara `none` não a pode trazer, ou o manifesto é recusado antes de medir o eixo.
+		if mutation != "none" {
+			delete(s, "resource_sensitivity")
+		}
 		mexeu = true
 	}
 	if !mexeu {

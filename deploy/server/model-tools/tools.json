@@ -15,6 +15,7 @@
     "resource_type": "file",
     "resource_value": "doc://{doc_id}",
     "resource_region": "eu-west",
+    "resource_sensitivity": "public",
     "egress": "none",
     "sandbox": { "command": "read", "path_arg": "doc_id" }
   },
@@ -34,6 +35,7 @@
     "resource_type": "file",
     "resource_value": "doc://{doc_id}",
     "resource_region": "eu-west",
+    "resource_sensitivity": "public",
     "egress": "external",
     "modelo": { "alias": "ocr-visao" }
   },
@@ -53,6 +55,7 @@
     "resource_type": "file",
     "resource_value": "doc://{doc_id}",
     "resource_region": "eu-west",
+    "resource_sensitivity": "public",
     "egress": "external",
     "modelo": { "alias": "video-visao" }
   }
