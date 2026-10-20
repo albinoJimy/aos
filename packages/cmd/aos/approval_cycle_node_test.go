@@ -6,6 +6,8 @@ import (
 	"crypto/rand"
 	"io"
 	"path/filepath"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -93,12 +95,39 @@ type acnHarness struct {
 	// noEfeito, quando definido ANTES do Submit, é chamado dentro do efeito de cada tool, com o
 	// seu nome — para um teste observar o estado do nó a meio de uma incarnação (AOS-532).
 	noEfeito func(tool string)
+	// logs é o log do serviço (AOS-541: o varredor diz o que acontece a um pendente do taint).
+	logs acnLog
+}
+
+// acnLog é um destino de log seguro para escritas concorrentes do serviço.
+type acnLog struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (l *acnLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *acnLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
 }
 
 // newACNHarness arranca um nó REAL: execução durável, PDP com bundle assinado + oráculo de
 // autonomia em L4 (danger ⇒ confirm ⇒ requer humano), e four-eyes com dois aprovadores
 // pinados. É a configuração do deployment endurecido.
 func newACNHarness(t *testing.T) *acnHarness {
+	return newACNHarnessCom(t, true, nil)
+}
+
+// newACNHarnessCom é o [newACNHarness] com duas variações: `autonomia=false` tira o oráculo de
+// autonomia do PDP (nada escala por ele), e `ajusta` mexe na Config antes do Bootstrap (AOS-541:
+// o gate de taint como fonte da escalada).
+func newACNHarnessCom(t *testing.T, autonomia bool, ajusta func(*Config)) *acnHarness {
 	t.Helper()
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -106,11 +135,15 @@ func newACNHarness(t *testing.T) *acnHarness {
 	signer := acnSigner(t)
 	// AOS-381: entrega-se o REGISTO ASSINADO e o Bootstrap constrói o revalidador SELADO no WORM
 	// DURÁVEL do nó (AOS_WORM_PATH), em vez de injectar um revalidador sobre um MemStore volátil.
-	levels := autonomy.NewLevelRegistry()
-	if _, err := levels.SetLevel(ctx, acnAgent, "fs", autonomy.L4, "teste de ciclo", "operador"); err != nil {
-		t.Fatalf("SetLevel: %v", err)
+	var pdpOpts []pdp.Option
+	if autonomia {
+		levels := autonomy.NewLevelRegistry()
+		if _, err := levels.SetLevel(ctx, acnAgent, "fs", autonomy.L4, "teste de ciclo", "operador"); err != nil {
+			t.Fatalf("SetLevel: %v", err)
+		}
+		pdpOpts = append(pdpOpts, pdp.WithAutonomyOracle(levels))
 	}
-	policyDP, err := pdp.Open("../../control-plane/pdp/policies", pdp.WithAutonomyOracle(levels))
+	policyDP, err := pdp.Open("../../control-plane/pdp/policies", pdpOpts...)
 	if err != nil {
 		t.Fatalf("abrir bundle de politica de referencia: %v", err)
 	}
@@ -142,6 +175,9 @@ func newACNHarness(t *testing.T) *acnHarness {
 		{Principal: "human:alice", PubKey: pubA, Authority: []string{"approve:danger", "approve:gray"}},
 		{Principal: "human:bob", PubKey: pubB, Authority: []string{"approve:danger", "approve:gray"}},
 	}
+	if ajusta != nil {
+		ajusta(&cfg)
+	}
 
 	node, err := Bootstrap(ctx, cfg, io.Discard)
 	if err != nil {
@@ -165,7 +201,7 @@ func newACNHarness(t *testing.T) *acnHarness {
 		}
 	}
 
-	svc, err := NewNodeService(node)
+	svc, err := NewNodeService(node, WithServiceLog(&h.logs))
 	if err != nil {
 		t.Fatalf("NewNodeService: %v", err)
 	}

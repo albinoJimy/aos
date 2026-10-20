@@ -249,6 +249,18 @@ recusa do validador — nenhum dado de outro nó chega a ele. Do turno 2 em dian
 `untrusted`, e enviar ou mudar continua negado. Custo: um nó consumidor gasta pelo menos dois
 turnos de modelo.
 
+**Emenda de 2026-10-20 (AOS-541; passo 3 do plano do dono de 2026-10-19; «Mantenha uma pessoa»).**
+Com o interruptor `AOS_TAINT_ESCALA=on` (desligado por omissão), o gate de taint, em vez de negar
+uma tool call privilegiada com o contexto `untrusted`, escala-a: o run suspende e pede a aprovação
+de **uma pessoa** do roster de aprovadores (`AOS_APPROVERS_FILE`; sem ele o nó recusa arrancar). A
+aprovação vale só para aquela call (a preview amarra o run, o passo, a tool, a capability, o
+recurso e o hash dos argumentos); o rótulo continua `untrusted`. O pendente diz que vem do taint
+(`escalated_by=taint`) sempre que o contexto é `untrusted` e a call é privilegiada, mesmo que outro
+gate (a autonomia) tenha escalado primeiro, para o aprovador saber que o pedido nasceu de conteúdo
+de fora. Quatro olhos fica para quando houver mais de um aprovador. Resíduos aceites: o aprovador
+não vê os argumentos da call (só o hash na preview); não há rota de recusa (a saída sem aprovação é
+a expiração, e o run falha na retoma).
+
 ## 3. Alternativas consideradas
 
 - **(A) Dual-LLM / CaMeL completo** — um planeador que só vê trusted + handles e um executor que

@@ -36,6 +36,17 @@ type PendingApproval struct {
 	// mesmo que a preview amarra. Vai ao `producer` do envelope do pendente (AOS-478): a
 	// escalada é um acto do run, não do nó.
 	Principal referencemonitor.Principal
+	// EscalatedBy é o hook do Reference Monitor que escalou ([referencemonitor.Decision.DeniedBy]
+	// — o nome do hook que terminou a mediação, também numa escalada). AOS-541: é por ele que o
+	// nó distingue a escalada do gate de taint (`taint`), que tem regras próprias — o pendente
+	// diz ao aprovador que o pedido vem de algo de fora e, retirado sem aprovação, faz o run
+	// falhar na retoma em vez de voltar a suspender.
+	EscalatedBy string
+	// Taint é o rótulo de autorização da call escalada ([referencemonitor.CallContext.Taint]),
+	// cunhado pelo runtime a partir do contexto do turno. AOS-541: com o gate de taint a escalar,
+	// o nó marca como do taint uma escalada de outro hook sobre uma call privilegiada com este
+	// rótulo `untrusted` — para que o aprovador veja o sinal logo na primeira escalada.
+	Taint string
 }
 
 // EscalationSink recebe uma tool call ESCALADA pelo Reference Monitor (veredicto

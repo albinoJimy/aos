@@ -24,6 +24,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	integration "github.com/aos-ref/integration"
 )
 
 // DefaultApprovalSweepInterval é o período de varrimento por omissão. Bastante mais curto
@@ -101,6 +103,12 @@ func (s *NodeService) sweepApprovalsOnce(ctx context.Context) {
 		kind := rec.Kind.Resolved()
 		if err := pend.ExpireKind(ctx, kind, rec.RunID, rec.StepID); err != nil {
 			s.log("varrimento de pendentes: falha a expirar tipo=%q run=%q step=%q: %v", kind, rec.RunID, rec.StepID, err)
+			continue
+		}
+		if rec.EscalatedBy == integration.EscalatedByTaint {
+			// AOS-541: a escalada do taint não volta a suspender — a retoma faz o run falhar.
+			s.log("pendente EXPIRADO (sem decisao em %s): tipo=%q run=%q step=%q tool=%q cap=%q escalado pelo taint — a retoma faz o run FALHAR (aprovacao expirada, AOS-541)",
+				s.approvalTTL, kind, rec.RunID, rec.StepID, rec.ToolID, rec.Capability)
 			continue
 		}
 		s.log("pendente EXPIRADO (sem decisao em %s): tipo=%q run=%q step=%q tool=%q cap=%q — o run continua RETOMAVEL e a accao ficara negada",

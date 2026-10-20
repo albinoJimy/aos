@@ -1005,6 +1005,14 @@ func nodeConfigFromEnv() (Config, error) {
 	}
 	cfg.PlanInputDepoisDoPrimeiroTurno = pedirAntesDeLer
 
+	// O GATE DE TAINT ESCALA EM VEZ DE NEGAR (AOS-541). Vocabulário fechado (`off`/`on`): um valor
+	// desconhecido aborta o arranque. Vazia ⇒ `off`. A exigência de aprovadores é do [Bootstrap].
+	taintEscala, err := parseTaintEscalaFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.TaintEscala = taintEscala
+
 	// PERIODICIDADE DA EXPORTAÇÃO DE BACKUP (AOS-101) por ambiente. É a BASE DO RPO: a janela de
 	// perda é limitada pela cadência com que o Event Store é exportado para o backup imutável.
 	// Vazia ⇒ 0, que o [Bootstrap] traduz no default do próprio `platform/backup`; malformada ou

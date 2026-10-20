@@ -1371,14 +1371,82 @@ passar uma call aprovada. Falta o gate de taint escalar em vez de negar.
 
 ### Critérios de Aceitação
 
-- [ ] Um interruptor do nó (desligado por omissão) faz o gate de taint devolver «escalar» em vez de
+- [x] Um interruptor do nó (desligado por omissão) faz o gate de taint devolver «escalar» em vez de
       «negar» para uma call privilegiada com o contexto `untrusted`; com ele desligado nada muda.
-- [ ] A call escalada suspende o run e fica à espera de aprovação; aprovada (quatro olhos, a preview
-      amarra a capability e o recurso resolvido), corre; recusada ou expirada, o run falha com a causa
-      nomeada.
-- [ ] O rótulo de taint não muda com a aprovação (como hoje); a aprovação vale só para aquela call.
-- [ ] Sem aprovadores configurados, o gate continua a negar (fail-closed) e o arranque diz porquê.
-- [ ] Testes nas vias directa e durável, na retoma depois da aprovação e no replay.
+      *Evidência:* `AOS_TAINT_ESCALA=off|on` (`packages/cmd/aos/taint_escala_env.go`, vocabulário
+      fechado, outro valor ⇒ `ErrBadTaintEscala`); `NewEscalatingTaintGate` no RM
+      (`taint_gate.go`), composto por `SecuredConfig.TaintEscalate`. Desligado, o gate é o
+      `NewTaintGate` de sempre e o pendente da autonomia não ganha `escalated_by`
+      (`TestAOS541_SemOInterruptorNegaComoAntes`, `TestAOS541_No_DesligadoNegaComoAntes`,
+      `TestAOS541_No_EscaladaDaAutonomiaNaoMuda`). O evento sela `tool.call.escalated` com
+      `denied_by=taint`, a razão `ReasonTaintEscalated` e o `context.taint_privilege` do AOS-538
+      (`TestAOS541_EscalaEmVezDeNegarEOEventoDizQueFoiOTaint`).
+- [x] A call escalada suspende o run e fica à espera de aprovação; aprovada (aprovação humana de uma
+      pessoa — decisão do dono de 2026-10-20; quatro olhos fica para quando houver mais aprovadores —,
+      a preview amarra a capability e o recurso resolvido), corre; recusada ou expirada, o run falha
+      com a causa nomeada.
+      *Evidência:* `TestAOS541_No_EscalaAprovaECorreSoAquelaCall` (nó composto: suspende, pendente com
+      `escalated_by=taint` no `GET /runs/{id}`, o nó não exige duplo controlo para uma capability
+      reversível, aprovação de uma pessoa, a call aprovada corre uma vez) e
+      `TestAOS541_No_ExpiradaOuRecusadaOFalhaComCausa` (`ErrAprovacaoDoTaintExpirada` /
+      `ErrAprovacaoDoTaintRecusada`). A falha dá-se **na retoma**: o pendente expirado (ou decidido
+      sem aprovação) faz o `EscalationSink` do nó recusar voltar a suspender a mesma call. **Limite:**
+      não há rota HTTP para recusar uma aprovação — a recusa está coberta ao nível do registo
+      (`PendingApprovals.Decide` sobre o tipo aprovação); hoje, na prática, a saída sem aprovação é a
+      expiração.
+- [x] O rótulo de taint não muda com a aprovação (como hoje); a aprovação vale só para aquela call.
+      *Evidência:* a call aprovada sela `untrusted` com `human_approved`; a mesma call no turno
+      seguinte (outro passo, outra preview) volta a escalar (`TestAOS541_AprovacaoValeSoParaAquelaCallENaoMudaOTaint`,
+      `TestAOS541_CicloNasDuasVias`, o teste do nó acima). A leitura local do AOS-538 continua a passar
+      sem escalar (`TestAOS541_LeituraLocalETrustedNaoEscalam`).
+- [x] Sem aprovadores configurados, o gate continua a negar (fail-closed) e o arranque diz porquê.
+      *Evidência, com divergência deliberada:* em vez de arrancar a negar, o nó **recusa arrancar**
+      com `ErrTaintEscalaSemAprovadores` (`TestAOS541_No_LigadoSemAprovadoresRecusaArrancar`); um
+      interruptor `on` que não fizesse nada era o mesmo engano com uma linha de log a desculpá-lo. O
+      ápice recusa compor o gate escalante sem verificador, fonte de evidência e destino das escaladas
+      (`ErrTaintEscalateSemAprovacao`, `TestAOS541_ComposicaoRecusaEscalarSemAprovacao`). Com o gate
+      inerte (`AOS_PRIVILEGED_CAPS` vazia) o banner di-lo.
+- [x] Testes nas vias directa e durável, na retoma depois da aprovação e no replay.
+      *Evidência:* `TestAOS541_CicloNasDuasVias` (as duas vias decidem igual em escalar → aprovar →
+      voltar a escalar; a durável não repete a leitura na retoma); `TestAOS541_EscaladaDoTaintReproduzSe`
+      (replay fiel com a autoridade verificada e determinista) e `TestAOS541_RetomaAprovadaSelaUntrustedAprovada`;
+      segurança: `TestPromptInjection_PlanInput_TaintEscala_NadaExecutaSemAprovacao` + meta-teste
+      `TestMetaDetects_PlanInputInjection_TaintEscala_WhenApprovalBypassed`. **Resíduo anterior a este
+      ticket, medido:** o replay de um run retomado depois de uma aprovação diverge no turno a seguir à
+      call aprovada (a captura do turno escalado é deduplicada e continua a dizer «escalada»); acontece
+      igual com a escalada da autonomia, pelo que pede ticket próprio.
+
+#### Revisão adversarial (2026-10-20) e resíduos registados
+
+- **Achado ALTO e decisão do dono.** Com `AOS_TAINT_ESCALA=on`, a autonomia (dentro da política,
+  antes do taint na cadeia) escalava primeiro uma call privilegiada com o contexto `untrusted`; o
+  pendente saía sem `escalated_by` e uma aprovação de uma perna fazia a call correr — contornando os
+  quatro olhos que a primeira versão deste ticket exigia ao taint. O dono decidiu (2026-10-20,
+  «mantenha uma pessoa») que as escaladas do taint pedem a aprovação de **uma pessoa**: o duplo
+  controlo fica como era antes do AOS-541 (só capabilities irreversíveis) e o gate de taint aceita
+  a prova de uma perna. O que fica da correcção é o **sinal**: o destino das escaladas do nó marca
+  como do taint (`escalated_by=taint`) a escalada de qualquer hook sobre uma call que o taint
+  escalaria — privilegiada para o gate e pedida com o contexto `untrusted`
+  (`TaintGate.RequiresTrustedAuthorization` + o rótulo `Taint` no `PendingApproval`) —, para o
+  aprovador ver que o pedido vem de algo de fora, e a regra da retoma (expirada ou recusada ⇒ falha)
+  vale também para ela. Testes: `TestAOS541_No_EscaladaDaAutonomiaSobreCallDoTaintDizTaint` (uma
+  pessoa aprova, a call corre uma vez), `TestAOS541_No_EscaladaDaAutonomiaComContextoTrustedNaoDizTaint`,
+  `TestAOS541_UmaPessoaBasta`, `TestAOS541_RequiresTrustedAuthorization`.
+- **Comportamento que «já existia», mantido.** Com `AOS_TAINT_ESCALA=off` (por omissão) uma
+  aprovação de uma perna pedida pela autonomia destrava a call privilegiada com o contexto
+  `untrusted` e o gate de taint, a negar, aceita essa prova; com a decisão de 2026-10-20 é também o
+  comportamento com `on` (o pendente passa a dizer `escalated_by=taint`). Evidência
+  (teste da revisão, nó composto, L4 em `fs`, `cap:fs.read` armada): pendente com `escalated_by=""`,
+  `exigir duplo=false`, grant de `[human:alice]`, `execucoes=1`, mediações
+  `tool.call.escalated policy untrusted` → `tool.call.mediated untrusted aprovada`. Não foi mudado.
+- **MÉDIO, não corrigido.** A lista de pendentes não mostra os argumentos (o input) ao aprovador; a
+  preview amarra-os por hash, mas numa escalada do taint é o conteúdo injectado que compõe os
+  argumentos e o aprovador assina sem o ver.
+- **Divergências declaradas e confirmadas pela revisão:** (1) não há rota HTTP para recusar uma
+  aprovação — a recusa está coberta no registo (`PendingApprovals.Decide`); (2) a falha dá-se na
+  retoma, não no instante da expiração (sem retoma, o run fica em `waiting_on_human`); (3) o replay
+  de um run retomado depois de uma aprovação diverge no turno seguinte à call aprovada — anterior a
+  este ticket, igual com a autonomia.
 
 ### Fora de âmbito
 
@@ -1402,3 +1470,5 @@ passar uma call aprovada. Falta o gate de taint escalar em vez de negar.
 | 1.8 | 2026-10-20 | AOS-538 em produção na v0.1.62 (sem mudanças no servidor); prova: `plan-e2e-taint1-1792486874`, o nó com `consumes` lê com o contexto `untrusted` (`taint_privilege: local_read`) | Equipa AOS |
 | 1.9 | 2026-10-20 | +AOS-540: pedir antes de ler — layout 1.6.0, desligado por omissão; emenda de 2026-10-20 ao ADR-034 | Equipa AOS |
 | 1.10 | 2026-10-20 | +AOS-541: o gate de taint pede aprovação humana em vez de negar, só no que sobra (passo 3 do plano do dono) | Equipa AOS |
+| 1.11 | 2026-10-20 | AOS-541 implementado no ramo `feature/AOS-541-taint-escala`: `AOS_TAINT_ESCALA=on` faz o gate de taint escalar (four-eyes obrigatório, `escalated_by=taint` no pendente); expirada ou recusada, a retoma faz o run falhar com a causa nomeada; sem aprovadores o nó recusa arrancar; resíduo medido do replay depois de uma retoma aprovada (anterior ao ticket) | Equipa AOS |
+| 1.12 | 2026-10-20 | AOS-541, revisão adversarial e decisão do dono («mantenha uma pessoa»): as escaladas do taint pedem a aprovação de uma pessoa (o duplo controlo fica como era); a escalada da autonomia sobre uma call que o taint escalaria passa a dizer `escalated_by=taint`; o MÉDIO dos argumentos não mostrados e as três divergências registados | Equipa AOS |
