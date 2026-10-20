@@ -1436,8 +1436,8 @@ type pendingApprovalWire struct {
 	ResourceValue  string `json:"resource_value,omitempty"`
 	ResourceRegion string `json:"resource_region,omitempty"`
 	Preview        string `json:"preview"` // base64 — o digest a assinar em /approve
-	// EscalatedBy diz que foi o gate de taint a escalar (AOS-541): a cerimónia tem de ser de
-	// quatro olhos. Ausente nas outras escaladas.
+	// EscalatedBy diz que a escalada é do gate de taint (AOS-541): o pedido vem de algo de fora
+	// (contexto untrusted). Ausente nas outras escaladas.
 	EscalatedBy string `json:"escalated_by,omitempty"`
 }
 

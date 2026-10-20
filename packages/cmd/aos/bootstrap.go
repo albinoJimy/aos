@@ -2384,6 +2384,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	pedirAntesDeLer := cfg.PlanInputDepoisDoPrimeiroTurno
 
 	var escalationSink agentruntime.EscalationSink
+	var nodeSink *nodeEscalationSink
 	var approvalEvidence agentruntime.ApprovalEvidenceSource
 	var approvalVerifier referencemonitor.ApprovalVerifier
 	if approvalBroker != nil && pendingApprovals != nil {
@@ -2392,6 +2393,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 			return nil, fmt.Errorf("aos: adaptador de escalada (AOS-021): %w", serr)
 		}
 		escalationSink = sink
+		nodeSink = sink
 		approvalEvidence = approvalBroker
 		// O TERCEIRO lado do bridge, dentro da cadeia: sem o gate, a evidência viaja e
 		// ninguém a lê — o escalate repetir-se-ia para sempre e a cerimónia four-eyes não
@@ -2427,6 +2429,12 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		return nil, err
 	}
 	privileged := privilegedComDestinos(cfg.Privileged, toolDests)
+	// AOS-541: com o gate de taint a escalar, o destino das escaladas reconhece como do taint a
+	// escalada de outro hook sobre uma call que o taint também escalaria — a mesma classificação
+	// do gate composto na cadeia, sobre o mesmo `privileged`.
+	if cfg.TaintEscala && nodeSink != nil {
+		nodeSink.taintPede = referencemonitor.NewEscalatingTaintGate(privileged).RequiresTrustedAuthorization
+	}
 	// A TOOL `ocr_read` (AOS-530, ADR-042): composta na fronteira de ambiente com o gateway do nó
 	// e encontrada no cliente de modelo, como os perfis assinados. Declarada no registo de tools
 	// e sem ligação (sem AOS_MODEL_ENDPOINT, ou com um cliente de modelo injectado) ⇒ o nó não

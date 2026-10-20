@@ -496,8 +496,9 @@ type PendingRecord struct {
 	// diagnóstico legível, nunca segredo. Ausente no tipo aprovação.
 	Reason string `json:"reason,omitempty"`
 	// EscalatedBy é o hook do Reference Monitor que escalou, SÓ quando é o gate de taint
-	// ([EscalatedByTaint], AOS-541). Uma escalada do taint tem regras próprias no nó: exige quatro
-	// olhos e, retirada sem aprovação, faz a retoma falhar em vez de voltar a suspender. Ausente
+	// ([EscalatedByTaint], AOS-541) — também quando outro hook escalou primeiro uma call que o taint
+	// escalaria. Diz ao aprovador que o pedido vem de algo de fora; retirada sem aprovação, faz a
+	// retoma falhar em vez de voltar a suspender. Ausente
 	// em qualquer outra escalada, pelo que o pendente da autonomia fica byte-idêntico ao de antes.
 	EscalatedBy string `json:"escalated_by,omitempty"`
 	// CreatedAt é o instante em que a acção foi escalada (RFC3339). É a âncora do TTL:

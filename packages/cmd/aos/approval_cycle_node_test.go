@@ -6,6 +6,8 @@ import (
 	"crypto/rand"
 	"io"
 	"path/filepath"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -93,6 +95,26 @@ type acnHarness struct {
 	// noEfeito, quando definido ANTES do Submit, é chamado dentro do efeito de cada tool, com o
 	// seu nome — para um teste observar o estado do nó a meio de uma incarnação (AOS-532).
 	noEfeito func(tool string)
+	// logs é o log do serviço (AOS-541: o varredor diz o que acontece a um pendente do taint).
+	logs acnLog
+}
+
+// acnLog é um destino de log seguro para escritas concorrentes do serviço.
+type acnLog struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (l *acnLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *acnLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
 }
 
 // newACNHarness arranca um nó REAL: execução durável, PDP com bundle assinado + oráculo de
@@ -179,7 +201,7 @@ func newACNHarnessCom(t *testing.T, autonomia bool, ajusta func(*Config)) *acnHa
 		}
 	}
 
-	svc, err := NewNodeService(node)
+	svc, err := NewNodeService(node, WithServiceLog(&h.logs))
 	if err != nil {
 		t.Fatalf("NewNodeService: %v", err)
 	}

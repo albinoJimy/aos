@@ -129,7 +129,7 @@ func aos541Ciclo(t *testing.T, duravel bool) ([]string, map[string]int, *aos541P
 	if res := correr(); !res.Escalated {
 		t.Fatalf("a ocr_read com o contexto untrusted tinha de escalar: %+v", res)
 	}
-	if execs["ocr_read"] != 0 || len(pend.pending) != 1 || pend.pending[0].EscalatedBy != "taint" {
+	if execs["ocr_read"] != 0 || len(pend.pending) != 1 || pend.pending[0].EscalatedBy != "taint" || pend.pending[0].Taint != "untrusted" {
 		t.Fatalf("escalada sem efeito e atribuida ao taint: execs=%v pendentes=%+v", execs, pend.pending)
 	}
 
@@ -284,7 +284,6 @@ func TestAOS541_RetiradoSemGrant(t *testing.T) {
 	// Com um grant emitido para a preview, a retirada não é recusa (é o caminho da cerimónia).
 	gate, reg := newFourEyesGate(t)
 	privA := approverKP(t, reg, "human:alice")
-	privB := approverKP(t, reg, "human:bob")
 	grants, err := NewEventStoreApprovalStore(es)
 	if err != nil {
 		t.Fatalf("NewEventStoreApprovalStore: %v", err)
@@ -293,13 +292,25 @@ func TestAOS541_RetiradoSemGrant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewApprovalBroker: %v", err)
 	}
-	req := FourEyesRequest{RequestID: "req-541-g", Preview: pa, RiskClass: risk.ClassDanger, DualControlRequired: true}
+	req := FourEyesRequest{RequestID: "req-541-g", Preview: pa, RiskClass: risk.ClassGray}
 	if _, err := broker.Approve(ctx, req.RequestID, req,
-		SignFourEyesLeg(privA, req, "human:alice", "sess-A", "cred-A", challenge32(t), nil),
-		SignFourEyesLeg(privB, req, "human:bob", "sess-B", "cred-B", challenge32(t), nil)); err != nil {
-		t.Fatalf("Approve: %v", err)
+		SignFourEyesLeg(privA, req, "human:alice", "sess-A", "cred-A", challenge32(t), nil)); err != nil {
+		t.Fatalf("Approve (uma pessoa): %v", err)
 	}
 	if r := consulta("run-x", "s1", pa); r.Houve() {
 		t.Fatalf("com grant emitido nao ha retirada sem grant: %+v", r)
+	}
+	// M5: um registo de EXAUSTÃO com uma preview sem grant (forjado no log — o Put recusa-o) nunca conta.
+	if _, err := es.Append(ctx, approvalStream, eventstore.EventInput{
+		Type: approvalPendingEventType, RunID: approvalRunID, StepID: "pending-kind=exhaustion|run-z-s9",
+		Payload: []byte(`{"kind":"exhaustion","run_id":"run-z","step_id":"s9","turn":0,"tool_id":"","capability":"","preview":"cHJldmlldy1i"}`),
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := pend.ExpireKind(ctx, PendingKindExhaustion, "run-z", "s9"); err != nil {
+		t.Fatalf("ExpireKind: %v", err)
+	}
+	if r := consulta("run-z", "s9", pb); r.Houve() {
+		t.Fatalf("um registo de exaustao nao e um pendente de aprovacao: %+v", r)
 	}
 }

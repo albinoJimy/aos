@@ -9,9 +9,10 @@ package main
 //
 //   - `off` (por omissão): nada muda — o gate nega, e os eventos, o prompt e o `/metrics` são os de
 //     antes, byte a byte.
-//   - `on`: o gate devolve «escalar» em vez de «negar». O run pára em `waiting_on_human`, o
-//     pendente aparece ao operador com `escalated_by: "taint"`, e a cerimónia tem de ser de QUATRO
-//     OLHOS (o nó recusa uma de uma perna para estas escaladas). Aprovada, a retoma corre ESSA call
+//   - `on`: o gate devolve «escalar» em vez de «negar». O run pára em `waiting_on_human` e o
+//     pendente aparece ao operador com `escalated_by: "taint"` — também quando outro hook (a
+//     autonomia) escalou primeiro a mesma call. Basta a aprovação de UMA pessoa (decisão do dono de
+//     2026-10-20; quatro olhos fica para quando houver mais aprovadores). Aprovada, a retoma corre ESSA call
 //     — a preview amarra o run, o passo, a tool, a capability, o recurso resolvido, o principal e o
 //     input. Expirada (ou decidida sem aprovação), a retoma faz o run FALHAR com a causa nomeada
 //     ([ErrAprovacaoDoTaintExpirada], [ErrAprovacaoDoTaintRecusada]) em vez de voltar a suspender.
@@ -45,7 +46,7 @@ const (
 
 // ErrBadTaintEscala — AOS_TAINT_ESCALA com um valor fora do vocabulário. O nó recusa arrancar: um
 // valor mal escrito não pode cair em silêncio para `off` nem para `on`.
-var ErrBadTaintEscala = errors.New("aos: AOS_TAINT_ESCALA invalida — valores aceites: off (por omissao; o gate de taint nega a tool call privilegiada com o contexto untrusted, como sempre) e on (o gate escala-a para aprovacao humana de quatro olhos; exige AOS_APPROVERS_FILE)")
+var ErrBadTaintEscala = errors.New("aos: AOS_TAINT_ESCALA invalida — valores aceites: off (por omissao; o gate de taint nega a tool call privilegiada com o contexto untrusted, como sempre) e on (o gate escala-a para aprovacao humana; exige AOS_APPROVERS_FILE)")
 
 // ErrTaintEscalaSemAprovadores — AOS_TAINT_ESCALA=on sem o ciclo de aprovação composto (four-eyes
 // de AOS_APPROVERS_FILE, registo de pendentes e broker de grants). Fail-closed: ver o cabeçalho.
@@ -79,7 +80,7 @@ func taintEscalaBanner(ligado, gateActivo bool) []string {
 	if !ligado {
 		return nil
 	}
-	linha := "taint / escalada para aprovacao humana (AOS-541): AOS_TAINT_ESCALA=on — uma tool call PRIVILEGIADA pedida com o contexto untrusted ja nao e negada: o run para em waiting_on_human e o pendente (escalated_by=taint) exige uma cerimonia de QUATRO OLHOS; aprovada, a retoma corre ESSA call (a preview amarra tool, capability, recurso resolvido, principal e input) e o evento diz untrusted com human_approved; expirada ou recusada, a retoma faz o run FALHAR com a causa nomeada. A leitura local (AOS-538) continua a passar sem escalar; o rotulo de taint nao muda; a aprovacao vale so para aquela call (uma segunda igual volta a escalar). O evento de mediacao diz quem escalou: tool.call.escalated com denied_by=taint e context.taint_privilege. Recuo: off"
+	linha := "taint / escalada para aprovacao humana (AOS-541): AOS_TAINT_ESCALA=on — uma tool call PRIVILEGIADA pedida com o contexto untrusted ja nao e negada: o run para em waiting_on_human e o pendente diz escalated_by=taint (tambem quando a autonomia escala primeiro a mesma call) e basta a aprovacao de UMA pessoa; aprovada, a retoma corre ESSA call (a preview amarra tool, capability, recurso resolvido, principal e input) e o evento diz untrusted com human_approved; expirada ou recusada, a retoma faz o run FALHAR com a causa nomeada. A leitura local (AOS-538) continua a passar sem escalar; o rotulo de taint nao muda; a aprovacao vale so para aquela call (uma segunda igual volta a escalar). O evento de mediacao diz quem escalou: tool.call.escalated com denied_by=taint e context.taint_privilege. Recuo: off"
 	if !gateActivo {
 		linha += " — ATENCAO: o gate de taint esta INERTE (AOS_PRIVILEGED_CAPS vazia), logo nada e privilegiado e NADA escala; o interruptor so tem efeito com AOS_PRIVILEGED_CAPS definida"
 	}

@@ -21,6 +21,7 @@ import (
 	integration "github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
+	"github.com/aos-ref/kernel/reference-monitor/risk"
 	"github.com/aos-ref/kernel/reference-monitor/taint"
 )
 
@@ -99,7 +100,7 @@ func aos541Mediacoes(t *testing.T, h *acnHarness) []string {
 	return out
 }
 
-// O ciclo inteiro: escala → quatro olhos → a call aprovada corre uma vez, com o rótulo untrusted
+// O ciclo inteiro: escala → uma pessoa aprova → a call aprovada corre uma vez, com o rótulo untrusted
 // → a mesma call no turno seguinte volta a escalar.
 func TestAOS541_No_EscalaAprovaECorreSoAquelaCall(t *testing.T) {
 	ctx := context.Background()
@@ -121,14 +122,14 @@ func TestAOS541_No_EscalaAprovaECorreSoAquelaCall(t *testing.T) {
 	if indisponivel || len(wire) != 1 || wire[0].EscalatedBy != integration.EscalatedByTaint {
 		t.Fatalf("o pendente no wire tem de dizer escalated_by=taint: %+v", wire)
 	}
-	// A cerimónia tem de ser de quatro olhos: o nó exige duplo controlo para esta escalada, mesmo
-	// com uma capability reversível.
+	// Basta uma pessoa (decisão do dono de 2026-10-20): o nó não exige duplo controlo para uma
+	// capability reversível, também quando a escalada é do taint.
 	exigir, _, achado, _, err := exigenciaDeDuploControlo(ctx, h.node.PendingApprovals, acnRunID, pendentes[0].Preview, false, time.Hour)
-	if err != nil || !achado || !exigir {
-		t.Fatalf("a escalada do taint tem de exigir duplo controlo: exigir=%t achado=%t err=%v", exigir, achado, err)
+	if err != nil || !achado || exigir {
+		t.Fatalf("a escalada do taint sobre cap:fs.read nao exige duplo controlo: exigir=%t achado=%t err=%v", exigir, achado, err)
 	}
 
-	h.aprovaPendente(t, "req-541")
+	aos541AprovaUmaPessoa(t, h, pendentes[0], "req-541")
 	aos541Retoma(t, h)
 
 	if got := h.execucoes("passo_um"); got != 1 {
@@ -174,6 +175,9 @@ func TestAOS541_No_ExpiradaOuRecusadaOFalhaComCausa(t *testing.T) {
 				t.Fatalf("pre-condicao: 1 pendente; %+v err=%v", pendentes, err)
 			}
 			c.retira(t, h, pendentes[0])
+			if c.causa == ErrAprovacaoDoTaintExpirada && !strings.Contains(h.logs.String(), "escalado pelo taint — a retoma faz o run FALHAR") {
+				t.Fatalf("o varredor tem de dizer que a retoma faz o run falhar: %s", h.logs.String())
+			}
 			if resto, _ := h.node.PendingApprovals.ListForRun(ctx, acnRunID); len(resto) != 0 {
 				t.Fatalf("o pendente tinha de ter saido da lista: %+v", resto)
 			}
@@ -305,5 +309,80 @@ func TestAOS541_InterruptorChegaAConfig(t *testing.T) {
 	t.Setenv("AOS_TAINT_ESCALA", "talvez")
 	if _, err := nodeConfigFromEnv(); !errors.Is(err, ErrBadTaintEscala) {
 		t.Fatalf("queria ErrBadTaintEscala, veio %v", err)
+	}
+}
+
+// aos541NoComAutonomia é o nó com o oráculo de autonomia (L4: cap:fs.read escala por ele, ANTES do
+// taint na cadeia) e com o taint a escalar — o cenário do achado da revisão adversarial.
+func aos541NoComAutonomia(t *testing.T) *acnHarness {
+	t.Helper()
+	h := newACNHarnessCom(t, true, func(cfg *Config) {
+		cfg.Privileged = referencemonitor.NewStaticPrivilegedSet(acnCap)
+		cfg.TaintEscala = true
+	})
+	h.model.guiao = func(v agentruntime.PromptView) agentruntime.ModelResponse {
+		if v.Turn <= 1 {
+			return acnCall("passo_um", "doc-a")
+		}
+		return agentruntime.ModelResponse{Text: "concluido", Final: true}
+	}
+	return h
+}
+
+// aos541AprovaUmaPessoa corre a cerimónia de UMA perna sobre o pendente (a forma que a rota aceita
+// para uma capability reversível) e retira-o da lista, como o [acnHarness.aprovaPendente].
+func aos541AprovaUmaPessoa(t *testing.T, h *acnHarness, p integration.PendingRecord, requestID string) {
+	t.Helper()
+	ctx := context.Background()
+	req := integration.FourEyesRequest{RequestID: requestID, Preview: p.Preview, RiskClass: risk.ClassGray}
+	perna := integration.SignFourEyesLeg(h.keys[0], req, "human:alice", "sess-A", "cred-A", acnChallenge(requestID, 'a'), nil)
+	grant, err := h.node.ApprovalBroker.Approve(ctx, requestID, req, perna)
+	if err != nil {
+		t.Fatalf("aprovacao de uma pessoa: %v", err)
+	}
+	if len(grant.Approvers) != 1 {
+		t.Fatalf("o grant tem de ser de uma pessoa: %+v", grant)
+	}
+	if err := h.node.PendingApprovals.Expire(ctx, p.RunID, p.StepID); err != nil {
+		t.Fatalf("Expire do pendente decidido: %v", err)
+	}
+}
+
+// O cenário da revisão adversarial, com a decisão do dono: a AUTONOMIA escala primeiro uma call que
+// o taint também escalaria; o pendente diz `escalated_by=taint` (o aprovador vê que vem de fora), e
+// a aprovação de UMA pessoa executa a call uma vez.
+func TestAOS541_No_EscaladaDaAutonomiaSobreCallDoTaintDizTaint(t *testing.T) {
+	ctx := context.Background()
+	h := aos541NoComAutonomia(t)
+	aos541Submete(t, h)
+	if got := aos541Mediacoes(t, h); len(got) != 1 || got[0] != referencemonitor.EventTypeEscalated+" policy "+taint.StringUntrusted {
+		t.Fatalf("pre-condicao: quem escala primeiro e a autonomia (policy): %q", got)
+	}
+	pendentes, err := h.node.PendingApprovals.ListForRun(ctx, acnRunID)
+	if err != nil || len(pendentes) != 1 || pendentes[0].EscalatedBy != integration.EscalatedByTaint {
+		t.Fatalf("o pendente tem de vir marcado como do taint: %+v err=%v", pendentes, err)
+	}
+	aos541AprovaUmaPessoa(t, h, pendentes[0], "req-541-b")
+	aos541Retoma(t, h)
+	if got := h.execucoes("passo_um"); got != 1 {
+		t.Fatalf("aprovada por uma pessoa, a call corre uma vez; correu %d", got)
+	}
+	if oc, ok := h.svc.Outcome(acnRunID); !ok || !oc.Result.Terminated {
+		t.Fatalf("o run tinha de terminar: %+v", oc)
+	}
+}
+
+// Com o contexto TRUSTED (sem plan_input), a mesma escalada da autonomia NÃO é marcada como do
+// taint: o sinal só aparece quando o pedido vem de algo de fora.
+func TestAOS541_No_EscaladaDaAutonomiaComContextoTrustedNaoDizTaint(t *testing.T) {
+	ctx := context.Background()
+	h := newACNHarnessCom(t, true, func(cfg *Config) {
+		cfg.Privileged = referencemonitor.NewStaticPrivilegedSet(acnCap)
+		cfg.TaintEscala = true
+	})
+	h.submete(t)
+	pendentes, err := h.node.PendingApprovals.ListForRun(ctx, acnRunID)
+	if err != nil || len(pendentes) != 1 || pendentes[0].EscalatedBy != "" {
+		t.Fatalf("contexto trusted: o pendente nao e do taint: %+v err=%v", pendentes, err)
 	}
 }

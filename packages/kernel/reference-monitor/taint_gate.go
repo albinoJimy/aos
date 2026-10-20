@@ -130,7 +130,7 @@ func NewTaintGate(privileged PrivilegedAuthorizer) TaintGate {
 // NewEscalatingTaintGate é o [NewTaintGate] que, em vez de NEGAR, ESCALA para aprovação humana
 // a call privilegiada com o contexto untrusted (AOS-541, passo 3 do plano do dono de 2026-10-19
 // para o limite do taint). O nó só o compõe com `AOS_TAINT_ESCALA=on` E com o ciclo de aprovação
-// composto (four-eyes, registo de pendentes, [ApprovalGate] a montante): sem quem decida, uma
+// composto (aprovadores, registo de pendentes, [ApprovalGate] a montante): sem quem decida, uma
 // escalada seria uma espera sem fim, e o nó recusa arrancar.
 //
 // O que NÃO muda: quem é privilegiado (a mesma classificação, incluindo a leitura local do
@@ -174,6 +174,10 @@ func (g TaintGate) Evaluate(_ context.Context, call *Call) (HookResult, error) {
 		// excepção dependesse de um campo exportado (ou do rótulo de taint, que é
 		// CONVENÇÃO e não estrutura), qualquer componente poderia auto-aprovar-se e o
 		// bypass do gate seria invisível no log.
+		//
+		// AOS-541: com o gate a escalar vale o mesmo — basta a aprovação de UMA pessoa (decisão do
+		// dono de 2026-10-20, «mantenha uma pessoa»); quatro olhos fica para quando houver mais
+		// aprovadores.
 		if call.humanApproved != nil {
 			return allow, nil
 		}
@@ -192,6 +196,21 @@ func (g TaintGate) Evaluate(_ context.Context, call *Call) (HookResult, error) {
 		}, nil
 	}
 	return allow, nil
+}
+
+// RequiresTrustedAuthorization diz se ESTE gate trataria a call como privilegiada — a mesma
+// classificação que [TaintGate.Evaluate] usa (a capability, e o destino da tool quando o
+// classificador o conhece, AOS-538). Não lê o taint nem a prova: é o «isto precisa de autorização
+// trusted?». Trabalha sobre uma cópia — o carimbo de [CallContext.TaintPrivilege] não sai daqui.
+//
+// AOS-541: o nó usa-o para marcar como do taint (`escalated_by=taint`) uma escalada que outro hook
+// levantou primeiro sobre uma call que o taint também escalaria — o aprovador vê que o pedido vem de
+// algo de fora.
+func (g TaintGate) RequiresTrustedAuthorization(call Call) bool {
+	if g.privileged == nil {
+		return false
+	}
+	return g.isPrivileged(&call)
 }
 
 // ReasonTaintEscalated é a razão com que o [TaintGate] escala (AOS-541). Constante e greppável:

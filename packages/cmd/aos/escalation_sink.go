@@ -18,6 +18,8 @@ import (
 
 	integration "github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
+	"github.com/aos-ref/kernel/reference-monitor/taint"
 )
 
 // ErrNoStateGateForRun — pediu-se a suspensão de um run sem máquina de estados aberta.
@@ -32,6 +34,29 @@ type nodeEscalationSink struct {
 	gates   *runStateGates
 	pending *integration.PendingApprovals
 	clock   func() time.Time
+	// taintPede é a classificação do gate de taint ESCALANTE ([referencemonitor.TaintGate.RequiresTrustedAuthorization]),
+	// composta só com `AOS_TAINT_ESCALA=on` (AOS-541). nil ⇒ só conta como do taint a escalada que
+	// o próprio gate levantou.
+	taintPede func(referencemonitor.Call) bool
+}
+
+// doTaint diz se a escalada é do gate de taint (AOS-541): levantada por ele, ou levantada ANTES por
+// outro hook (a autonomia, dentro da política) sobre uma call que o taint também escalaria — uma
+// call privilegiada pedida com o contexto `untrusted`. No segundo caso o pendente leva na mesma
+// `escalated_by=taint`: o aprovador vê que o pedido vem de algo de fora, e a regra da retoma
+// (expirada ou recusada ⇒ o run falha) vale também para ele. Basta a aprovação de uma pessoa, como
+// para qualquer escalada (decisão do dono de 2026-10-20).
+func (s *nodeEscalationSink) doTaint(p agentruntime.PendingApproval) bool {
+	if p.EscalatedBy == integration.EscalatedByTaint {
+		return true
+	}
+	if s.taintPede == nil || !taint.ParseLabel(p.Taint).IsUntrusted() {
+		return false
+	}
+	return s.taintPede(referencemonitor.Call{
+		RunID: p.RunID, StepID: p.StepID, ToolID: p.ToolID, Capability: p.Capability,
+		Resource: referencemonitor.Resource{Type: p.ResourceType, Value: p.ResourceValue, Region: p.ResourceRegion},
+	})
 }
 
 // newNodeEscalationSink constrói o adaptador. Ambos os colaboradores são obrigatórios: um
@@ -61,7 +86,7 @@ func (s *nodeEscalationSink) Escalate(ctx context.Context, p agentruntime.Pendin
 	//
 	// SÓ para o taint: uma escalada da autonomia retomada depois de expirar volta a suspender, como
 	// sempre (o interruptor desligado não muda nada, e as outras escaladas não são deste ticket).
-	escaladaDoTaint := p.EscalatedBy == integration.EscalatedByTaint
+	escaladaDoTaint := s.doTaint(p)
 	if escaladaDoTaint {
 		retirada, err := s.pending.RetiradoSemGrant(ctx, p.RunID, p.StepID, p.Preview)
 		if err != nil {

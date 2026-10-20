@@ -96,9 +96,7 @@ func exigenciaDeDuploControlo(
 					return false, r, true, true, nil
 				}
 			}
-			// AOS-541: a escalada do gate de taint exige QUATRO OLHOS (decisão do dono), seja qual
-			// for a capability — é conteúdo de fora a pedir um efeito.
-			return rm.CapabilityIrreversible(r.Capability) || r.EscalatedBy == integration.EscalatedByTaint, r, true, false, nil
+			return rm.CapabilityIrreversible(r.Capability), r, true, false, nil
 		}
 	}
 	return false, integration.PendingRecord{}, false, false, nil

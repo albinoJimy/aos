@@ -167,3 +167,49 @@ func TestAOS541_GateEscalanteContaComoBarreiraActiva(t *testing.T) {
 		t.Fatal("o gate escalante tem de contar como barreira de taint presente e eficaz")
 	}
 }
+
+// aos541UmaPerna aceita a evidência "UMA" com a prova de uma só perna (DualControl falso).
+type aos541UmaPerna struct{}
+
+func (aos541UmaPerna) VerifyApproval(_ context.Context, evidence, _ []byte) (ApprovalProof, error) {
+	if string(evidence) != "UMA" {
+		return ApprovalProof{}, errors.New("sem aprovacao")
+	}
+	return ApprovalProof{Approvers: []string{"human:alice"}}, nil
+}
+
+// Basta a aprovação de UMA pessoa (decisão do dono de 2026-10-20): uma prova de uma perna destrava a
+// call no gate a escalar, como no gate a negar. Quatro olhos fica para quando houver mais aprovadores.
+func TestAOS541_UmaPessoaBasta(t *testing.T) {
+	for _, escala := range []bool{true, false} {
+		call := aos541Call("ocr_read", "cap:fs.read", taint.StringUntrusted, "s1")
+		call.ApprovalEvidence = []byte("UMA")
+		m := aos541Monitor(t, escala, aos541UmaPerna{}, &storeQueCaptura{})
+		dec, err := m.Mediate(context.Background(), call)
+		if err != nil || dec.Effect != EffectPermit {
+			t.Fatalf("escala=%t: uma pessoa basta, veio %s|%q err=%v", escala, dec.Effect, dec.DeniedBy, err)
+		}
+	}
+}
+
+// RequiresTrustedAuthorization é a classificação do gate, sem o taint nem a prova, e não carimba a
+// call de quem pergunta.
+func TestAOS541_RequiresTrustedAuthorization(t *testing.T) {
+	priv := NewDestinationPrivileged(NewStaticPrivilegedSet(aos538Caps()...), aos538Destinos())
+	g := NewEscalatingTaintGate(priv)
+	for _, c := range []struct {
+		tool, capability string
+		quer             bool
+	}{{"ocr_read", "cap:fs.read", true}, {"web_post", "cap:http.post", true}, {"doc_read", "cap:fs.read", false}, {"outra", "cap:echo", false}} {
+		call := aos541Call(c.tool, c.capability, taint.StringTrusted, "s1")
+		if got := g.RequiresTrustedAuthorization(call); got != c.quer {
+			t.Fatalf("%s: got %t quero %t", c.tool, got, c.quer)
+		}
+		if call.Context.TaintPrivilege != "" {
+			t.Fatalf("%s: a pergunta carimbou a call do chamador", c.tool)
+		}
+	}
+	if NewEscalatingTaintGate(nil).RequiresTrustedAuthorization(aos541Call("web_post", "cap:http.post", "", "s1")) {
+		t.Fatal("sem classificador nada e privilegiado")
+	}
+}
