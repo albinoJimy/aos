@@ -30,8 +30,11 @@ package agentruntime
 // TurnEndsRun diz se a resposta do modelo de um turno TERMINA o run, no layout em que o turno
 // foi montado.
 //
-// A regra, igual nos layouts 1.3.0 e 1.4.0: o turno termina o run quando o modelo o declara
-// final ([ModelResponse.Final]) ou quando não pede nenhuma tool call.
+// A regra, igual em todos os layouts: o turno termina o run quando o modelo o declara
+// final ([ModelResponse.Final]) ou quando não pede nenhuma tool call. A 1.6.0 acrescenta-lhe uma
+// excepção que depende do turno e não só da resposta — o turno que entrega os `plan_input`
+// adiados não termina —, e por isso o loop e o motor chamam [TailSequence.TurnEndsRun], que
+// aplica esta regra e depois a excepção.
 //
 // TERMINAR NÃO É CONCLUIR (AOS-493). Esta função diz só que o run não tem mais turnos; se
 // acabou cumprido ou não é de [ConcludeRun], que o loop e o motor chamam a seguir.
@@ -51,6 +54,26 @@ func TurnEndsRun(resp ModelResponse, assemblyVersion string) (bool, error) {
 		return false, err
 	}
 	return resp.Final || len(resp.ToolCalls) == 0, nil
+}
+
+// TurnEndsRun é a regra de terminação do turno que esta sequência acabou de fechar: a de
+// [TurnEndsRun] no layout do run, com UMA diferença, que só a 1.6.0 tem — o turno em que os
+// `plan_input` adiados entraram no tail ([TailSequence.TurnWithState]) NÃO acaba o run, seja qual
+// for a resposta. O modelo desse turno não viu os dados que o run lhe deu; uma resposta final ou
+// sem tool calls dele não é a resposta à tarefa, e o run segue para o turno em que os vê.
+//
+// Chama-se DEPOIS do [TailSequence.TurnWithState] do mesmo turno: é ele que diz se o turno
+// entregou os dados. O loop e o motor de replay chamam-na nessa ordem (AOS-492: a regra continua
+// num só sítio — aqui e em [TurnEndsRun], que esta chama).
+func (s *TailSequence) TurnEndsRun(resp ModelResponse) (bool, error) {
+	termina, err := TurnEndsRun(resp, s.lay.version)
+	if err != nil || !termina {
+		return termina, err
+	}
+	if s.entregouNoUltimoTurno {
+		return false, nil
+	}
+	return true, nil
 }
 
 // StopReasonStats recebe, por cada turno em que o modelo respondeu, o motivo de paragem desse

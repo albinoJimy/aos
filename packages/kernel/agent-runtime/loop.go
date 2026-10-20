@@ -486,7 +486,11 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 	}
 	// A SEMENTE DO TAIL resolve-se aqui, antes de qualquer efeito (AOS-506): um aviso de nova
 	// tentativa fora do vocabulário recusa o run antes de haver janela, evento ou span.
-	semente, err := seedDoRun(goal, lay)
+	//
+	// A sequência de segmentos do run (AOS-489) sai da MESMA construção, com o mesmo Goal: é ela
+	// que entrega os `plan_input` que a 1.6.0 adia para depois do primeiro turno, e é a mesma que
+	// o motor de replay usa ([OpenRunTail]).
+	semente, sequencia, err := abrirTailDoRun(goal, lay)
 	if err != nil {
 		return Result{}, err
 	}
@@ -494,8 +498,6 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	// A sequência de segmentos do run (AOS-489): a MESMA que o motor de replay usa.
-	sequencia := lay.novaSequencia()
 	// O VEREDICTO DO RUN (AOS-493): o modo e o contrato resolvem-se aqui, antes de qualquer
 	// efeito, e são os que cada turno grava no manifesto. Os contadores são os do próprio loop.
 	conclusao, err := completionDoGoal(goal)
@@ -640,6 +642,15 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		view.CompletionPending = contratoPorCumprir(conclusao, evidencia)
 		// E as que se podem forçar: as mesmas, só enquanto o run não pediu tool nenhuma (AOS-526).
 		view.CompletionToForce = contratoAForcar(conclusao, evidencia)
+		// OS `plan_input` QUE ESTE PROMPT NÃO TEM (1.6.0): zero fora do primeiro turno de um run
+		// que os adia. Num turno assim nada se força: forçar a tool do contrato antes de o modelo
+		// ver os dados de que ela depende era obter a chamada sem o conteúdo — a regra do AOS-526
+		// volta a valer no turno seguinte, enquanto o run não tiver pedido tool nenhuma.
+		entradasAdiadas := sequencia.DeferredPlanInputs()
+		digestDasAdiadas := sequencia.DeferredPlanInputsDigest()
+		if entradasAdiadas > 0 {
+			view.CompletionToForce = nil
+		}
 		// O rótulo do contexto que o modelo vai ver NESTE turno. Autoriza todas as tool calls
 		// que o turno pedir — lido aqui, antes de a resposta existir, para que nada do que o
 		// modelo devolva (texto, tool calls, resultados) o possa mudar retroactivamente.
@@ -729,7 +740,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		res.CustoNaoDerivado = res.CustoNaoDerivado || resp.CustoNaoDerivado
 
 		// Gravar o turno com o manifesto por trajectória.
-		seq, err := rt.recordTurn(ctx, goal, win.SystemHash(), lay.version, conclusao, stepID, turn, view, resp, producer)
+		seq, err := rt.recordTurn(ctx, goal, win.SystemHash(), lay.version, conclusao, stepID, turn, view, resp, producer, entradasAdiadas, digestDasAdiadas)
 		if err != nil {
 			return res, err
 		}
@@ -908,8 +919,9 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			return res, err
 		}
 		// TERMINAÇÃO — uma resposta final acaba o run (não se pausa um run já concluído). A
-		// regra é a de [TurnEndsRun], a MESMA função que o motor de replay usa (AOS-492).
-		termina, err := TurnEndsRun(resp, lay.version)
+		// regra é a de [TurnEndsRun], a MESMA função que o motor de replay usa (AOS-492), pela
+		// sequência do run — que sabe se este turno entregou os `plan_input` adiados (1.6.0).
+		termina, err := sequencia.TurnEndsRun(resp)
 		if err != nil {
 			return res, err
 		}
@@ -1046,7 +1058,7 @@ func (rt *Runtime) callModel(ctx context.Context, goal Goal, stepID string, view
 }
 
 // recordTurn constrói o manifesto e grava o evento "turn.recorded".
-func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash, assemblyVersion string, conclusao *Completion, stepID string, turn int, view PromptView, resp ModelResponse, producer eventstore.Producer) (uint64, error) {
+func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash, assemblyVersion string, conclusao *Completion, stepID string, turn int, view PromptView, resp ModelResponse, producer eventstore.Producer, entradasAdiadas int, digestDasAdiadas string) (uint64, error) {
 	manifest := Manifest{
 		PromptHash: view.PromptHash,
 		SystemHash: systemHash,
@@ -1094,7 +1106,11 @@ func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash, assemb
 		// AOS-507: a ficha da forma da resposta, declarada pelo cliente. nil com a medição
 		// desligada, e o evento fica com os bytes de antes.
 		ResponseShape: resp.Shape,
-		Producer:      producer,
+		// 1.6.0: quantos `plan_input` o prompt deste turno NÃO teve. Zero — e o evento com os
+		// bytes de sempre — em todo o turno que não seja o primeiro de um run que os adia.
+		PlanInputsDeferred: entradasAdiadas,
+		PlanInputsDigest:   digestDasAdiadas,
+		Producer:           producer,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("%w: turno %d: %w", ErrTurnRecord, turn, err)

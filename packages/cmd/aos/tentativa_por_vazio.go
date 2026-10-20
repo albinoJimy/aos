@@ -142,7 +142,8 @@ var causasDeRecusaDaTentativaVazia = []string{
 //   - o veredicto selado é `empty_output` (outra razão ⇒ esta prova não se aplica);
 //   - ZERO tool calls pedidas, pelas três fontes: o total do vector selado, a ausência de
 //     qualquer evento `tool.call.*`, e o contador do turno;
-//   - UM SÓ `turn.recorded`, que parou com o motivo `stop`;
+//   - UM SÓ `turn.recorded`, que parou com o motivo `stop` — ou dois, num run que pediu antes de
+//     ler, nas condições de [formaDosTurnos];
 //   - o manifesto desse turno declara o veredicto, SEM contrato de tools;
 //   - e SEM origem da saída com o vínculo que obriga.
 func julgarTentativaVazia(eventos []eventstore.Event, estado state.State, desfecho state.Outcome, q quesitoDaTentativa) (string, string) {
@@ -156,8 +157,8 @@ func julgarTentativaVazia(eventos []eventstore.Event, estado state.State, desfec
 	if desfecho.Verdict.ToolCallsRequested != 0 || f.pediuTools {
 		return causaRetryPediuTools, ""
 	}
-	if f.turnos != 1 {
-		return causaRetryTurnos, ""
+	if c := formaDosTurnos(f); c != "" {
+		return c, ""
 	}
 	if f.turno.ToolCallsRequested != 0 {
 		return causaRetryPediuTools, ""
@@ -175,7 +176,7 @@ func julgarTentativaVazia(eventos []eventstore.Event, estado state.State, desfec
 	if c.OutputBinding == agentruntime.OutputSourceBinds || (desfecho.OutputSource != nil && desfecho.OutputSource.Binding == agentruntime.OutputSourceBinds) {
 		return causaVaziaOrigemVinculativa, ""
 	}
-	return "", f.turno.Manifest.PromptHash
+	return "", f.primeiro.Manifest.PromptHash
 }
 
 // contagemDasTentativasVazias conta, por processo, as tentativas desta classe: as admitidas e as

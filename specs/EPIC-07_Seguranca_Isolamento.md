@@ -1293,6 +1293,100 @@ vídeo, mesmo pedido directamente pelo dono, ficava à espera de quatro olhos.
 
 ---
 
+## AOS-540 — Pedir antes de ler: o primeiro turno de um nó consumidor vê só o objectivo, e os dados do passo anterior chegam no segundo
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-07 — Segurança e Isolamento |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — passo 2 do plano do dono de 2026-10-19 para o limite do taint |
+| Tipo | feat |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-538; emenda de 2026-10-20 ao ADR-034 |
+| Responsável sugerido | Engenheiro de Segurança |
+| Documentos de referência | `docs/adr/ADR-034-autorizacao-derivada-do-contexto.md` (§4 «pedir antes de ler»; emenda de 2026-10-20); `packages/kernel/agent-runtime/layout.go`; `packages/kernel/agent-runtime/termination.go`; `packages/cmd/aos/plan_input_env.go` |
+
+### Contexto
+
+Depois do AOS-538, um nó que recebe dados de outro passo lê documentos locais, mas não consegue
+pedir uma tool que envie para fora (a `ocr_read`, a `video_read`) nem uma de efeito: os
+`plan_input` estão no contexto desde o primeiro turno, e o contexto é `untrusted`. O dono escolheu
+«pedir antes de ler a carta»: o modelo vê primeiro só o objectivo e pede o que o objectivo nomeia;
+os dados do passo anterior chegam no turno seguinte.
+
+### Critérios de Aceitação
+
+- [x] Interruptor `AOS_PLAN_INPUT_DEPOIS_DO_PRIMEIRO_TURNO=off|on`, desligado por omissão; um valor
+      fora do vocabulário recusa o arranque; com `off` os bytes do prompt e o replay ficam iguais.
+- [x] Layout 1.6.0 para os runs novos com inputs e o interruptor ligado: o turno 1 sem os
+      `plan_input` e com um aviso trusted; os inputs entregues uma vez, depois dos segmentos do turno 1,
+      seguidos de um aviso trusted; um run sem inputs dá os mesmos bytes que a 1.5.0.
+- [x] Um turno 1 só com texto (final ou vazio) não termina o run nem conta como `empty_output`.
+- [x] A autoridade do turno 1 é trusted e a do turno 2 em diante `untrusted`, nas vias directa e
+      durável, na retoma e no replay; uma call de efeito no turno 2 é negada por taint.
+- [x] A nova tentativa (AOS-502/506/510) continua a funcionar para nós consumidores: a prova aceita
+      dois turnos quando o primeiro adiou os inputs e nenhum dos dois pediu tools; o aviso de nova
+      tentativa compara também o digest das entradas (`plan_inputs_digest`).
+- [x] `max_turns` menor do que 2 num run com inputs e o interruptor ligado é recusado com 400.
+- [x] Medição: `plan_inputs_deferred` no `turn.recorded` do turno 1 e a série do layout no `/metrics`.
+- [ ] Em produção, com o interruptor ligado por decisão do dono: uma série que mostre o modelo a pedir
+      no turno 1 o que o objectivo nomeia.
+
+*Nota de 2026-10-20:* testes em `packages/kernel/agent-runtime/aos540_pedir_antes_de_ler_test.go`,
+`replay/aos540_*`, `packages/integration/aos540_pedir_antes_de_ler_paridade_test.go`,
+`packages/security-tests/plan_input_pedir_antes_de_ler_test.go`,
+`packages/platform/model-gateway/aos540_projeccao_test.go`, `packages/cmd/aos/aos540_*`. Revisão
+adversarial independente sem achados críticos ou altos; os médios (a nova tentativa perdida para os
+consumidores, o texto que dizia «leitura» em vez de «qualquer call privilegiada») e os baixos
+corrigidos.
+
+### Fora de âmbito
+
+- Ligar o interruptor em produção (decisão do dono, depois de medir o custo).
+- A aprovação humana no que sobra (AOS-541).
+
+---
+
+## AOS-541 — O gate de taint pede aprovação humana em vez de negar, só no que sobra
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-07 — Segurança e Isolamento |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — passo 3 do plano do dono de 2026-10-19 para o limite do taint |
+| Tipo | feat |
+| Prioridade | P2 |
+| Estimativa | S |
+| Dependências | AOS-538; AOS-540 |
+| Responsável sugerido | Engenheiro de Segurança |
+| Documentos de referência | `docs/adr/ADR-034-autorizacao-derivada-do-contexto.md`; `packages/kernel/reference-monitor/taint_gate.go`; `packages/kernel/reference-monitor/approval_gate.go`; `packages/kernel/agent-runtime/escalation.go` |
+
+### Contexto
+
+Depois dos AOS-538 e AOS-540 sobra um caso: com o contexto `untrusted`, o agente quer mesmo uma tool
+privilegiada que envia ou muda — por exemplo, a `ocr_read` de uma imagem que o email nomeia. Hoje o
+gate de taint nega, e o run falha. O dono escolheu que, nesse caso, o run pare e peça a aprovação de
+duas pessoas (quatro olhos), em vez de falhar. O mecanismo existe: o `EscalationSink` suspende o run
+em `waiting_on_human`, os aprovadores assinam, o `ApprovalGate` marca a call e o gate de taint deixa
+passar uma call aprovada. Falta o gate de taint escalar em vez de negar.
+
+### Critérios de Aceitação
+
+- [ ] Um interruptor do nó (desligado por omissão) faz o gate de taint devolver «escalar» em vez de
+      «negar» para uma call privilegiada com o contexto `untrusted`; com ele desligado nada muda.
+- [ ] A call escalada suspende o run e fica à espera de aprovação; aprovada (quatro olhos, a preview
+      amarra a capability e o recurso resolvido), corre; recusada ou expirada, o run falha com a causa
+      nomeada.
+- [ ] O rótulo de taint não muda com a aprovação (como hoje); a aprovação vale só para aquela call.
+- [ ] Sem aprovadores configurados, o gate continua a negar (fail-closed) e o arranque diz porquê.
+- [ ] Testes nas vias directa e durável, na retoma depois da aprovação e no replay.
+
+### Fora de âmbito
+
+- Escalar as leituras locais (o AOS-538 já as deixa passar).
+- Mudar os níveis de autonomia.
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -1306,3 +1400,5 @@ vídeo, mesmo pedido directamente pelo dono, ficava à espera de quatro olhos.
 | 1.6 | 2026-10-19 | AOS-538: o egress declarado no classificador de risco é revertido e passa ao AOS-539 (decisão do dono); correcções da revisão adversarial — a capability ou o recurso que denunciem egress tiram a excepção de leitura local, uma tool com o bloco `modelo` tem de declarar `egress: "external"`, o RM apaga a razão do gate posta pelo chamador, e a frase sobre o que sai do servidor fica exacta | Equipa AOS |
 | 1.7 | 2026-10-20 | +AOS-539: o egress declarado chega ao risco sem pôr cada OCR e cada vídeo atrás de aprovação humana (retirado do AOS-538 por decisão do dono) | Equipa AOS |
 | 1.8 | 2026-10-20 | AOS-538 em produção na v0.1.62 (sem mudanças no servidor); prova: `plan-e2e-taint1-1792486874`, o nó com `consumes` lê com o contexto `untrusted` (`taint_privilege: local_read`) | Equipa AOS |
+| 1.9 | 2026-10-20 | +AOS-540: pedir antes de ler — layout 1.6.0, desligado por omissão; emenda de 2026-10-20 ao ADR-034 | Equipa AOS |
+| 1.10 | 2026-10-20 | +AOS-541: o gate de taint pede aprovação humana em vez de negar, só no que sobra (passo 3 do plano do dono) | Equipa AOS |

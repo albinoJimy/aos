@@ -543,7 +543,7 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 	}
 
 	s := &NodeService{
-		layouts:      novoRunsPorLayout(node.estadoDoProvider != nil),
+		layouts:      novoRunsPorLayout(node.estadoDoProvider != nil, node.pedirAntesDeLer),
 		desfechos:    novoDesfechosDeRuns(),
 		node:         node,
 		assigner:     assigner,
@@ -1226,7 +1226,10 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	//
 	// AOS-514: com a captura do estado opaco do provider ligada, o layout dos runs novos deste
 	// nó é a 1.5.0 (a de sempre mais o rótulo `state_digest`); desligada, é a de sempre.
-	layoutNovo := layoutDosRunsNovos(s.node.estadoDoProvider != nil)
+	//
+	// PEDIR ANTES DE LER (ADR-034 §4): com o interruptor ligado, um run novo com `plan_input` fica
+	// na 1.6.0, em que os `plan_input` só entram depois do primeiro turno. Os outros não mudam.
+	layoutNovo := layoutDoRunNovo(s.node.estadoDoProvider != nil, s.node.pedirAntesDeLer, goal)
 	if goal.AssemblyVersion == "" {
 		goal.AssemblyVersion = layoutNovo
 	}

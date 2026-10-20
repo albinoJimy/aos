@@ -236,6 +236,19 @@ FIDES, os padrões de Beurer-Kellner et al.) fecha esta classe. A forma forte (o
 o destino, com o gatilho do §5.4. A §2.5 (fase 1: `cap:fs.read` armada) continua a valer para as
 tools que não se declaram leitura local.
 
+**Emenda de 2026-10-20 (AOS-540; passo 2 do plano do dono de 2026-10-19, «pedir antes de ler a
+carta»).** Com o interruptor `AOS_PLAN_INPUT_DEPOIS_DO_PRIMEIRO_TURNO=on` (desligado por omissão),
+num run com `plan_input` o primeiro turno do modelo vê só o que é trusted — o sistema, o objectivo e
+um aviso constante — e os `plan_input` entram a partir do segundo turno (layout 1.6.0). A regra de
+autoridade não muda: continua a ser a dobra dos rótulos dos segmentos (§2.1). O que muda é a ordem,
+e com ela o turno 1 de um nó consumidor passa a ser trusted como o de um nó sem inputs: o objectivo
+pode autorizar nesse turno qualquer tool call privilegiada, leitura ou efeito. É o R7 (quem escreve
+o objectivo comanda) alargado aos nós consumidores; o objectivo de um nó do `aos-orq` vem do
+documento do plano, fixado antes da execução, e o decompositor só vê o objectivo do utilizador e a
+recusa do validador — nenhum dado de outro nó chega a ele. Do turno 2 em diante o contexto é
+`untrusted`, e enviar ou mudar continua negado. Custo: um nó consumidor gasta pelo menos dois
+turnos de modelo.
+
 ## 3. Alternativas consideradas
 
 - **(A) Dual-LLM / CaMeL completo** — um planeador que só vê trusted + handles e um executor que

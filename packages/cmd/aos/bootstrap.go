@@ -483,6 +483,11 @@ type Config struct {
 	// (AOS-493, `AOS_COMPLETION_VERDICT`): `observe`, `enforce` ou `off`. Vazio ⇒ `observe`
 	// ([defaultCompletionVerdict]). Um valor fora do vocabulário falha o Bootstrap.
 	CompletionVerdict agentruntime.CompletionMode
+	// PlanInputDepoisDoPrimeiroTurno liga o «pedir antes de ler» (ADR-034 §4,
+	// `AOS_PLAN_INPUT_DEPOIS_DO_PRIMEIRO_TURNO=on`): um run NOVO com `plan_input` fica no layout
+	// 1.6.0, em que o primeiro turno não vê os `plan_input`. false ⇒ o layout de sempre. Ver
+	// plan_input_env.go.
+	PlanInputDepoisDoPrimeiroTurno bool
 	// ModelIdentityBinder liga, no Bootstrap, o VERIFIER REAL do nó ao estágio authn do Model
 	// Gateway REAL (AOS-278, CUTOVER DURO). O gateway é construído na fronteira de ambiente
 	// (parseModelFromEnv), ANTES de a identidade estar composta; o seu estágio authn arranca
@@ -1088,6 +1093,10 @@ type Node struct {
 	// (AOS-493). Vazio num nó montado à mão ⇒ [defaultCompletionVerdict]. Ver
 	// completion_verdict.go.
 	completionVerdict agentruntime.CompletionMode
+
+	// pedirAntesDeLer: os runs NOVOS com `plan_input` ficam no layout 1.6.0 (ADR-034 §4). Ver
+	// plan_input_env.go.
+	pedirAntesDeLer bool
 
 	// stateGates é a costura por-run (AOS-218) que resolve o [control.StateGate] durável
 	// (AOS-017) que o canal de steer usa para materializar running↔paused. O loop de
@@ -2366,6 +2375,9 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		return nil, fmt.Errorf("%w (Config.CompletionVerdict=%q)", ErrBadCompletionVerdict, completionVerdict)
 	}
 
+	// Pedir antes de ler (ADR-034 §4): os runs novos com `plan_input` no layout 1.6.0.
+	pedirAntesDeLer := cfg.PlanInputDepoisDoPrimeiroTurno
+
 	var escalationSink agentruntime.EscalationSink
 	var approvalEvidence agentruntime.ApprovalEvidenceSource
 	var approvalVerifier referencemonitor.ApprovalVerifier
@@ -3414,6 +3426,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		video:                   videoLigada,                   // AOS-536: a tool video_read, para o /metrics (nil ⇒ sem a tool)
 		estadoDoProvider:        estadoDoCliente(cfg.Model),    // AOS-514: estado opaco do provider por resultado, para o /metrics (nil ⇒ desligada)
 		completionVerdict:       completionVerdict,             // AOS-493: modo do veredicto de conclusão dos runs novos
+		pedirAntesDeLer:         pedirAntesDeLer,               // ADR-034 §4: runs novos com plan_input no layout 1.6.0
 		stateGates:              stateGates,                    // AOS-218: fonte do StateGate durável por-run para o steer
 		breakers:                breakers,                      // AOS-080/081/251: disjuntores por-run (libertados no fim do run)
 		anomaliaAutonomia:       anomaliaAutonomia,             // AOS-090/DEF-908: demoção automática por anomalia (arrancada no loop de serviço)

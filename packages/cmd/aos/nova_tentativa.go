@@ -189,7 +189,8 @@ const (
 	// causaRetryPediuTools — o run anterior pediu pelo menos uma tool call (efectiva, negada,
 	// falhada ou escalada). É a recusa que protege de repetir um efeito.
 	causaRetryPediuTools = "anterior_pediu_tools"
-	// causaRetryTurnos — o run anterior não tem exactamente um turno gravado.
+	// causaRetryTurnos — o run anterior não tem exactamente um turno gravado (ou dois, num run
+	// que pediu antes de ler — ver [formaDosTurnos]).
 	causaRetryTurnos = "anterior_turnos"
 	// causaRetryParagem — o turno não parou com o motivo `stop` (cortado, filtrado, outro, ou
 	// não reportado).
@@ -237,6 +238,46 @@ type turnoDaProva struct {
 	} `json:"manifest"`
 	ToolCallsRequested int                     `json:"tool_calls_requested"`
 	StopReason         agentruntime.StopReason `json:"stop_reason"`
+	// PlanInputsDeferred e PlanInputsDigest dizem que o prompt deste turno NÃO teve os
+	// `plan_input` do run (layout 1.6.0, «pedir antes de ler», AOS-540): quantos, e o digest
+	// deles tal como entram no turno seguinte. Ausentes em todo o outro turno.
+	PlanInputsDeferred int    `json:"plan_inputs_deferred"`
+	PlanInputsDigest   string `json:"plan_inputs_digest"`
+}
+
+// turnoQueAdiou diz se o turno é o primeiro de um run que adiou os `plan_input` (AOS-540): o
+// layout dele adia-os e o kernel gravou que o prompt não os teve.
+func turnoQueAdiou(t turnoDaProva) bool {
+	return t.PlanInputsDeferred > 0 && agentruntime.DefersPlanInputs(t.Manifest.AssemblyVersion)
+}
+
+// formaDosTurnos confere a FORMA dos turnos que a prova admite, e devolve a causa da recusa
+// (vazia ⇒ admite). É a mesma para as duas classes (AOS-502 e AOS-510).
+//
+//   - UM turno — a forma de sempre;
+//   - DOIS turnos, só num run que pediu antes de ler (layout 1.6.0, AOS-540): o turno 1 adiou os
+//     `plan_input` e, por isso, não podia terminar o run, mesmo sem tool calls; o turno 2 é o
+//     primeiro que os viu, no mesmo layout, e não adiou nada. O turno 1 tem de ter os mesmos
+//     factos que se exigem do turno único — ZERO tool calls e o motivo `stop` —, pelo que a prova
+//     continua a ser «a tentativa anterior não pediu tool nenhuma», agora sobre os dois turnos.
+//
+// Qualquer outra forma recusa: fail-closed.
+func formaDosTurnos(f factosDoRunAnterior) string {
+	switch {
+	case f.turnos == 1:
+		return ""
+	case f.turnos == 2 && turnoQueAdiou(f.primeiro) && f.turno.PlanInputsDeferred == 0 &&
+		f.turno.Manifest.AssemblyVersion == f.primeiro.Manifest.AssemblyVersion:
+		if f.primeiro.ToolCallsRequested != 0 {
+			return causaRetryPediuTools
+		}
+		if f.primeiro.StopReason != agentruntime.StopStop {
+			return causaRetryParagem
+		}
+		return ""
+	default:
+		return causaRetryTurnos
+	}
 }
 
 // runJaNaoMuda diz se o estado durável de um run já não muda sozinho.
@@ -267,8 +308,8 @@ func julgarTentativaAnterior(eventos []eventstore.Event, estado state.State, des
 	if v.ToolCallsRequested != 0 || f.pediuTools {
 		return causaRetryPediuTools, ""
 	}
-	if f.turnos != 1 {
-		return causaRetryTurnos, ""
+	if c := formaDosTurnos(f); c != "" {
+		return c, ""
 	}
 	if f.turno.ToolCallsRequested != 0 {
 		return causaRetryPediuTools, ""
@@ -276,16 +317,37 @@ func julgarTentativaAnterior(eventos []eventstore.Event, estado state.State, des
 	if f.turno.StopReason != agentruntime.StopStop {
 		return causaRetryParagem, ""
 	}
-	return "", f.turno.Manifest.PromptHash
+	// O hash medido é o do PRIMEIRO turno — o que a tentativa repete. Num run que pediu antes de
+	// ler, as entradas medem-se à parte, pelo digest que o turno 1 gravou ([digestDasEntradasDoRun]).
+	return "", f.primeiro.Manifest.PromptHash
 }
 
 // factosDoRunAnterior é o que a prova lê do stream do run anterior e que não depende da classe
 // da tentativa: quantos turnos gravou, o último deles, e se o stream tem algum evento de tool
 // call. As duas classes (AOS-502 e AOS-510) decidem sobre os MESMOS factos, lidos uma vez.
 type factosDoRunAnterior struct {
-	turnos     int
+	turnos int
+	// primeiro e turno são o primeiro e o último `turn.recorded` (o mesmo num run de um turno).
+	primeiro   turnoDaProva
 	turno      turnoDaProva
 	pediuTools bool
+}
+
+// digestDasEntradasDoRun devolve o digest dos `plan_input` adiados que o PRIMEIRO turno do run
+// gravou (AOS-540); vazio num run que não pediu antes de ler. O `prompt_hash` do turno 1 de um run
+// assim não depende das entradas, e é por este digest que a medição da tentativa vê que mudaram.
+func digestDasEntradasDoRun(eventos []eventstore.Event) string {
+	for _, ev := range eventos {
+		if ev.Type != agentruntime.EventTypeTurnRecorded {
+			continue
+		}
+		var t turnoDaProva
+		if json.Unmarshal(ev.Payload, &t) != nil {
+			return ""
+		}
+		return t.PlanInputsDigest
+	}
+	return ""
 }
 
 // factosDoElo lê o stream do run anterior e confere o que é COMUM a qualquer classe de tentativa:
@@ -322,6 +384,9 @@ func factosDoElo(eventos []eventstore.Event, estado state.State, q quesitoDaTent
 				return f, causaRetryIlegivel
 			}
 			f.turno = turno
+			if f.turnos == 1 {
+				f.primeiro = turno
+			}
 		}
 	}
 	switch {
@@ -356,6 +421,9 @@ func factosDoElo(eventos []eventstore.Event, estado state.State, q quesitoDaTent
 type provaDaTentativa struct {
 	anterior   string
 	promptHash string
+	// entradas é o digest dos `plan_input` que o turno 1 do run anterior adiou (AOS-540); vazio
+	// num run que não pediu antes de ler. Mede-se ao lado do hash: ver [medirPromptDaTentativa].
+	entradas string
 	// avisoAnterior é o aviso com que o run ANTERIOR foi semeado (AOS-506): a medição do prompt
 	// precisa dele para saber que hash o anterior tinha de ter. Vazio numa primeira tentativa.
 	avisoAnterior agentruntime.RetryNotice
@@ -415,7 +483,7 @@ func (h *apiHandler) provarTentativa(ctx context.Context, chamador readerIdentit
 	if !selada || regiao == "" || regiao != chamador.region {
 		return provaDaTentativa{vazia: vazia}, causaRetryResidencia, false
 	}
-	return provaDaTentativa{anterior: q.anterior, promptHash: hash, avisoAnterior: avisoDaOrigem(eventos), vazia: vazia}, "", false
+	return provaDaTentativa{anterior: q.anterior, promptHash: hash, entradas: digestDasEntradasDoRun(eventos), avisoAnterior: avisoDaOrigem(eventos), vazia: vazia}, "", false
 }
 
 // contagemDasTentativas conta, por processo, as tentativas admitidas e as recusadas por causa, e
@@ -517,7 +585,11 @@ func (h *apiHandler) medirPromptDaTentativa(pedido context.Context, runID string
 			}
 			semente = &sementeDaTentativa{}
 		}
-		if promptDaTentativaDifere(*semente, prova.avisoAnterior, prova.promptHash, turno) {
+		// AOS-540: num run que pediu antes de ler, o prompt do turno 1 não tem as entradas; o digest
+		// delas, gravado nesse turno, tem de ser o mesmo nas duas tentativas. Não se compara o hash
+		// do turno 2 (o primeiro com as entradas): ele inclui o texto e as tool calls do turno 1,
+		// que o modelo gera de novo em cada tentativa, e diferiria sem que nada do pedido mudasse.
+		if promptDaTentativaDifere(*semente, prova.avisoAnterior, prova.promptHash, turno) || turno.PlanInputsDigest != prova.entradas {
 			h.tentativas.promptDiferente.Add(1)
 			if semente.aviso != agentruntime.RetryNoticeNone || prova.avisoAnterior != agentruntime.RetryNoticeNone {
 				h.logf("submit (AOS-506): o prompt do primeiro turno da tentativa %q NAO e o do run anterior %q mais o aviso — a tentativa devia repetir o mesmo pedido e acrescentar so o aviso", runID, prova.anterior)
