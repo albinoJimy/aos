@@ -110,7 +110,7 @@ func aos492Casos() []aos492Caso {
 }
 
 func TestAOS492_Diferencial_OReplayTerminaOndeOLoopTerminou(t *testing.T) {
-	versoes := []string{agentruntime.AssemblyVersion130, agentruntime.AssemblyVersion140, agentruntime.AssemblyVersion150}
+	versoes := []string{agentruntime.AssemblyVersion130, agentruntime.AssemblyVersion140, agentruntime.AssemblyVersion150, agentruntime.AssemblyVersion160}
 	if got := agentruntime.SupportedAssemblyVersions(); len(got) != len(versoes) {
 		t.Fatalf("o assembler monta %v e este teste so cobre %v: um layout novo tem de entrar na tabela", got, versoes)
 	}
@@ -125,8 +125,17 @@ func TestAOS492_Diferencial_OReplayTerminaOndeOLoopTerminou(t *testing.T) {
 				// AOS-514: no layout com o rótulo do estado, TODOS os turnos do guião trazem estado
 				// opaco do provider — o tail de cada turno com tool calls leva `state_digest`, e o
 				// motor tem de o reconstruir da captura para o `prompt_hash` bater.
-				if versao == agentruntime.AssemblyVersion150 {
+				if versao == agentruntime.AssemblyVersion150 || versao == agentruntime.AssemblyVersion160 {
 					c.guiao = aos514ComEstado(c.guiao)
+				}
+				// 1.6.0 («pedir antes de ler»): o run tem um `plan_input`, e o turno que o entrega —
+				// o primeiro — NÃO termina o run, nem com uma resposta final sem tool calls. O guião
+				// ganha esse turno à cabeça; o resto do caso é o mesmo, um turno mais tarde.
+				if versao == agentruntime.AssemblyVersion160 {
+					goal.Inputs = []agentruntime.PlanInput{{From: "n0", Output: "document_content", Digest: "sha256:00", Content: []byte("dados do passo anterior")}}
+					primeiro := agentruntime.ModelResponse{Text: "peco antes de ler", Final: true, Usage: agentruntime.Usage{InputTokens: 10, OutputTokens: 5}}
+					c.guiao = append([]agentruntime.ModelResponse{primeiro}, c.guiao...)
+					c.turnos++
 				}
 
 				// (1) O LOOP real, com captura.

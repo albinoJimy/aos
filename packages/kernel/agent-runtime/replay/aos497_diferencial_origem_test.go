@@ -164,6 +164,30 @@ func aos497Casos() []aos497Caso {
 	}
 }
 
+// aos497Na160 é o caso no layout 1.6.0 («pedir antes de ler»). Só os casos com `plan_input`
+// mudam, e mudam porque a regra da designação — o contexto do primeiro turno com tools é trusted
+// — passa a poder aplicar-se: o primeiro turno não viu os dados.
+//
+//   - «run com plan_input»: a leitura do turno 1 foi pedida por um modelo que só viu o objectivo,
+//     e é a origem designada (no layout de sempre era «não aplicável»);
+//   - «run com plan_input e zero chamadas»: o turno 1 não termina o run, e o guião ganha o turno
+//     em que o modelo já vê os dados; continua «em falta».
+func aos497Na160(c aos497Caso) aos497Caso {
+	if len(c.inputs) == 0 {
+		return c
+	}
+	switch c.nome {
+	case "run com plan_input":
+		c.estado = agentruntime.OutputSourceDesignated
+		c.turnoDaOrigem, c.indice, c.bytesDaOrigem = 1, 0, aos497Echo(`{"doc_id":"notes"}`)
+		c.vinculada = agentruntime.OutcomeFulfilled
+	case "run com plan_input e zero chamadas":
+		c.guiao = append([]agentruntime.ModelResponse{c.guiao[0]}, c.guiao...)
+		c.turnos++
+	}
+	return c
+}
+
 // aos497Goal compõe o goal de um caso.
 func aos497Goal(runID, versao string, modo agentruntime.CompletionMode, vinculo agentruntime.OutputSourceBinding, c aos497Caso) agentruntime.Goal {
 	goal := aos489Goal(runID)
@@ -196,7 +220,7 @@ func aos497PassoDoTurno(t *testing.T, evs []eventstore.Event, n int) string {
 }
 
 func TestAOS497_Diferencial_OReplayDesignaAOrigemDoLoop(t *testing.T) {
-	versoes := []string{agentruntime.AssemblyVersion130, agentruntime.AssemblyVersion140, agentruntime.AssemblyVersion150}
+	versoes := []string{agentruntime.AssemblyVersion130, agentruntime.AssemblyVersion140, agentruntime.AssemblyVersion150, agentruntime.AssemblyVersion160}
 	if got := agentruntime.SupportedAssemblyVersions(); len(got) != len(versoes) {
 		t.Fatalf("o assembler monta %v e este teste so cobre %v: um layout novo tem de entrar na tabela", got, versoes)
 	}
@@ -205,6 +229,9 @@ func TestAOS497_Diferencial_OReplayDesignaAOrigemDoLoop(t *testing.T) {
 		for m, modo := range modos {
 			for k, vinculo := range agentruntime.OutputSourceBindings() {
 				for i, c := range aos497Casos() {
+					if versao == agentruntime.AssemblyVersion160 {
+						c = aos497Na160(c)
+					}
 					t.Run(versao+"/"+string(modo)+"/"+string(vinculo)+"/"+c.nome, func(t *testing.T) {
 						sufixo := itoa(v) + "-" + itoa(m) + "-" + itoa(k) + "-" + itoa(i)
 						b := aos493Bancada(t, c.negada)

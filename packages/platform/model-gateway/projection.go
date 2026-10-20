@@ -141,8 +141,18 @@ func ParseProjection(mode string) (string, error) {
 // dois — o texto do modelo vai no papel `assistant` e a tool call no campo `tool_calls` —, pelo
 // que as mensagens de um tail da 1.5.0 são, byte a byte, as do mesmo tail na 1.4.0, com ou sem
 // o rótulo (TestAOS514_AsEscuras_OPedidoNativoNaoMudaComOEstado).
+//
+// A 1.6.0 («pedir antes de ler») é a 1.5.0 com os `plan_input` de um run a entrar no tail depois
+// do primeiro turno, e com esse turno a não terminar o run. Os segmentos são os mesmos kinds; a
+// forma nova é um turno do modelo SÓ COM TEXTO a meio do tail (o turno 1 que não pediu tools),
+// que a projecção desta versão fecha num `assistant` sem `tool_calls` ([ProjectNativeVersion]).
 func projecaoNativaSuporta(assemblyVersion string) bool {
-	return assemblyVersion == agentruntime.AssemblyVersion140 || assemblyVersion == agentruntime.AssemblyVersion150
+	switch assemblyVersion {
+	case agentruntime.AssemblyVersion140, agentruntime.AssemblyVersion150, agentruntime.AssemblyVersion160:
+		return true
+	default:
+		return false
+	}
 }
 
 // protocoloNativo é o texto FIXO com que a mensagem `system` da projecção nativa abre. É o
@@ -538,7 +548,9 @@ type turnoNativo struct {
 // dá; por isso um `id` que não tenha a forma do runtime é erro, e não um palpite.
 //
 // Um turno que fecha SEM tool calls é erro: o loop só deixa no tail turnos que despacharam pelo
-// menos uma chamada (um turno só com texto é final, e o run acaba nele).
+// menos uma chamada (um turno só com texto é final, e o run acaba nele). A única excepção é o
+// PRIMEIRO turno de um tail no layout 1.6.0, que não termina o run quando os `plan_input` estão
+// adiados: sai num `assistant` só com o texto, seguido da mensagem `user` com os dados.
 //
 // # O INVARIANTE, fail-closed
 //
@@ -588,6 +600,11 @@ func ProjectNativeVersion(version string, view agentruntime.PromptView) ([]port.
 		pendente []byte       // a mensagem `user` em construção
 		turno    *turnoNativo // o turno do modelo aberto
 		vistos   = map[string]bool{}
+		// fechados conta os turnos do modelo já projectados. Na 1.6.0 o PRIMEIRO pode ser só
+		// texto: é o turno que não pediu tools e a seguir ao qual o loop entregou os
+		// `plan_input` adiados — e que, por isso, não terminou o run.
+		fechados        int
+		textoNoPrimeiro = agentruntime.DefersPlanInputs(versao)
 	)
 	despejarUser := func() {
 		if len(pendente) > 0 {
@@ -599,12 +616,15 @@ func ProjectNativeVersion(version string, view agentruntime.PromptView) ([]port.
 		if turno == nil {
 			return nil
 		}
-		if len(turno.chamadas) == 0 {
+		if len(turno.chamadas) == 0 && (!textoNoPrimeiro || fechados > 0) {
 			// Um turno do modelo só com texto é um turno FINAL: o run acaba nele e o seu tail
 			// não volta a ser montado. No meio de um tail é uma forma que o loop não produz, e
-			// daria um `assistant` sem tool calls seguido de outro `assistant`.
+			// daria um `assistant` sem tool calls seguido de outro `assistant`. A excepção é o
+			// primeiro turno de um tail da 1.6.0, que sai num `assistant` só com o texto: a seguir
+			// vêm os `plan_input`, numa mensagem `user`.
 			return fmt.Errorf("%w: turno do modelo sem tool calls a meio do tail", ErrNativeProjection)
 		}
+		fechados++
 		for i, r := range turno.resultados {
 			if r == nil {
 				return fmt.Errorf("%w: a tool call %q nao tem resultado no tail", ErrNativeProjection, turno.chamadas[i].ID)

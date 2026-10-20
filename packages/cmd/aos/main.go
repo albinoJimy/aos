@@ -447,6 +447,11 @@ func run(w io.Writer) error {
 		fmt.Fprintf(w, "[aos] %s\n", completionVerdictBanner(cfg.CompletionVerdict))
 	}
 
+	// PEDIR ANTES DE LER (ADR-034 §4): com `off` não sai linha. Já validado em [nodeConfigFromEnv].
+	for _, line := range planInputDepoisBanner(cfg.PlanInputDepoisDoPrimeiroTurno) {
+		fmt.Fprintf(w, "[aos] %s\n", line)
+	}
+
 	// AUDIT DE GOVERNAÇÃO DO GATEWAY (AOS-265): declara se a activação da allowlist e as
 	// decisões por chamada selam num WORM DURÁVEL (AOS_MODEL_AUDIT_PATH) ou num MemStore
 	// volátil. Amarrado ao estado composto (cfg.Model != nil): sem gateway não há linha.
@@ -991,6 +996,14 @@ func nodeConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	cfg.CompletionVerdict = completionVerdict
+
+	// PEDIR ANTES DE LER (ADR-034 §4). Vocabulário fechado (`off`/`on`): um valor desconhecido
+	// aborta o arranque. Vazia ⇒ `off`.
+	pedirAntesDeLer, err := parsePlanInputDepoisFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.PlanInputDepoisDoPrimeiroTurno = pedirAntesDeLer
 
 	// PERIODICIDADE DA EXPORTAÇÃO DE BACKUP (AOS-101) por ambiente. É a BASE DO RPO: a janela de
 	// perda é limitada pela cadência com que o Event Store é exportado para o backup imutável.

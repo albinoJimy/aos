@@ -69,6 +69,11 @@ const (
 	// há resultado de tool antes desse turno; o que o tornou untrusted foram as ENTRADAS do run
 	// (um `plan_input`, memória). É um defeito de quem compôs o run — um consumidor declarado
 	// como produtor — e não «o modelo não chamou»: por isso tem estado próprio.
+	//
+	// No layout 1.6.0 («pedir antes de ler») os `plan_input` só entram depois do primeiro turno,
+	// e esse turno não termina o run: um run com entradas pode ter a origem designada no turno 1
+	// (o modelo só viu o objectivo), e é «não aplicável» se o primeiro turno com tools for o 2.º
+	// ou posterior — o turno 1 não pediu tools e os dados já entraram.
 	OutputSourceInapplicable OutputSourceState = "inapplicable"
 )
 

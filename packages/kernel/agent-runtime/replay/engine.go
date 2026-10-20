@@ -57,7 +57,8 @@ type TrajectorySpec struct {
 	MemoryContext []byte
 	// Inputs são os payloads do plano que o run recebeu (AOS-414). Entram no tail semeado na
 	// MESMA ordem e com a MESMA construção do loop ([agentruntime.TailFromPlanInput]); sem eles,
-	// um run que consumiu payloads divergia logo no turno 1 e a fidelidade dava zero.
+	// um run que consumiu payloads divergia logo no turno 1 e a fidelidade dava zero. Num log da
+	// 1.6.0 entram a seguir ao primeiro turno, como no loop ([agentruntime.OpenRunTail]).
 	Inputs []agentruntime.PlanInput
 	// RetryNotice é o aviso de nova tentativa que o run levou (AOS-506): entra na semente a
 	// seguir ao objectivo, com a MESMA construção do loop ([agentruntime.TailFromRetryNotice]).
@@ -662,8 +663,10 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 		evidencia.Observe(stepID, authority, results)
 
 		// (4) TERMINAÇÃO — a MESMA função do loop ([agentruntime.TurnEndsRun], AOS-492), no
-		// layout que o turno gravou. A regra não está escrita aqui.
-		termina, terr := agentruntime.TurnEndsRun(resp, manifest.AssemblyVersion)
+		// layout que o turno gravou, pela sequência da dobra desse layout — que acabou de dobrar
+		// este turno e sabe se ele entregou os `plan_input` adiados (1.6.0). A regra não está
+		// escrita aqui.
+		termina, terr := corrente.seq.TurnEndsRun(resp)
 		if terr != nil {
 			return ReplayResult{}, terr
 		}
@@ -737,11 +740,9 @@ func novasDobras(tr trajectory, spec TrajectorySpec) (*dobrasPorLayout, error) {
 		if err != nil {
 			return nil, fmt.Errorf("replay: turno %d (%s): %w", turn, tr.stepByTurn[turn], err)
 		}
-		seq, err := agentruntime.NewTailSequence(v)
-		if err != nil {
-			return nil, fmt.Errorf("replay: turno %d (%s): %w", turn, tr.stepByTurn[turn], err)
-		}
-		semente, err := seedTail(spec, v)
+		// A semente e a sequência saem da MESMA construção do loop ([agentruntime.OpenRunTail]):
+		// é ela que sabe se o layout adia os `plan_input` (1.6.0) e quando os entrega.
+		semente, seq, err := agentruntime.OpenRunTail(v, goalDaSpec(spec))
 		if err != nil {
 			return nil, fmt.Errorf("replay: turno %d (%s): %w", turn, tr.stepByTurn[turn], err)
 		}
@@ -888,37 +889,26 @@ func (e *ReplayEngine) emitMarker(ctx context.Context, res ReplayResult) {
 	span.End()
 }
 
+// goalDaSpec é o Goal com os campos que semeiam o tail: o que a spec re-fornece.
+func goalDaSpec(spec TrajectorySpec) agentruntime.Goal {
+	return agentruntime.Goal{
+		Objective: spec.Objective, MemoryContext: spec.MemoryContext,
+		Inputs: spec.Inputs, RetryNotice: spec.RetryNotice,
+	}
+}
+
 // seedTail semeia o tail append-only tal como o loop base (memory_context, payloads do
-// plano, objectivo e aviso de nova tentativa, por esta ordem). Na autoridade (ADR-034) só o objectivo é trusted: a
-// memória e os payloads tornam o contexto untrusted, exactamente como no loop.
+// plano, objectivo e aviso de nova tentativa, por esta ordem; na 1.6.0 os payloads ficam de fora
+// e a semente fecha com o aviso de que chegam no turno seguinte). Na autoridade (ADR-034) só o
+// objectivo e os avisos são trusted: a memória e os payloads tornam o contexto untrusted,
+// exactamente como no loop.
 //
-// `version` é o layout da dobra que se semeia: o aviso de nova tentativa só existe num layout com
-// o segmento `notice`, e a regra é a do loop.
+// A construção é a do kernel ([agentruntime.OpenRunTail]), e não uma segunda cópia dela: um
+// aviso de nova tentativa fora do vocabulário, ou num layout sem `notice`, devolve
+// [agentruntime.ErrUnknownRetryNotice] e o replay não corre (AOS-506, revisão M-6).
 func seedTail(spec TrajectorySpec, version string) ([]agentruntime.TailSegment, error) {
-	tail := make([]agentruntime.TailSegment, 0, 8)
-	if len(spec.MemoryContext) > 0 {
-		tail = append(tail, agentruntime.TailSegment{Kind: agentruntime.TailMemory, Content: spec.MemoryContext})
-	}
-	for _, in := range spec.Inputs {
-		tail = append(tail, agentruntime.TailFromPlanInput(in))
-	}
-	if spec.Objective != "" {
-		tail = append(tail, agentruntime.TailSegment{Kind: agentruntime.TailObjective, Content: []byte(spec.Objective)})
-	}
-	// AOS-506: o aviso de nova tentativa, no fim, como no loop — e RECUSADO como no loop
-	// (revisão, M-6). Um valor fora do vocabulário, ou um layout sem `notice`, devolve
-	// [agentruntime.ErrUnknownRetryNotice] e o replay não corre: tratá-lo como «sem aviso»
-	// reproduzia o run com uma semente que não é a que a spec declara, e a divergência (ou a
-	// fidelidade) que saísse daí media outra coisa. A decisão é a do kernel
-	// ([agentruntime.SeedTail]), e não uma segunda cópia dela; sem aviso, nada se pergunta.
-	if spec.RetryNotice != agentruntime.RetryNoticeNone {
-		aviso, err := agentruntime.SeedTail(version, agentruntime.Goal{RetryNotice: spec.RetryNotice})
-		if err != nil {
-			return nil, err
-		}
-		tail = append(tail, aviso...)
-	}
-	return tail, nil
+	semente, _, err := agentruntime.OpenRunTail(version, goalDaSpec(spec))
+	return semente, err
 }
 
 // tailHash é o fingerprint determinístico do tail (o ESTADO do run num ponto). Um
