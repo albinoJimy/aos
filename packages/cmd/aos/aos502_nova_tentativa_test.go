@@ -42,6 +42,21 @@ type aos502No struct {
 	tecto int
 }
 
+// aos502EixosDaLeitura são os eixos de risco declarados para as tools destes testes: a forma da
+// `doc_read` de produção, leitura local. Desde o AOS-538 o gate de taint deixa-a passar com o
+// contexto untrusted; os testes que precisam de uma call PRIVILEGIADA negada pelo taint usam
+// [aos502ComEgressExterno].
+var aos502EixosDaLeitura = `,"egress":"none","reversibility":"reversible","mutation":"none"`
+
+// aos502ComEgressExterno declara, até ao fim do teste, as tools com egress externo (a forma da
+// `ocr_read`): continuam privilegiadas para o gate de taint com a cap:fs.read armada (AOS-538).
+func aos502ComEgressExterno(t *testing.T) {
+	t.Helper()
+	antes := aos502EixosDaLeitura
+	aos502EixosDaLeitura = `,"egress":"external","reversibility":"reversible","mutation":"none"`
+	t.Cleanup(func() { aos502EixosDaLeitura = antes })
+}
+
 // aos502Compor levanta o nó com as tools dadas (por omissão, só `doc_read`), o modo do veredicto
 // e o tecto de tentativas a mais. Tecto zero ⇒ a opção não se compõe, como no arranque.
 func aos502Compor(t *testing.T, modo agentruntime.CompletionMode, tecto int, tools ...string) *aos502No {
@@ -58,7 +73,7 @@ func aos502ComporCom(t *testing.T, modo agentruntime.CompletionMode, tecto int, 
 	}
 	ordem, extra := aos486OrdemDoFicheiro, aos486CamposExtraDaSpec
 	aos486OrdemDoFicheiro = tools
-	aos486CamposExtraDaSpec = `,"egress":"none","reversibility":"reversible","mutation":"none"`
+	aos486CamposExtraDaSpec = aos502EixosDaLeitura
 	t.Cleanup(func() { aos486OrdemDoFicheiro, aos486CamposExtraDaSpec = ordem, extra })
 	n := aos486ComporCom(t, "native", func(cfg *Config) {
 		cfg.CompletionVerdict = modo

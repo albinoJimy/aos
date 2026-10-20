@@ -256,10 +256,10 @@ func aos536AmbienteVideo(t *testing.T, o aos536Opcoes) (*aos536Upstream, []byte)
 	}
 	registo := `[{"name":"doc_read","description":"le um documento","capability":"` + durCap + `","resource_type":"file","resource_value":"doc://{doc_id}","resource_region":"eu"},` +
 		`{"name":"video_read","description":"descreve um video","parameters":{"type":"object","properties":{"doc_id":{"type":"string"}},"required":["doc_id"]},` +
-		`"capability":"` + durCap + `","resource_type":"file","resource_value":"doc://{doc_id}","resource_region":"eu","modelo":{"alias":"` + alias + `"}}`
+		`"capability":"` + durCap + `","resource_type":"file","resource_value":"doc://{doc_id}","resource_region":"eu","egress":"external","modelo":{"alias":"` + alias + `"}}`
 	if o.comOCR {
 		registo += `,{"name":"ocr_read","description":"transcreve o texto de uma imagem","parameters":{"type":"object","properties":{"doc_id":{"type":"string"}},"required":["doc_id"]},` +
-			`"capability":"` + durCap + `","resource_type":"file","resource_value":"doc://{doc_id}","resource_region":"eu","modelo":{"alias":"` + aos530AliasTool + `"}}`
+			`"capability":"` + durCap + `","resource_type":"file","resource_value":"doc://{doc_id}","resource_region":"eu","egress":"external","modelo":{"alias":"` + aos530AliasTool + `"}}`
 	}
 	t.Setenv("AOS_MODEL_TOOLS", writeTools(t, registo+`]`))
 	for k, v := range o.ambiente {

@@ -105,7 +105,8 @@ func privilegedIsEffective(p PrivilegedAuthorizer) bool {
 // embutida num tool result) é bloqueado aqui, default-deny.
 //
 // A decisão é DETERMINISTA e PURA (sem relógio/rand): função apenas de
-// (capability, taint). A negação é atribuível — [Decision.DeniedBy] == "taint" — e
+// (tool, capability, taint) — a tool só conta quando o classificador conhece o seu destino
+// declarado ([ToolPrivilegeClassifier], AOS-538). A negação é atribuível — [Decision.DeniedBy] == "taint" — e
 // registada no evento de mediação com o rótulo de taint no [CallContext], SEM
 // segredos (o Input da tool nunca é gravado; ver eventsink.go).
 //
@@ -130,9 +131,12 @@ func (TaintGate) Name() string { return "taint" }
 // Evaluate implementa [Hook]. Permite tudo excepto uma capability privilegiada
 // cuja autorização seja untrusted, que nega fail-closed.
 func (g TaintGate) Evaluate(_ context.Context, call *Call) (HookResult, error) {
-	if g.privileged == nil || !g.privileged.IsPrivileged(call.Capability) {
-		// Não-privilegiada (ou sem classificador): o taint não bloqueia — untrusted
-		// é dados legítimos no data-plane.
+	if g.privileged == nil {
+		// Sem classificador: nada é privilegiado, o taint não bloqueia.
+		return allow, nil
+	}
+	if !g.isPrivileged(call) {
+		// Não-privilegiada: o taint não bloqueia — untrusted é dados legítimos no data-plane.
 		return allow, nil
 	}
 	// Capability privilegiada: SÓ autorização trusted a satisfaz (ADR-005). O taint
@@ -159,6 +163,24 @@ func (g TaintGate) Evaluate(_ context.Context, call *Call) (HookResult, error) {
 		}, nil
 	}
 	return allow, nil
+}
+
+// isPrivileged decide se a call é privilegiada para este gate e carimba o PORQUÊ em
+// [CallContext.TaintPrivilege] (AOS-538), para o evento de mediação o selar em permit e em deny.
+//
+// Com um classificador que conhece o DESTINO das tools ([ToolPrivilegeClassifier], o
+// [DestinationPrivileged] do nó) a decisão é pela call — uma tool que se declara leitura local
+// nunca é privilegiada (emenda de 2026-10-19 ao ADR-034). Sem ele, é a regra de antes: só a
+// capability. O carimbo é SEMPRE reescrito (vazio na regra de antes): um valor que o chamador
+// tenha posto na call nunca chega ao evento como se fosse a razão do gate.
+func (g TaintGate) isPrivileged(call *Call) bool {
+	if c, ok := g.privileged.(ToolPrivilegeClassifier); ok {
+		privileged, reason := c.ClassifyCall(call)
+		call.Context.TaintPrivilege = reason
+		return privileged
+	}
+	call.Context.TaintPrivilege = ""
+	return g.privileged.IsPrivileged(call.Capability)
 }
 
 // DefaultHooksWithTaint devolve a cadeia canónica [DefaultHooks] com o [TaintGate]

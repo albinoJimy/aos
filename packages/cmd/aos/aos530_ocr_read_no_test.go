@@ -267,7 +267,7 @@ func aos530AmbienteOCR(t *testing.T, o aos530Opcoes) (*aos530Upstream, []byte) {
 	t.Setenv("AOS_MODEL_TOOLS", writeTools(t, `[`+
 		`{"name":"doc_read","description":"le um documento","capability":"`+durCap+`","resource_type":"file","resource_value":"doc://{doc_id}","resource_region":"eu"},`+
 		`{"name":"ocr_read","description":"transcreve o texto de uma imagem","parameters":{"type":"object","properties":{"doc_id":{"type":"string"}},"required":["doc_id"]},`+
-		`"capability":"`+durCap+`","resource_type":"file","resource_value":"doc://{doc_id}","resource_region":"eu","modelo":{"alias":"`+alias+`"}}]`))
+		`"capability":"`+durCap+`","resource_type":"file","resource_value":"doc://{doc_id}","resource_region":"eu","egress":"external","modelo":{"alias":"`+alias+`"}}]`))
 	for k, v := range o.ambiente {
 		t.Setenv(k, v)
 	}

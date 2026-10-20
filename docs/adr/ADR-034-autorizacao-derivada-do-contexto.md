@@ -201,6 +201,41 @@ servidor é o vídeo semeado, nunca conteúdo do run. A excepção continua por 
 tool com egress externo. Esta emenda não põe a `video_read` no manifesto: entra lá com o registo de
 uso `tool` de vídeo assinado, o preço e a rota em produção.
 
+**Emenda de 2026-10-19 (AOS-538; decisão do dono: «aceito a regra» — «depois de ver algo de fora, o
+agente pode ler à vontade; só não pode enviar nem mudar nada»).** O gate de taint deixa de decidir
+só pela capability e passa a decidir pelo **destino** da tool, que o registo de tools já declara.
+Uma tool que se declara **leitura local** — `egress: "none"`, `mutation: "none"` e `reversibility:
+"reversible"`, os três explícitos no manifesto — **nunca** é privilegiada para o gate de taint, seja
+qual for a sua capability: pede-se com o contexto `untrusted` e passa ao resto da cadeia. Qualquer
+outra tool fica com a regra de antes (a capability em `AOS_PRIVILEGED_CAPS`) e, além dela, é
+privilegiada quando declara um efeito (`egress` diferente de `none`, `mutation` diferente de `none`
+ou `reversibility` diferente de `reversible`), com o gate armado. Uma tool sem entrada no registo,
+ou com um eixo implícito, fica com a regra de antes (fail-closed). Com o gate desarmado
+(`AOS_PRIVILEGED_CAPS` vazia) nada muda.
+
+As razões: ler um documento da pasta do dono **não é um destino de integridade** — não muda nada,
+e o conteúdo lido vai no turno seguinte ao fornecedor do modelo titular, como já acontecia com as
+leituras do turno `trusted`, e pode aparecer na resposta ao cliente; o perigo de uma injecção está
+em **agir** (enviar, escrever, apagar, pagar), e esses pedidos continuam negados com o contexto
+`untrusted` (é a política P-T do FIDES e o «lethal trifecta»: nenhuma tool de egress controlada
+pelo atacante fica disponível nesse contexto). O que a regra antiga negava a mais —
+um nó com `consumes` não lia o documento do objectivo, e depois do primeiro `tool_result` nenhum run
+lia outro (resíduo da A1, R1 e resíduo 3 deste ADR) — passa a correr. A `ocr_read` e a `video_read`
+declaram `egress: "external"` e continuam privilegiadas: a «leitura única por run» de que dependem
+as excepções de 2026-10-18 e 2026-10-19 (§2.7) mantém-se para elas. A `doc_read` deixa de a partilhar.
+
+O que esta emenda **aceita**, por escrito: uma injecção num conteúdo lido pode agora **escolher que
+documentos da pasta são lidos** e levar o agente a escrever um resumo enganador (ataque
+texto-para-texto). O que esses documentos dizem vai ao fornecedor do modelo titular no turno
+seguinte e pode chegar ao cliente na resposta — os mesmos dois caminhos de qualquer leitura —, mas
+nenhuma tool de egress que o atacante controle fica disponível nesse contexto: enviar continua
+negado. Uma tool só é leitura local se declarar os três eixos e a sua capability e o recurso da
+call não denunciarem egress; uma tool com o bloco `modelo` tem de declarar `egress: "external"`.
+Nenhum dos desenhos estudados (CaMeL,
+FIDES, os padrões de Beurer-Kellner et al.) fecha esta classe. A forma forte (opção A, §3) continua
+o destino, com o gatilho do §5.4. A §2.5 (fase 1: `cap:fs.read` armada) continua a valer para as
+tools que não se declaram leitura local.
+
 ## 3. Alternativas consideradas
 
 - **(A) Dual-LLM / CaMeL completo** — um planeador que só vê trusted + handles e um executor que

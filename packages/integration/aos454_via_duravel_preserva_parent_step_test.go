@@ -107,6 +107,12 @@ var camposNaoPropagados = map[string]string{
 	"Context.RiskClass":        "saída do RiskGate, não entrada",
 	"Context.RiskApprover":     "saída do RiskGate, não entrada",
 	"Context.RiskDecisionMode": "saída do RiskGate, não entrada",
+	// SAÍDA do TaintGate (AOS-538): o porquê da classificação, escrito dentro de Mediate pelo gate
+	// (que o reescreve sempre). Pela mesma razão das três acima, um valor do chamador não pode
+	// atravessar — seria uma razão do gate forjada por quem despacha. A decisão nova do gate não
+	// depende de campo nenhum que a via durável tenha de levar: classifica pelo ToolID, que
+	// atravessa (paridade em TestAOS538_ViaDuravelDecideIgualAViaDirecta).
+	"Context.TaintPrivilege": "saída do TaintGate, não entrada",
 }
 
 // preencherComSentinelas põe um valor não-zero em cada campo EXPORTADO de v (recursivo em

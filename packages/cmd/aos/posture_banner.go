@@ -30,6 +30,7 @@ import (
 
 	"github.com/aos-ref/control-plane/governance/autonomy"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 	modelgateway "github.com/aos-ref/platform/model-gateway"
 
 	"github.com/aos-ref/platform/broker"
@@ -68,6 +69,21 @@ import (
 // está em `deploy/node/README.md` e no relatório de prontidão.
 const BudgetScopeDeclaration = "orcamento: cobre tool calls E o turno de modelo em TOKENS — reserva antes da inferencia, saldo pelo consumo medido; o tecto em dolares e opcional e so decide quando configurado"
 
+// destinosDoGate é o que o banner precisa de saber do destino das tools composto no gate
+// (AOS-538): nil ⇒ o gate decide só pela capability; não-nil ⇒ decide pelo destino, e `livres`
+// são as tools que ficam livres do gate por se declararem leitura local.
+type destinosDoGate struct{ livres []string }
+
+// destinosDoClassificador extrai do classificador REALMENTE composto no gate o que o banner diz —
+// a mesma disciplina de AOS-203: o estado composto, nunca a intenção da config.
+func destinosDoClassificador(p referencemonitor.PrivilegedAuthorizer) *destinosDoGate {
+	d, ok := p.(referencemonitor.DestinationPrivileged)
+	if !ok {
+		return nil
+	}
+	return &destinosDoGate{livres: d.LocalReads()}
+}
+
 // taintGatePostureBanner declara se a barreira control-data-plane (AOS-069/AOS-363) está ARMADA ou
 // PRESENTE-MAS-INERTE, a partir do estado realmente composto — `active` é «`AOS_PRIVILEGED_CAPS`
 // enumera >= 1 capability», não «a variável está definida».
@@ -77,11 +93,17 @@ const BudgetScopeDeclaration = "orcamento: cobre tool calls E o turno de modelo 
 // cláusula `context.taint` que cada regra `permit` do bundle TENHA) e que a `allow_fs_read` de
 // referência ainda não a tem. Anunciar «TaintGate presente» sem essa distinção leria-se como
 // barreira, e não é.
-func taintGatePostureBanner(active bool) []string {
+func taintGatePostureBanner(active bool, destinos *destinosDoGate) []string {
 	if active {
-		return []string{
-			"taint / barreira control-data-plane (AOS-069/AOS-363): ATIVA — AOS_PRIVILEGED_CAPS enumera >=1 capability privilegiada, logo o TaintGate barra uma tool call privilegiada cuja autorizacao e NAO-CONFIAVEL (taint=untrusted), e o apice compos a via ENDURECIDA (NewProductionHardenedTaint): um conjunto que ficasse inerte por engano faria o no RECUSAR arrancar (ErrTaintGateInert) em vez de mediar sem barreira. A defesa e ESTRUTURAL: vale para TODA a regra permitida, nao so as que trazem a clausula de taint no texto Cedar. O taint da autorizacao e o rotulo do CONTEXTO do turno que pediu a call, cunhado pelo runtime (ADR-034) e nunca pelo modelo: trusted enquanto o contexto so tem o objectivo e correccoes do humano, untrusted a partir do primeiro plan_input, tool_result ou memoria, e sem volta no mesmo run — uma capability privilegiada so pode ser pedida ANTES de o run ler conteudo nao-confiavel (um no que ja leu um documento nao le outro)",
+		comum := "taint / barreira control-data-plane (AOS-069/AOS-363): ATIVA — AOS_PRIVILEGED_CAPS enumera >=1 capability privilegiada, logo o TaintGate barra uma tool call privilegiada cuja autorizacao e NAO-CONFIAVEL (taint=untrusted), e o apice compos a via ENDURECIDA (NewProductionHardenedTaint): um conjunto que ficasse inerte por engano faria o no RECUSAR arrancar (ErrTaintGateInert) em vez de mediar sem barreira. A defesa e ESTRUTURAL: vale para TODA a regra permitida, nao so as que trazem a clausula de taint no texto Cedar. O taint da autorizacao e o rotulo do CONTEXTO do turno que pediu a call, cunhado pelo runtime (ADR-034) e nunca pelo modelo: trusted enquanto o contexto so tem o objectivo e correccoes do humano, untrusted a partir do primeiro plan_input, tool_result ou memoria, e sem volta no mesmo run"
+		if destinos == nil {
+			return []string{comum + " — a regra e so a CAPABILITY (sem o destino das tools: AOS_MODEL_TOOLS nao declara tools): uma capability privilegiada so pode ser pedida ANTES de o run ler conteudo nao-confiavel (um no que ja leu um documento nao le outro)"}
 		}
+		livres := "NENHUMA"
+		if len(destinos.livres) > 0 {
+			livres = strings.Join(destinos.livres, ",")
+		}
+		return []string{comum + " — e o gate decide pelo DESTINO da tool (AOS-538, emenda de 2026-10-19 ao ADR-034): uma tool que se declara LEITURA LOCAL (egress none, mutation none e reversibility reversible, os tres EXPLICITOS em AOS_MODEL_TOOLS, e capability e recurso que nao denunciem egress) NUNCA e privilegiada e pede-se com o contexto untrusted; livres por leitura local: " + livres + ". As outras ficam com a regra da capability e sao privilegiadas tambem quando declaram um efeito (egress, mutacao ou irreversibilidade): enviar e mudar continuam negados com o contexto untrusted. Uma tool sem entrada no registo, ou com um eixo implicito, fica com a regra da capability. O evento de mediacao diz a razao (context.taint_privilege)"}
 	}
 	return []string{
 		"taint / barreira control-data-plane (AOS-069/AOS-363): INERTE — AOS_PRIVILEGED_CAPS nao esta definida (ou esta vazia), logo o conjunto privilegiado e VAZIO e o TaintGate esta PRESENTE-MAS-INERTE: NENHUMA promocao de escopo sobre dados untrusted e barrada pela barreira estrutural. E a perna RETRO-COMPATIVEL (o comportamento de todo deployment ate AOS-363). ATENCAO: com o gate inerte a UNICA aplicacao de taint que resta e a clausula `context.taint != \"untrusted\"` que cada regra permit do bundle Cedar TENHA — e no bundle de referencia a regra allow_fs_read AINDA NAO A TEM (AOS-363 criterio 6, por fechar): um cap:fs.read untrusted PASSA. Para fechar o buraco de forma ESTRUTURAL, define AOS_PRIVILEGED_CAPS com as capabilities privilegiadas, incluindo cap:fs.read (ex. \"cap:fs.read,cap:fs.write,cap:net.connect\"); desde o ADR-034 o taint e o do contexto do turno, pelo que armar cap:fs.read nao impede a leitura de um run cujo contexto so tem o objectivo. E OPT-IN de proposito",

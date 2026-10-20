@@ -10,8 +10,8 @@ import (
 // a inércia (não a disfarça). O argumento é o predicado real HasActiveTaintGate(); aqui
 // exercita-se a função pura nos dois valores possíveis.
 func TestAOS363_TaintGatePostureBanner(t *testing.T) {
-	ativo := taintGatePostureBanner(true)
-	inerte := taintGatePostureBanner(false)
+	ativo := taintGatePostureBanner(true, nil)
+	inerte := taintGatePostureBanner(false, nil)
 
 	if len(ativo) == 0 || len(inerte) == 0 {
 		t.Fatal("banner vazio num dos estados")

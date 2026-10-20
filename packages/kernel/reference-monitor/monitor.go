@@ -362,6 +362,11 @@ func spanErrorType(err error) string {
 // para que o span execute_tool envolva TODOS os caminhos de retorno via defer.
 func (m *Monitor) evaluate(ctx context.Context, call Call) (dec Decision, err error) {
 	start := m.now()
+	// A razão do gate de taint é SAÍDA do gate (AOS-538), nunca entrada: um valor posto por quem
+	// submete a call chegaria ao evento como se o gate o tivesse decidido — num RM sem o gate na
+	// cadeia, ou com um gate que não a escreve. Limpa-se aqui, antes de qualquer hook, para que só
+	// o [TaintGate] armado da cadeia a possa pôr.
+	call.Context.TaintPrivilege = ""
 	// LATÊNCIA POR HOOK (AOS-405): medida à volta de cada Evaluate e anexada à decisão em TODOS
 	// os caminhos de retorno por este defer — permit, recusa, escalada, erro de hook, tool não
 	// registada, obrigação por cumprir, selo falhado. Numa recusa ficam os hooks até ao que decidiu.
