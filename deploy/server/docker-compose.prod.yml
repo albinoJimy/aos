@@ -569,6 +569,12 @@ services:
       # Custa um turno de modelo a mais por no com plan_input. Outro valor ⇒ o no recusa arrancar
       # (ErrBadPlanInputDepois). Vale para runs novos: o layout e fixado por run.
       AOS_PLAN_INPUT_DEPOIS_DO_PRIMEIRO_TURNO: "${AOS_PLAN_INPUT_DEPOIS_DO_PRIMEIRO_TURNO:-}"
+      # O GATE DE TAINT ESCALA EM VEZ DE NEGAR (AOS-541). Vazio ou `off` ⇒ o de sempre (nega).
+      # `on` ⇒ a tool call privilegiada com o contexto untrusted pára o run à espera de quatro
+      # olhos; aprovada, corre; expirada ou recusada, a retoma faz o run falhar. Exige
+      # AOS_APPROVERS_FILE (sem ele: ErrTaintEscalaSemAprovadores). Outro valor ⇒ o nó recusa
+      # arrancar (ErrBadTaintEscala).
+      AOS_TAINT_ESCALA: "${AOS_TAINT_ESCALA:-}"
       # A NOVA TENTATIVA de um nó do plano (AOS-502, ADR-039). Vazio ou 0 ⇒ o nó recusa todo o
       # `POST /runs` com `plan_request.attempt`, não anuncia nada no `GET /tools` e é o de antes. 1
       # ou 2 ⇒ aceita até esse número de tentativas a mais por nó do plano, e só depois de provar

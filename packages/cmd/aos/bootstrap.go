@@ -488,6 +488,11 @@ type Config struct {
 	// 1.6.0, em que o primeiro turno não vê os `plan_input`. false ⇒ o layout de sempre. Ver
 	// plan_input_env.go.
 	PlanInputDepoisDoPrimeiroTurno bool
+	// TaintEscala troca a NEGAÇÃO do gate de taint por ESCALADA para aprovação humana de quatro
+	// olhos (AOS-541, `AOS_TAINT_ESCALA=on`). Exige aprovadores ([Config.Approvers]); sem eles o
+	// Bootstrap recusa com [ErrTaintEscalaSemAprovadores]. false ⇒ o gate nega, como sempre. Ver
+	// taint_escala_env.go.
+	TaintEscala bool
 	// ModelIdentityBinder liga, no Bootstrap, o VERIFIER REAL do nó ao estágio authn do Model
 	// Gateway REAL (AOS-278, CUTOVER DURO). O gateway é construído na fronteira de ambiente
 	// (parseModelFromEnv), ANTES de a identidade estar composta; o seu estágio authn arranca
@@ -2393,6 +2398,9 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		// destravaria nada. É o MESMO broker: quem emite o grant é quem o verifica e o
 		// consome (uso-único atómico).
 		approvalVerifier = approvalBroker
+	} else if cfg.TaintEscala {
+		// AOS-541: escalar sem quem decida não se compõe — ver [ErrTaintEscalaSemAprovadores].
+		return nil, ErrTaintEscalaSemAprovadores
 	}
 
 	// (7) SECURED RUNTIME — a CADEIA REAL (via NewProductionSecure), com o VERIFIER REAL
@@ -2590,6 +2598,8 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		EscalationSink:   escalationSink,
 		ApprovalEvidence: approvalEvidence,
 		ApprovalVerifier: approvalVerifier,
+		// AOS-541: o gate de taint escala em vez de negar. Só chega aqui com o ciclo acima composto.
+		TaintEscalate: cfg.TaintEscala,
 		// AOS-256/AOS-257: nó de orçamento por-run + BudgetCheck no lugar do stub + saldo da
 		// reserva no decorator do dispatcher. nil ⇒ stub neutro (nenhuma decisão consulta custo).
 		Budget: runBudget,
@@ -3083,6 +3093,10 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// É o único chamador não-teste de HasActiveTaintGate: sem ele, o predicado de eficácia que
 	// AOS-219 exportou ficava exportado-mas-não-consultado (o residual que EPIC-18 §5 registava).
 	for _, line := range taintGatePostureBanner(sec.Monitor().HasActiveTaintGate(), destinosDoClassificador(privileged)) {
+		log("%s", line)
+	}
+	// AOS-541: com `off` não sai linha. Do estado composto, como a linha de cima.
+	for _, line := range taintEscalaBanner(cfg.TaintEscala, sec.Monitor().HasActiveTaintGate()) {
 		log("%s", line)
 	}
 	// AOS-379: postura do CANAL DE EVENTOS DE MEDIAÇÃO. O argumento deriva do que foi REALMENTE

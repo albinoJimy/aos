@@ -51,6 +51,12 @@ var (
 	// revalidador selado NOUTRO store recusa o arranque, em vez de mediar com um trilho de
 	// supply-chain que se evapora sem que nada o diga.
 	ErrRevalidatorNotSealedToWORM = errors.New("integration: revalidator audit store != cfg.WORM (a revalidação por chamada tem de selar no MESMO store que cfg.WORM — AOS-381)")
+	// ErrTaintEscalateSemAprovacao — pediu-se o gate de taint a ESCALAR ([SecuredConfig.TaintEscalate],
+	// AOS-541) sem o ciclo de aprovação composto: o verificador dentro da cadeia, a fonte de
+	// evidência da retoma e o destino das escaladas. Sem os três uma escalada nunca teria quem a
+	// decidisse — o run ficaria à espera para sempre, ou, sem destino, a escalada degradaria para a
+	// negação com o operador convencido do contrário. Fail-closed: recusa compor.
+	ErrTaintEscalateSemAprovacao = errors.New("integration: o gate de taint so escala com o ciclo de aprovacao composto (ApprovalVerifier, ApprovalEvidence e EscalationSink) — AOS-541")
 )
 
 // wormBaseStore desembrulha decoradores de [audit.Store] que só DELEGAM (ex.: o
@@ -167,6 +173,12 @@ type SecuredConfig struct {
 	// é a barreira control/data-plane exigida por [referencemonitor.NewProductionSecure].
 	// nil ⇒ [referencemonitor.NewStaticPrivilegedSet] vazio (classificador real).
 	Privileged referencemonitor.PrivilegedAuthorizer
+	// TaintEscalate troca a NEGAÇÃO do gate de taint por ESCALADA para aprovação humana
+	// (AOS-541, [referencemonitor.NewEscalatingTaintGate]). Exige o ciclo de aprovação composto
+	// — [SecuredConfig.ApprovalVerifier], [SecuredConfig.ApprovalEvidence] e
+	// [SecuredConfig.EscalationSink] —, senão [NewSecuredRuntime] recusa com
+	// [ErrTaintEscalateSemAprovacao]. false ⇒ o gate nega, como sempre.
+	TaintEscalate bool
 	// Authority é a fonte de autoridade user∩classe para o [ScopeGate] (AOS-071).
 	// nil ⇒ [authz.NewStaticAuthoritySource] vazio (fonte real ⇒ scope fail-closed).
 	Authority authz.AuthoritySource
@@ -350,6 +362,9 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 	// durabilidade (recusa um store volátil desligado) sem o tornar refém da camada de traços.
 	case wormBaseStore(cfg.Revalidator.AuditStore()) != wormBaseStore(cfg.WORM):
 		return nil, ErrRevalidatorNotSealedToWORM
+	// AOS-541 — escalar sem quem decida é pior do que negar: recusa-se compor.
+	case cfg.TaintEscalate && (cfg.ApprovalVerifier == nil || cfg.ApprovalEvidence == nil || cfg.EscalationSink == nil):
+		return nil, ErrTaintEscalateSemAprovacao
 	}
 
 	// Defaults demo-grade (fail-closed): cada um é um hook REAL, nunca um stub. Os
@@ -420,6 +435,13 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 	if cfg.Budget != nil {
 		budgetHook = cfg.Budget.check
 	}
+	// O gate de taint: nega (o de sempre) ou, com cfg.TaintEscalate, escala para aprovação humana
+	// (AOS-541). A ordem da cadeia não muda: o ApprovalGate continua à cabeça, para a prova estar
+	// carimbada quando o taint decide.
+	taintGate := referencemonitor.NewTaintGate(privileged)
+	if cfg.TaintEscalate {
+		taintGate = referencemonitor.NewEscalatingTaintGate(privileged)
+	}
 	var hooks []referencemonitor.Hook
 	// APROVAÇÃO HUMANA (AOS-021) — ANTES de tudo o resto. Duas razões, ambas obrigatórias:
 	//
@@ -456,11 +478,11 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 		// risk.Gate composto — o caso deste nó — NEGA tudo o que não seja safe. Pô-lo aqui
 		// pararia o nó por inteiro. Este hook devolve sempre HookAllow.
 		referencemonitor.NewRiskClassifier(nil),
-		pdp.NewPolicyCheck(policyDP),              // policy (PDP, AOS-004)
-		referencemonitor.NewTaintGate(privileged), // taint (AOS-069)
-		referencemonitor.NewScopeGate(authority),  // scope (AOS-071)
-		budgetHook,                                // budget (AOS-008): real com cfg.Budget, stub sem ele
-		egressHook,                                // egress (AOS-067)
+		pdp.NewPolicyCheck(policyDP),             // policy (PDP, AOS-004)
+		taintGate,                                // taint (AOS-069); escala com cfg.TaintEscalate (AOS-541)
+		referencemonitor.NewScopeGate(authority), // scope (AOS-071)
+		budgetHook,                               // budget (AOS-008): real com cfg.Budget, stub sem ele
+		egressHook,                               // egress (AOS-067)
 	)
 
 	// EventSink durável = adaptador sancionado MediationRecord→AuditRecord sobre o

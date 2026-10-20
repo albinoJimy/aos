@@ -99,6 +99,13 @@ type acnHarness struct {
 // autonomia em L4 (danger ⇒ confirm ⇒ requer humano), e four-eyes com dois aprovadores
 // pinados. É a configuração do deployment endurecido.
 func newACNHarness(t *testing.T) *acnHarness {
+	return newACNHarnessCom(t, true, nil)
+}
+
+// newACNHarnessCom é o [newACNHarness] com duas variações: `autonomia=false` tira o oráculo de
+// autonomia do PDP (nada escala por ele), e `ajusta` mexe na Config antes do Bootstrap (AOS-541:
+// o gate de taint como fonte da escalada).
+func newACNHarnessCom(t *testing.T, autonomia bool, ajusta func(*Config)) *acnHarness {
 	t.Helper()
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -106,11 +113,15 @@ func newACNHarness(t *testing.T) *acnHarness {
 	signer := acnSigner(t)
 	// AOS-381: entrega-se o REGISTO ASSINADO e o Bootstrap constrói o revalidador SELADO no WORM
 	// DURÁVEL do nó (AOS_WORM_PATH), em vez de injectar um revalidador sobre um MemStore volátil.
-	levels := autonomy.NewLevelRegistry()
-	if _, err := levels.SetLevel(ctx, acnAgent, "fs", autonomy.L4, "teste de ciclo", "operador"); err != nil {
-		t.Fatalf("SetLevel: %v", err)
+	var pdpOpts []pdp.Option
+	if autonomia {
+		levels := autonomy.NewLevelRegistry()
+		if _, err := levels.SetLevel(ctx, acnAgent, "fs", autonomy.L4, "teste de ciclo", "operador"); err != nil {
+			t.Fatalf("SetLevel: %v", err)
+		}
+		pdpOpts = append(pdpOpts, pdp.WithAutonomyOracle(levels))
 	}
-	policyDP, err := pdp.Open("../../control-plane/pdp/policies", pdp.WithAutonomyOracle(levels))
+	policyDP, err := pdp.Open("../../control-plane/pdp/policies", pdpOpts...)
 	if err != nil {
 		t.Fatalf("abrir bundle de politica de referencia: %v", err)
 	}
@@ -141,6 +152,9 @@ func newACNHarness(t *testing.T) *acnHarness {
 	cfg.Approvers = []ApproverConfig{
 		{Principal: "human:alice", PubKey: pubA, Authority: []string{"approve:danger", "approve:gray"}},
 		{Principal: "human:bob", PubKey: pubB, Authority: []string{"approve:danger", "approve:gray"}},
+	}
+	if ajusta != nil {
+		ajusta(&cfg)
 	}
 
 	node, err := Bootstrap(ctx, cfg, io.Discard)

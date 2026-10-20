@@ -495,6 +495,11 @@ type PendingRecord struct {
 	// tecto — um ciclo de decisões humanas sobre um número que não é o que decide. Rótulo de
 	// diagnóstico legível, nunca segredo. Ausente no tipo aprovação.
 	Reason string `json:"reason,omitempty"`
+	// EscalatedBy é o hook do Reference Monitor que escalou, SÓ quando é o gate de taint
+	// ([EscalatedByTaint], AOS-541). Uma escalada do taint tem regras próprias no nó: exige quatro
+	// olhos e, retirada sem aprovação, faz a retoma falhar em vez de voltar a suspender. Ausente
+	// em qualquer outra escalada, pelo que o pendente da autonomia fica byte-idêntico ao de antes.
+	EscalatedBy string `json:"escalated_by,omitempty"`
 	// CreatedAt é o instante em que a acção foi escalada (RFC3339). É a âncora do TTL:
 	// passados [DefaultApprovalTTL] sem decisão, o pendente EXPIRA e o run deixa de
 	// esperar. Carimbado por quem regista (o nó tem o relógio); vazio ⇒ sem expiração
@@ -506,6 +511,78 @@ type PendingRecord struct {
 	// (prompt de exaustão). FORA do payload (`json:"-"`): o corpo continua byte-idêntico ao
 	// de antes, e um registo lido do log não o traz de volta por aqui — lê-se no envelope.
 	Producer eventstore.Producer `json:"-"`
+}
+
+// EscalatedByTaint é o [PendingRecord.EscalatedBy] de uma escalada do gate de taint (AOS-541): o
+// nome do hook ([referencemonitor.TaintGate.Name]).
+const EscalatedByTaint = "taint"
+
+// RetiradaSemGrant descreve como um pendente de aprovação saiu da lista do operador SEM que um
+// grant tivesse sido emitido para a sua preview (AOS-541): expirou (o TTL passou sem decisão) ou foi
+// decidido por um humano sem aprovação. Zero ⇒ não houve retirada sem grant.
+type RetiradaSemGrant struct {
+	// Expirada: o varredor retirou-o pelo TTL.
+	Expirada bool
+	// Decisao e Principal: a resposta humana registada por [PendingApprovals.Decide], quando a houve.
+	Decisao   string
+	Principal string
+}
+
+// Houve reporta se o pendente foi retirado sem grant.
+func (r RetiradaSemGrant) Houve() bool { return r.Expirada || r.Decisao != "" }
+
+// RetiradoSemGrant responde, para a call com esta preview no passo (run, step), se um pendente de
+// APROVAÇÃO dela já foi retirado da lista sem grant — expirado, ou decidido sem aprovação. É a
+// pergunta que o nó faz quando o gate de taint volta a escalar a mesma call na retoma: a
+// aprovação já não vem, e o run falha com a causa nomeada em vez de esperar outra vez (AOS-541).
+//
+// Um grant emitido para a preview faz a resposta ser «não houve», mesmo com o pendente expirado:
+// o caminho da cerimónia retira o pendente decidido da lista, e esse facto não é uma recusa.
+func (p *PendingApprovals) RetiradoSemGrant(ctx context.Context, runID, stepID string, preview []byte) (RetiradaSemGrant, error) {
+	events, err := readApprovalStream(ctx, p.store)
+	if err != nil {
+		return RetiradaSemGrant{}, err
+	}
+	expirados := make(map[string]struct{})
+	decididos := make(map[string]RetiradaSemGrant)
+	for _, ev := range events {
+		switch ev.Type {
+		case approvalGrantedEventType:
+			var g grantPayload
+			if err := json.Unmarshal(ev.Payload, &g); err == nil && constantTimeEqualBytes(g.Preview, preview) {
+				return RetiradaSemGrant{}, nil
+			}
+		case approvalExpiredEventType:
+			expirados[ev.StepID] = struct{}{}
+		case approvalDecidedEventType:
+			var d struct {
+				Decision  string `json:"decision"`
+				Principal string `json:"principal"`
+			}
+			if err := json.Unmarshal(ev.Payload, &d); err == nil {
+				decididos[ev.StepID] = RetiradaSemGrant{Decisao: d.Decision, Principal: d.Principal}
+			}
+		}
+	}
+	var out RetiradaSemGrant
+	for _, ev := range events {
+		if ev.Type != approvalPendingEventType {
+			continue
+		}
+		rec, ok := decodePending(ev.Payload)
+		if !ok || rec.Kind != PendingKindApproval || rec.RunID != runID || rec.StepID != stepID ||
+			!constantTimeEqualBytes(rec.Preview, preview) {
+			continue
+		}
+		suf := strings.TrimPrefix(ev.StepID, "pending-")
+		if d, ok := decididos["decided-"+suf]; ok {
+			return d, nil // a decisão humana diz mais do que a expiração: nomeia-se ela
+		}
+		if _, ok := expirados["expired-"+suf]; ok {
+			out.Expirada = true
+		}
+	}
+	return out, nil
 }
 
 // PendingApprovals é o registo durável de aprovações pendentes.

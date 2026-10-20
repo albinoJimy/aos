@@ -54,6 +54,32 @@ func newNodeEscalationSink(gates *runStateGates, pending *integration.PendingApp
 // grant e, sem retoma, nunca destrava nada). A ordem inversa deixaria uma janela em que o
 // run está suspenso e o operador não tem o que aprovar — o pior dos dois estados.
 func (s *nodeEscalationSink) Escalate(ctx context.Context, p agentruntime.PendingApproval) error {
+	// AOS-541 — uma escalada do GATE DE TAINT tem regras próprias. Se é a MESMA call (mesmo passo,
+	// mesma preview) cujo pendente já saiu da lista sem grant — expirou, ou um humano decidiu sem
+	// aprovar —, a retoma não volta a suspender à espera de uma aprovação que já não vem: o run
+	// falha com a causa nomeada. Nada é registado nem suspenso; o erro sobe e o loop termina o run.
+	//
+	// SÓ para o taint: uma escalada da autonomia retomada depois de expirar volta a suspender, como
+	// sempre (o interruptor desligado não muda nada, e as outras escaladas não são deste ticket).
+	escaladaDoTaint := p.EscalatedBy == integration.EscalatedByTaint
+	if escaladaDoTaint {
+		retirada, err := s.pending.RetiradoSemGrant(ctx, p.RunID, p.StepID, p.Preview)
+		if err != nil {
+			// Fail-closed: sem saber se já foi recusada, não se volta a pedir — falha-se.
+			return fmt.Errorf("aos: ler o registo de aprovacoes da escalada do taint (AOS-541): %w", err)
+		}
+		switch {
+		case retirada.Decisao != "":
+			return fmt.Errorf("%w: run=%q step=%q tool=%q decisao=%q por %q", ErrAprovacaoDoTaintRecusada, p.RunID, p.StepID, p.ToolID, retirada.Decisao, retirada.Principal)
+		case retirada.Expirada:
+			return fmt.Errorf("%w: run=%q step=%q tool=%q", ErrAprovacaoDoTaintExpirada, p.RunID, p.StepID, p.ToolID)
+		}
+	}
+	escaladoPor := ""
+	if escaladaDoTaint {
+		// Só o taint fica escrito: o pendente da autonomia continua byte-idêntico ao de antes.
+		escaladoPor = integration.EscalatedByTaint
+	}
 	if err := s.pending.Put(ctx, integration.PendingRecord{
 		RunID:          p.RunID,
 		StepID:         p.StepID,
@@ -64,6 +90,7 @@ func (s *nodeEscalationSink) Escalate(ctx context.Context, p agentruntime.Pendin
 		ResourceValue:  p.ResourceValue,
 		ResourceRegion: p.ResourceRegion,
 		Preview:        p.Preview,
+		EscalatedBy:    escaladoPor,
 		// Âncora do TTL: é daqui que o varrimento periódico sabe que a espera excedeu os
 		// 15 minutos. Sem ela o pendente nunca expiraria sozinho (fail-safe).
 		CreatedAt: s.clock().UTC().Format(time.RFC3339Nano),
