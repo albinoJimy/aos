@@ -33,8 +33,10 @@ import (
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	audit "github.com/aos-ref/platform/audit"
 	modelgateway "github.com/aos-ref/platform/model-gateway"
+	"github.com/aos-ref/platform/model-gateway/metering/cost"
 	"github.com/aos-ref/platform/model-gateway/pipeline/authn"
 	"github.com/aos-ref/platform/model-gateway/port"
+	"github.com/aos-ref/platform/model-gateway/pricing"
 )
 
 // modelInvokeCapability é a capability que o token NHI tem de SELAR no escopo para invocar
@@ -53,6 +55,10 @@ type gatewayConfig struct {
 	// default do caminho (30 s no transporte endurecido, 60 s no seam de dev), como no nó.
 	egressTimeout time.Duration
 	production    bool
+	// custo (AOS-544) é o calculador do custo de cada chamada do planeador, com a MESMA tabela de
+	// preços do nó (AOS_MODEL_PRICING_PATH). nil ⇒ sem tabela externa: os dólares do planeamento
+	// ficam NÃO MEDIDOS, como antes.
+	custo *cost.Recorder
 }
 
 // Limites de AOS_MODEL_EGRESS_TIMEOUT — os mesmos do nó (packages/cmd/aos/main.go).
@@ -124,7 +130,35 @@ func gatewayConfigFromEnv() (*gatewayConfig, error) {
 		}
 		egressTimeout = d
 	}
-	return &gatewayConfig{endpoint: endpoint, model: model, apiKeyPath: apiKeyPath, region: region, board: board, egressHosts: egress, egressTimeout: egressTimeout, production: production}, nil
+	custo, err := custoDoPlaneamentoFromEnv(model, region)
+	if err != nil {
+		return nil, err
+	}
+	return &gatewayConfig{endpoint: endpoint, model: model, apiKeyPath: apiKeyPath, region: region, board: board, egressHosts: egress, egressTimeout: egressTimeout, production: production, custo: custo}, nil
+}
+
+// custoDoPlaneamentoFromEnv compõe o calculador do custo do planeador (AOS-544) a partir da MESMA
+// tabela de preços do nó, `AOS_MODEL_PRICING_PATH`. Só uma tabela EXTERNA arma o custo: a embebida
+// é de referência, e declarar dólares com ela seria inventar o preço. Vazia ⇒ nil (não medido, como
+// antes). Definida e ilegível, ou sem o par (modelo, região) do planeador ⇒ ERRO: o gateway
+// recusaria cada chamada sem preço, e o operador pediu custo.
+func custoDoPlaneamentoFromEnv(model, region string) (*cost.Recorder, error) {
+	path := strings.TrimSpace(os.Getenv("AOS_MODEL_PRICING_PATH"))
+	if path == "" {
+		return nil, nil
+	}
+	doc, err := os.ReadFile(path) // #nosec G304 -- caminho de configuração do operador
+	if err != nil {
+		return nil, fmt.Errorf("AOS_MODEL_PRICING_PATH: ler a tabela de precos: %w", err)
+	}
+	table, err := pricing.LoadTable(doc)
+	if err != nil {
+		return nil, fmt.Errorf("AOS_MODEL_PRICING_PATH: tabela de precos invalida: %w", err)
+	}
+	if _, ok := table.RateFor(model, region); !ok {
+		return nil, fmt.Errorf("AOS_MODEL_PRICING_PATH: a tabela de precos nao tem o par (%s, %s) do planeador — o gateway recusaria cada chamada sem preco", model, region)
+	}
+	return cost.NewRecorder(cost.NewCalculator(table)), nil
 }
 
 // staticCredencialModelo implementa [modelgateway.CredentialProvider]: devolve o segredo de
@@ -246,6 +280,7 @@ func construirModeloGateway(ctx context.Context, cfg *gatewayConfig, verifier au
 		Audit:         govAudit,
 		Credentials:   staticCredencialModelo{secret: secret},
 		Accounts:      []modelgateway.InfraAccount{{KeyID: "model-upstream", Provider: "openai", Region: cfg.region}},
+		Cost:          cfg.custo, // AOS-544: nil ⇒ sem custo derivado, como antes
 	}
 	if cfg.production {
 		// Egress REAL endurecido (SSRF fail-closed, AOS-223): HTTPClient nil + allowlist.
@@ -264,6 +299,10 @@ func construirModeloGateway(ctx context.Context, cfg *gatewayConfig, verifier au
 	if err != nil {
 		return nil, fmt.Errorf("compor o Model Gateway: %w", err)
 	}
+	medidor := medidorDe(ctx)
+	if cfg.custo != nil {
+		medidor.armarCusto() // AOS-544: o custo de cada chamada vem derivado no usage
+	}
 	return gatewayDecomposeModel{gw: gw, model: cfg.model, region: cfg.region, board: cfg.board, principal: principal,
-		medidor: medidorDe(ctx)}, nil
+		medidor: medidor}, nil
 }

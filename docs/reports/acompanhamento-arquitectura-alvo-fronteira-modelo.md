@@ -909,7 +909,7 @@ Nomeados no fecho. Nenhum ficou resolvido pelo fecho; os que a fase A4 herda est
 
 Nomeados no fecho. Nenhum ficou resolvido pelo fecho.
 
-- **(a) O custo do modelo não é contado pelo nó.** O titular é pago por token na OpenRouter, e o
+- **(a) — resolvido para o nó, provado a 2026-10-21** (plano `rota2`: 4 turnos do titular com custo, que batem com os tokens e o preço da OpenRouter); **o planeador passa a contar o seu pelo AOS-544.** Texto original: **(a) O custo do modelo não é contado pelo nó.** O titular é pago por token na OpenRouter, e o
   nó regista custo zero («não derivado»): não há tabela de preços em produção, e o compose não
   monta nenhum ficheiro onde ela possa estar. Sem custo, o tecto em dólares por run não se pode
   ligar. Em curso: AOS-527. **Ligado a 2026-10-15** (v0.1.56): custo ARMADO e tecto de 0,10 USD

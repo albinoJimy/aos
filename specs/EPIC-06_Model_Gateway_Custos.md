@@ -5318,6 +5318,46 @@ e a suite AOS-505 do nó composto.
 
 ---
 
+## AOS-544 — O custo do planeador: o `aos-orq` deriva os dólares de cada chamada com a tabela do nó
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 — Model Gateway e Custos |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — resíduo «o custo do modelo não é contado» (A4 (a)) |
+| Tipo | feat |
+| Prioridade | P2 |
+| Estimativa | S |
+| Dependências | AOS-466; AOS-527 |
+| Responsável sugerido | Engenheiro de Plataforma |
+| Documentos de referência | `packages/cmd/aos-orq/medidor_do_planeamento.go`; `packages/cmd/aos-orq/model_gateway_wiring.go`; `packages/cmd/aos/plan_claim.go`; `deploy/server/docker-compose.prod.yml` |
+
+### Contexto
+
+Medido a 2026-10-21: o nó conta o custo dos turnos do titular desde a v0.1.56 (AOS-527) — num plano
+de prova, quatro turnos com 162, 342, 210 e 652 µUSD, que batem com os tokens e o preço da tabela,
+igual ao da OpenRouter. O planeador (o `aos-orq`) também chama o modelo, uma vez por plano, e mede
+os tokens (AOS-466), mas declara os dólares sempre como não medidos: a tabela de preços só existia
+no nó. O dono escolheu medi-los (opção B).
+
+### Critérios de Aceitação
+
+- [x] O `aos-orq` lê a MESMA tabela do nó (`AOS_MODEL_PRICING_PATH`) e compõe o gateway com o
+      calculador de custo; vazia ⇒ não medido, como antes; definida e ilegível, ou sem o par
+      (modelo, região) do planeador ⇒ não arranca.
+- [x] O medidor do planeamento soma o custo derivado de cada chamada e declara-o MEDIDO só se todas
+      as chamadas foram medidas; desarmado ⇒ não medido; zero chamadas ⇒ zero medido.
+- [x] O compose de produção passa a variável ao serviço `aos-orq` e monta a pasta da tabela só de
+      leitura.
+- [ ] Em produção: um plano cujo desfecho declara o custo do planeamento medido e diferente de zero.
+
+*Nota de 2026-10-21:* `packages/cmd/aos-orq/aos544_custo_do_planeador_test.go`.
+
+### Fora de âmbito
+
+- Mostrar o custo do planeamento no `GET /plans/{id}` (fica na quota do principal, como os tokens).
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -5362,3 +5402,4 @@ e a suite AOS-505 do nó composto.
 | 3.17 | 2026-10-15 | AOS-527 em produção na v0.1.56: custo do modelo ARMADO com a tabela externa e tecto de 0,10 USD por run ligado. Falta ver um run com custo diferente de zero | Equipa AOS |
 | 1.10 | 2026-10-21 | +AOS-543: a governação da rota impõe o modelo servido sem exigir o endpoint (emenda de 2026-10-21 ao ADR-036 §2.8, decisão do dono) | Equipa AOS |
 | 1.11 | 2026-10-21 | AOS-543 em produção na v0.1.65: a governação da rota em `enforce` (só o modelo); plano de prova com 4 turnos `igual` | Equipa AOS |
+| 1.12 | 2026-10-21 | +AOS-544: o custo do planeador — o aos-orq deriva os dólares de cada chamada com a tabela do nó (decisão do dono, opção B) | Equipa AOS |
