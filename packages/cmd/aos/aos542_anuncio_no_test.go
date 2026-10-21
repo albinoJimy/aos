@@ -140,3 +140,39 @@ func TestAOS542_No_ExigenciaPorRun(t *testing.T) {
 		})
 	}
 }
+
+// Re-revisão do AOS-542 (Mu6): no NÓ COMPOSTO, com o gate armado mas sem cobrir as tools de efeito
+// do manifesto (as do harness não declaram eixos e a capability delas não está no conjunto), o nó
+// não anuncia e diz quais ficaram fora no arranque.
+func TestAOS542_No_ToolsForaDoGateNaoAnuncia(t *testing.T) {
+	aos504SemVariavel(t, "AOS_MODEL_PROJECTION_VERSION")
+	n := aos486ComporCom(t, "native", func(cfg *Config) {
+		cfg.PlanInputDepoisDoPrimeiroTurno = true
+		cfg.Privileged = referencemonitor.NewStaticPrivilegedSet("cap:http.post")
+	})
+	if n.node.primeiroTurnoConfiavel {
+		t.Fatal("com tools de efeito fora do gate o no nao podia anunciar")
+	}
+	rec := getReq(n.h, "/tools", map[string]string{"Authorization": "Bearer " + n.tok})
+	if strings.Contains(rec.Body.String(), "plan_input_deferral") {
+		t.Fatalf("o GET /tools anunciou: %s", rec.Body.String())
+	}
+	if !strings.Contains(n.log.String(), "primeiro turno confiavel (AOS-542): NAO ANUNCIADO") {
+		t.Fatalf("o arranque tinha de dizer porque nao anuncia:\n%s", n.log.String())
+	}
+}
+
+// Re-revisão do AOS-542 (Mu1): o egress IMPLÍCITO conta como efeito mesmo com a mutação e a
+// reversibilidade benignas e explícitas — o catálogo serve-o `unknown`, e o aos-orq conta-o.
+func TestAOS542_EgressImplicitoContaComoEfeito(t *testing.T) {
+	t.Setenv("AOS_MODEL_ENDPOINT", "http://modelo.invalido")
+	t.Setenv("AOS_MODEL_TOOLS", writeTools(t, `[{"name":"sonda","capability":"cap:net.probe","resource_type":"host","resource_value":"x","mutation":"none","reversibility":"reversible"}]`))
+	dests, err := toolDestinationsFromEnv()
+	if err != nil {
+		t.Fatalf("destinos: %v", err)
+	}
+	fora, err := toolsDeEfeitoForaDoGate(privilegedComDestinos(referencemonitor.NewStaticPrivilegedSet("cap:http.post"), dests))
+	if err != nil || len(fora) != 1 || fora[0] != "sonda" {
+		t.Fatalf("fora=%v err=%v, quero [sonda]", fora, err)
+	}
+}

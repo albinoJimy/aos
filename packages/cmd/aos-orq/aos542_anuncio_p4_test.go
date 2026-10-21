@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aos-ref/control-plane/orchestrator/plan"
 	"github.com/aos-ref/control-plane/orchestrator/planvalidate"
 )
 
@@ -83,6 +84,34 @@ func TestAOS542_SubmitLevaAExigencia(t *testing.T) {
 		v, tem := ultimo["requires_first_turn_trusted"]
 		if exige != tem || (tem && v != true) {
 			t.Fatalf("exige=%v: campo presente=%v valor=%v", exige, tem, v)
+		}
+	}
+}
+
+// Re-revisão do AOS-542 (Mu4): o EXECUTOR põe a exigência só nos nós com `inputs`, e só com o
+// plano validado com a P4 relaxada.
+func TestAOS542_ExecutorExigeSoNosConsumidores(t *testing.T) {
+	nos := map[string]plan.Node{
+		"n0": {NodeID: "n0", Objective: "le"},
+		"n1": {NodeID: "n1", Objective: "usa", DependsOn: []string{"n0"},
+			Consumes: []plan.PayloadEdge{{From: "n0", Output: "texto", Type: plan.PayloadSummary}}},
+	}
+	for _, exigido := range []bool{true, false} {
+		cli := &runnerQueGuarda{}
+		e := &executorDeNos{cli: cli, runID: "plano", nos: nos, emVoo: map[string]struct{}{},
+			payloads:             map[chaveDePayload]string{{no: "n0", output: "texto"}: "dados"},
+			primeiroTurnoExigido: exigido}
+		if err := e.submeter(context.Background(), "n0"); err != nil {
+			t.Fatal(err)
+		}
+		if cli.ultimo.RequiresFirstTurnTrusted {
+			t.Fatalf("exigido=%v: um no sem inputs nao leva a exigencia", exigido)
+		}
+		if err := e.submeter(context.Background(), "n1"); err != nil {
+			t.Fatal(err)
+		}
+		if cli.ultimo.RequiresFirstTurnTrusted != exigido {
+			t.Fatalf("exigido=%v: o consumidor levou %v", exigido, cli.ultimo.RequiresFirstTurnTrusted)
 		}
 	}
 }
