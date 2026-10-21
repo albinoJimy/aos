@@ -10,8 +10,10 @@ package main
 // O QUE SE MEDE: `prompt_tokens + completion_tokens` de cada chamada ao modelo (ou o `total_tokens`,
 // se for maior). Uma chamada que falha, ou uma resposta sem `usage` (`prompt_tokens <= 0` — nenhum
 // pedido real ao modelo tem um prompt vazio), torna os tokens NÃO MEDIDOS: o nó cobra por essa
-// geração o que se mediu mais a reserva. Os dólares NUNCA se medem aqui — a tabela de preços vive
-// no nó —, excepto no caso exacto de nenhuma chamada: zero chamadas custam zero.
+// geração o que se mediu mais a reserva. OS DÓLARES (AOS-544): com a tabela de preços do operador
+// montada também neste processo (AOS_MODEL_PRICING_PATH), o gateway deriva o custo de cada chamada e
+// o medidor soma-o — medido só se TODAS as chamadas foram medidas. Sem a tabela, os dólares ficam
+// não medidos, excepto no caso exacto de nenhuma chamada: zero chamadas custam zero.
 
 import (
 	"context"
@@ -37,6 +39,20 @@ type medidorDoPlaneamento struct {
 	tokens     int64
 	chamadas   int
 	naoMedidas int
+	// custo (AOS-544): a soma do custo derivado pelo gateway; só com custoArmado.
+	custo       int64
+	custoArmado bool
+}
+
+// armarCusto diz ao medidor que o gateway deriva o custo de cada chamada (AOS-544). Chama-o a
+// composição do modelo, antes de qualquer chamada.
+func (m *medidorDoPlaneamento) armarCusto() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.custoArmado = true
 }
 
 // registar conta uma chamada ao modelo.
@@ -54,6 +70,7 @@ func (m *medidorDoPlaneamento) registar(u port.Usage, err error) {
 	// O `total_tokens` do provider, quando é maior do que a soma, é o que se cobra: uma resposta
 	// com `prompt_tokens` e sem `completion_tokens` não passa a custar só o prompt.
 	m.tokens += max(u.TotalTokens, u.PromptTokens+u.CompletionTokens)
+	m.custo += max(u.CostMicroUSD, 0)
 }
 
 // consumo é o que se declara ao nó. Um medidor nil não viu as chamadas, e por isso não sabe:
@@ -68,7 +85,8 @@ func (m *medidorDoPlaneamento) consumo() consumoDoPlaneamento {
 	return consumoDoPlaneamento{
 		Tokens:        m.tokens,
 		TokensMedidos: m.naoMedidas == 0,
-		CustoMedido:   m.chamadas == 0,
+		CostMicroUSD:  m.custo,
+		CustoMedido:   m.chamadas == 0 || (m.custoArmado && m.naoMedidas == 0),
 	}
 }
 

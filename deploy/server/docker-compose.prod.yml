@@ -780,6 +780,9 @@ services:
       # O mesmo tempo máximo por pedido ao modelo que o nó (120s em produção desde a v0.1.12).
       AOS_MODEL_EGRESS_TIMEOUT: "${AOS_MODEL_EGRESS_TIMEOUT:-}"
       AOS_MODEL_API_KEY_PATH: "${AOS_MODEL_API_KEY_PATH:-}"
+      # AOS-544: a MESMA tabela de preços do nó, para o custo do planeador. Vazia ⇒ os dólares do
+      # planeamento ficam não medidos, como antes; definida sem o par (modelo, região) ⇒ não arranca.
+      AOS_MODEL_PRICING_PATH: "${AOS_MODEL_PRICING_PATH:-}"
       # UM escritor por caminho: dois `run` em simultâneo precisam de caminhos distintos, com
       # `run -e AOS_MODEL_AUDIT_PATH=/var/lib/aos-orq/<run>-audit.wal` — senão o segundo sai com 5.
       AOS_MODEL_AUDIT_PATH: "${AOS_ORQ_MODEL_AUDIT_PATH:-/var/lib/aos-orq/model-audit.wal}"
@@ -845,6 +848,7 @@ services:
       - ./orq:/etc/aos-orq:ro                            # entradas do operador (snapshot, plan-doc, approvers)
       - ./tls-internal/ca-bundle.crt:/etc/aos/internal-ca.crt:ro
       - ./secrets/model-api.key:/etc/aos/model-api.key:ro
+      - ./model-pricing:/etc/aos/model-pricing:ro         # AOS-544: a tabela de precos do operador (a do no)
       # AOS-413: o segredo do cliente do IdP com que o executor de nós obtém o Bearer (o mesmo
       # cliente `aos-reader` do E2E). Só é lido com AOS_ORQ_OIDC_CLIENT_SECRET_FILE apontado aqui.
       - ./secrets/reader-client-secret:/run/aos-orq/reader-client-secret:ro
