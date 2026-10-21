@@ -1564,8 +1564,12 @@ nó executa com segurança.
       da P4 não fica selado no `plan.validated` (só no log da drenagem); a composição no `serve`
       (`aplicarAnuncioDaP4`, a cópia para o executor) não tem teste próprio; o flag vive no
       `Snapshot`, partilhado com outros leitores (o `EffectOracle` e o `ResolveRisks` não o lêem).
-- [ ] Em produção: repetir a série de cinco planos e contar os pedidos tardios (runs no layout 1.6.0 com
+- [x] Em produção: repetir a série de cinco planos e contar os pedidos tardios (runs no layout 1.6.0 com
       uma call de efeito negada por taint).
+      *Nota de 2026-10-21:* v0.1.64, série `p3a1`–`p3a5` (os mesmos pedidos da série `p2a` que deu 3 de 5
+      recusados): 5 de 5 planos com código 0; nos cinco o planeador pôs a `ocr_read` no nó que recebe o
+      resumo, o nó correu no layout 1.6.0 com `plan_inputs_deferred=1` e pediu a OCR no primeiro turno,
+      mediada com `taint: trusted`; 0 pedidos tardios.
 
 *Nota de 2026-10-21:* testes em
 `packages/control-plane/orchestrator/planvalidate/aos542_p4_pelo_anuncio_test.go`,
@@ -1604,3 +1608,4 @@ validador deixa de recusar quando não separa.
 | 1.13 | 2026-10-20 | AOS-539 implementado no ramo `feature/AOS-539-egress-no-risco`: o egress declarado só eleva o derivado da capability no classificador de risco; `resource_sensitivity` por tool no manifesto (fail-closed sem ela, recusa no arranque fora do vocabulário ou fora de uma leitura); `doc_read`/`ocr_read`/`video_read` de produção declaram `public` — OCR e vídeo ficam `gray` e não escalam em L4, a `doc_read` passa a `safe`; paridade nó×`aos-orq` e cablagem do nó composto testadas | Equipa AOS |
 | 1.14 | 2026-10-20 | AOS-539, revisão adversarial: o validador do registo de tools recusa `resource_sensitivity` com egress não `none` sem bloco `modelo`, com `args_from` ou com recurso de rede, e `mutation: "none"` com verbo de escrita na capability ou no comando (M-1); a absorção de um degrau do taint pela declaração documentada (M-2); a `ocr_read` real no nó composto; o snapshot sintetizado da paridade e a falta de conferência da sensibilidade no arranque registados como resíduo (B-1) | Equipa AOS |
 | 1.15 | 2026-10-21 | +AOS-542: a regra P4 do plano relaxa-se quando o nó anuncia que só deixa pedir no primeiro turno (emenda de 2026-10-21 ao ADR-034, decisão do dono) | Equipa AOS |
+| 1.16 | 2026-10-21 | AOS-542 em produção na v0.1.64 (com o Go 1.26.10): série `p3a1`–`p3a5`, 5 de 5, a OCR no nó consumidor no primeiro turno, 0 pedidos tardios | Equipa AOS |
