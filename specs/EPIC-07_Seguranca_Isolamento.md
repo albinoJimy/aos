@@ -1521,6 +1521,69 @@ passar uma call aprovada. Falta o gate de taint escalar em vez de negar.
 
 ---
 
+## AOS-542 — A regra P4 do plano relaxa-se quando o nó anuncia que só deixa pedir no primeiro turno
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-07 — Segurança e Isolamento |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — limite do taint, depois dos AOS-538 a AOS-541 |
+| Tipo | feat |
+| Prioridade | P1 |
+| Estimativa | S |
+| Dependências | AOS-540; emenda de 2026-10-21 ao ADR-034 |
+| Responsável sugerido | Engenheiro de Segurança |
+| Documentos de referência | `docs/adr/ADR-034-autorizacao-derivada-do-contexto.md` (emenda de 2026-10-21); `packages/control-plane/orchestrator/planvalidate/payload.go`; `packages/cmd/aos/catalogo_de_tools.go`; `packages/cmd/aos-orq/contrato_de_conclusao.go` |
+
+### Contexto
+
+Série de 2026-10-20 em produção (v0.1.63, `AOS_PLAN_INPUT_DEPOIS_DO_PRIMEIRO_TURNO=on`), cinco planos
+«lê `notes` e resume; num passo que recebe o resumo, transcreve a imagem X com a `ocr_read`»: os
+planos `p2a1` e `p2a2` terminaram com código 0 (o planeador pôs a OCR num nó sem `consumes`); `p2a3`,
+`p2a4` e `p2a5` foram recusados pelo planeador (código 9) pela regra P4 do validador — a `ocr_read`
+tem egress externo e o nó consumidor recebia material `untrusted`. Em 639 planos de produção até essa
+data, só estes 3 tinham sido recusados pelo planeador. Com o AOS-540 ligado, a P4 recusa planos que o
+nó executa com segurança.
+
+### Critérios de Aceitação
+
+- [x] O nó anuncia `plan_input_deferral.first_turn_trusted` no `GET /tools` só com o «pedir antes de
+      ler» ligado E o gate de taint armado com o conjunto composto; sem as duas, o campo está ausente.
+- [x] O `aos-orq` lê o anúncio na mesma resposta dos outros (um anúncio ilegível já pára o `serve`) e
+      só com ele, e com o snapshot conferido com o nó, relaxa a P4; declara-o numa linha da drenagem.
+- [x] Com o anúncio, a P4 deixa um nó consumidor ter tools de efeito; sem ele, recusa como antes; uma
+      tool que não resolve no snapshot recusa sempre. O anúncio não entra no hash nem no digest do
+      snapshot.
+- [x] A barreira do nó não muda: uma call de efeito depois de os dados entrarem continua negada pelo
+      gate de taint (coberto pelos testes do AOS-540, `TestPedirAntesDeLer_Turno1SoTextoEEfeitoNoTurno2Negado`).
+- [x] Revisão adversarial independente — achado ALTO corrigido: o nó só anuncia se TODAS as tools
+      que o `aos-orq` conta como de efeito forem privilegiadas para o gate composto
+      (`toolsDeEfeitoForaDoGate`; com uma de fora, o nó não anuncia e diz quais na linha de arranque);
+      achado MÉDIO corrigido: cada nó consumidor de um plano validado com a P4 relaxada leva
+      `requires_first_turn_trusted` no `POST /runs`, e um nó que não o garanta (reiniciado sem o
+      interruptor, gate desarmado, tool de efeito fora do gate) recusa com 400. Resíduos: o regime
+      da P4 não fica selado no `plan.validated` (só no log da drenagem); a composição no `serve`
+      (`aplicarAnuncioDaP4`, a cópia para o executor) não tem teste próprio; o flag vive no
+      `Snapshot`, partilhado com outros leitores (o `EffectOracle` e o `ResolveRisks` não o lêem).
+- [ ] Em produção: repetir a série de cinco planos e contar os pedidos tardios (runs no layout 1.6.0 com
+      uma call de efeito negada por taint).
+
+*Nota de 2026-10-21:* testes em
+`packages/control-plane/orchestrator/planvalidate/aos542_p4_pelo_anuncio_test.go`,
+`packages/cmd/aos-orq/aos542_anuncio_p4_test.go` e `packages/cmd/aos/aos542_anuncio_no_test.go`
+(nó composto, quatro combinações das duas condições). Oito mutações à mão, todas vermelhas. O
+`aos-orq decide` (decisão humana de um plano `danger`) não volta a correr a P4: um plano aceite com
+a P4 relaxada é decidido normalmente; se depois o nó deixar de anunciar, a retoma (`--plan-doc`)
+recusa-o na validação, depois da decisão humana — o lado seguro, como resíduo. O prompt do planeador (regra 8) continua a pedir que as tools de efeito
+não fiquem em consumidores: o planeador pode separar o passo, como fez nos planos 1 e 2, e o
+validador deixa de recusar quando não separa.
+
+### Fora de âmbito
+
+- Mudar o prompt do planeador.
+- Uma métrica dedicada aos pedidos tardios (conta-se pelos eventos).
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -1540,3 +1603,4 @@ passar uma call aprovada. Falta o gate de taint escalar em vez de negar.
 | 1.12 | 2026-10-20 | AOS-541, revisão adversarial e decisão do dono («mantenha uma pessoa»): as escaladas do taint pedem a aprovação de uma pessoa (o duplo controlo fica como era); a escalada da autonomia sobre uma call que o taint escalaria passa a dizer `escalated_by=taint`; o MÉDIO dos argumentos não mostrados e as três divergências registados | Equipa AOS |
 | 1.13 | 2026-10-20 | AOS-539 implementado no ramo `feature/AOS-539-egress-no-risco`: o egress declarado só eleva o derivado da capability no classificador de risco; `resource_sensitivity` por tool no manifesto (fail-closed sem ela, recusa no arranque fora do vocabulário ou fora de uma leitura); `doc_read`/`ocr_read`/`video_read` de produção declaram `public` — OCR e vídeo ficam `gray` e não escalam em L4, a `doc_read` passa a `safe`; paridade nó×`aos-orq` e cablagem do nó composto testadas | Equipa AOS |
 | 1.14 | 2026-10-20 | AOS-539, revisão adversarial: o validador do registo de tools recusa `resource_sensitivity` com egress não `none` sem bloco `modelo`, com `args_from` ou com recurso de rede, e `mutation: "none"` com verbo de escrita na capability ou no comando (M-1); a absorção de um degrau do taint pela declaração documentada (M-2); a `ocr_read` real no nó composto; o snapshot sintetizado da paridade e a falta de conferência da sensibilidade no arranque registados como resíduo (B-1) | Equipa AOS |
+| 1.15 | 2026-10-21 | +AOS-542: a regra P4 do plano relaxa-se quando o nó anuncia que só deixa pedir no primeiro turno (emenda de 2026-10-21 ao ADR-034, decisão do dono) | Equipa AOS |

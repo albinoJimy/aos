@@ -410,6 +410,61 @@ func toolDestinationsFromEnv() (referencemonitor.ToolDestinations, error) {
 	return referencemonitor.NewToolDestinations(m), nil
 }
 
+// gateDeTaintArmado diz se o classificador COMPOSTO torna o gate de taint eficaz — o critério do
+// kernel ([referencemonitor.EffectivePrivilegedAuthorizer]); um classificador opaco presume-se
+// eficaz, como no kernel. nil ⇒ desarmado. É a segunda condição do anúncio do AOS-542.
+func gateDeTaintArmado(p referencemonitor.PrivilegedAuthorizer) bool {
+	if p == nil {
+		return false
+	}
+	if e, ok := p.(referencemonitor.EffectivePrivilegedAuthorizer); ok {
+		return e.HasPrivileged()
+	}
+	return true
+}
+
+// toolsDeEfeitoForaDoGate devolve as tools do manifesto que o `aos-orq` conta como DE EFEITO (o
+// catálogo serve-as assim: egress diferente de `none` ou não declarado, reversibilidade que não é
+// `reversible`, mutação que não é `none`) e que o classificador COMPOSTO do gate de taint NÃO trata
+// como privilegiadas. Revisão adversarial do AOS-542: o anúncio «primeiro turno confiável» faz o
+// `aos-orq` aceitar um nó consumidor com qualquer tool de efeito, e é o gate que as nega depois de
+// os dados entrarem — uma tool de efeito fora do gate passaria. Com alguma, o nó NÃO anuncia.
+func toolsDeEfeitoForaDoGate(p referencemonitor.PrivilegedAuthorizer) ([]string, error) {
+	if p == nil || strings.TrimSpace(os.Getenv("AOS_MODEL_ENDPOINT")) == "" {
+		return nil, nil
+	}
+	specs, err := readModelToolSpecs()
+	if err != nil {
+		return nil, err
+	}
+	var fora []string
+	for _, s := range specs {
+		nome := strings.TrimSpace(s.Name)
+		rev, err := validateReversibility(s.Reversibility)
+		if err != nil {
+			return nil, err
+		}
+		mut, err := validateMutation(s)
+		if err != nil {
+			return nil, err
+		}
+		efeito := strings.ToLower(strings.TrimSpace(s.Egress)) != "none" || rev != "reversible" || mut != "none"
+		if !efeito {
+			continue
+		}
+		call := &referencemonitor.Call{ToolID: nome, Capability: strings.TrimSpace(s.Capability),
+			Resource: referencemonitor.Resource{Type: s.ResourceType, Value: s.ResourceValue}}
+		privilegiada := p.IsPrivileged(call.Capability)
+		if c, ok := p.(referencemonitor.ToolPrivilegeClassifier); ok {
+			privilegiada, _ = c.ClassifyCall(call)
+		}
+		if !privilegiada {
+			fora = append(fora, nome)
+		}
+	}
+	return fora, nil
+}
+
 // privilegedComDestinos compõe o classificador do gate de taint com o destino das tools
 // (AOS-538). Só embrulha um classificador que exista: sem AOS_PRIVILEGED_CAPS o gate continua
 // desarmado (nil) e nada muda; sem tools declaradas, a regra é a de antes.

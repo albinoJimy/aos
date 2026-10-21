@@ -331,17 +331,20 @@ func TestUnresolvedToolMakesConsumerPrivileged(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			n := plan.Node{NodeID: "x", Tools: []plan.ToolRef{tc.tool}}
-			if !privilegedAuthority(n, idx) {
-				t.Fatalf("tool que não resolve devia contar como privilegiada (fail-closed)")
+			// AOS-542: fail-closed com e sem o anúncio do primeiro turno confiável.
+			for _, primeiro := range []bool{false, true} {
+				if !privilegedAuthority(n, idx, primeiro) {
+					t.Fatalf("tool que não resolve devia contar como privilegiada (fail-closed), anúncio=%v", primeiro)
+				}
 			}
 		})
 	}
 	// Um nó SEM tools não tem autoridade nenhuma — pode consumir untrusted à vontade.
-	if privilegedAuthority(plan.Node{NodeID: "x"}, idx) {
+	if privilegedAuthority(plan.Node{NodeID: "x"}, idx, false) {
 		t.Fatalf("nó sem tools não devia ser privilegiado")
 	}
 	// E a tool read-only pinada continua a NÃO ser privilegiada (não-vacuidade).
-	if privilegedAuthority(plan.Node{NodeID: "x", Tools: []plan.ToolRef{readOnlyTool()}}, idx) {
+	if privilegedAuthority(plan.Node{NodeID: "x", Tools: []plan.ToolRef{readOnlyTool()}}, idx, false) {
 		t.Fatalf("tool sem egress e reversível não devia ser privilegiada")
 	}
 }

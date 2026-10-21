@@ -471,6 +471,10 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento, medicao *medicaoD
 			medicao.contratoNaoAplicado(motivoNoNaoAnuncia)
 		}
 		fmt.Println(bannerDoContrato(anuncio))
+		// AOS-542: a regra P4 relaxa-se só com o anúncio do nó E o snapshot conferido com ele (é a
+		// MESMA cópia que se valida e sela daqui em diante). Sem conferência, fica como antes.
+		conferido = aplicarAnuncioDaP4(conferido, anuncio)
+		fmt.Println(bannerDaP4(anuncio, conferido.ok))
 		// AOS-499: o modo da saída por referência, contra o que ESTE nó anuncia — lido na mesma
 		// resposta, pelo que um anúncio ilegível já parou o `serve` acima.
 		fmt.Println(bannerDaSaidaPorReferencia(modoDaSaida, anuncio))
@@ -604,6 +608,8 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento, medicao *medicaoD
 		exe = &configDoExecutor{cli: cliDoNo, prazo: *planTimeout, sondagem: *pollInterval, perdida: perdida,
 			geracaoDoPedido: *geracaoDoPedido, declararOrigem: origem.pedido != nil,
 			contratoDeConclusao: anuncio.aceita, medicao: medicao,
+			// AOS-542: a mesma condição que relaxou a P4 neste `serve`.
+			primeiroTurnoExigido: conferido.snap.ConsumerFirstTurnTrusted,
 			// AOS-499: só em `observe`, e só declara a um nó que anuncie (ver [executorDeNos.submeter]).
 			medirOrigem: modoDaSaida == saidaPorReferenciaObserve, origemAnunciada: anuncio.origem,
 			// AOS-501: só com a postura activa um nó com origem declarada é submetido.

@@ -98,6 +98,9 @@ type configDoExecutor struct {
 	// contratoDeConclusao (AOS-495): o nó anunciou que aceita o contrato de conclusão
 	// ([nodeClient.ContratoDeConclusao]). Falso ⇒ os nós são submetidos sem o campo, como antes.
 	contratoDeConclusao bool
+	// primeiroTurnoExigido (AOS-542): o plano foi validado com a regra P4 relaxada pelo anúncio do
+	// nó; cada nó consumidor exige ao nó o primeiro turno confiável no `POST /runs`.
+	primeiroTurnoExigido bool
 	// medicao recebe o que o executor mede sobre o contrato (AOS-495): a classe de cada nó
 	// submetido e os veredictos observados. O `consume` escreve-a no ficheiro de métricas; nil
 	// num `serve` manual, onde não se mede.
@@ -312,6 +315,8 @@ type executorDeNos struct {
 	declararOrigem bool
 	// contratoDeConclusao — ver [configDoExecutor.contratoDeConclusao] (AOS-495).
 	contratoDeConclusao bool
+	// primeiroTurnoExigido — ver [configDoExecutor.primeiroTurnoExigido] (AOS-542).
+	primeiroTurnoExigido bool
 	// medicao — ver [configDoExecutor.medicao] (AOS-495). nil fora do `consume`.
 	medicao *medicaoDoContrato
 	// medirOrigem e origemAnunciada — ver [configDoExecutor] (AOS-499).
@@ -484,6 +489,8 @@ func (e *executorDeNos) submeterTentativa(ctx context.Context, nodeID string, te
 		Objective: objectivo,
 		Tools:     nomesDasTools(e.tools[nodeID]),
 		Inputs:    entradas,
+		// AOS-542: um consumidor de um plano validado com a P4 relaxada exige a fronteira ao nó.
+		RequiresFirstTurnTrusted: e.primeiroTurnoExigido && len(entradas) > 0,
 	}
 	// AOS-495: o contrato de conclusão de um nó elegível — e só para um nó `aos` que anunciou
 	// aceitá-lo. A um nó anterior o campo não vai (dava 400). CADA nó diz aqui em que classe

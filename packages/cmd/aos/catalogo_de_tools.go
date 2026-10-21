@@ -97,6 +97,27 @@ type respostaDoCatalogo struct {
 	// (`plan_request.attempt`, AOS-502) e o tecto em vigor. Só com o tecto acima de zero: com zero
 	// o corpo é o de antes. Campo aditivo.
 	RunRetry *anuncioDaNovaTentativa `json:"run_retry,omitempty"`
+	// PlanInputDeferral anuncia que este nó só deixa pedir tools no PRIMEIRO turno de um run com
+	// `plan_input`, antes de esse material entrar, e que o gate de taint está armado para as negar
+	// depois (AOS-540 + AOS-542). É a condição de o `aos-orq` deixar um nó consumidor ter tools de
+	// efeito (a regra P4 do validador do plano). Presente só com as duas coisas; campo aditivo.
+	PlanInputDeferral *anuncioDoAdiamento `json:"plan_input_deferral,omitempty"`
+}
+
+// anuncioDoAdiamento é o anúncio do AOS-542. FirstTurnTrusted é sempre verdadeiro quando o
+// anúncio existe: um nó sem as duas condições não o envia.
+type anuncioDoAdiamento struct {
+	FirstTurnTrusted bool `json:"first_turn_trusted"`
+}
+
+// anuncioDoAdiamentoDoNo compõe o anúncio, ou nil. Só com o «pedir antes de ler» ligado E o gate
+// de taint armado ([Node.primeiroTurnoConfiavel], decidido no arranque a partir do que foi
+// COMPOSTO, não da variável crua).
+func anuncioDoAdiamentoDoNo(n *Node) *anuncioDoAdiamento {
+	if n == nil || !n.primeiroTurnoConfiavel {
+		return nil
+	}
+	return &anuncioDoAdiamento{FirstTurnTrusted: true}
 }
 
 // contratoDaTool constrói o contrato de supply-chain de uma tool EXACTAMENTE como o registo
@@ -194,5 +215,5 @@ func (h *apiHandler) handleToolCatalog(w http.ResponseWriter, r *http.Request) {
 	if tools == nil {
 		tools = []entradaDoCatalogo{}
 	}
-	writeJSON(w, http.StatusOK, respostaDoCatalogo{Tools: tools, CompletionContract: anuncioDoContratoDoNo(h.node), OutputSource: anuncioDaOrigemDoNo(h.node), RunRetry: anuncioDaNovaTentativaDoNo(h.cfg.runRetryMax, h.cfg.runRetryEmpty)})
+	writeJSON(w, http.StatusOK, respostaDoCatalogo{Tools: tools, CompletionContract: anuncioDoContratoDoNo(h.node), OutputSource: anuncioDaOrigemDoNo(h.node), RunRetry: anuncioDaNovaTentativaDoNo(h.cfg.runRetryMax, h.cfg.runRetryEmpty), PlanInputDeferral: anuncioDoAdiamentoDoNo(h.node)})
 }
