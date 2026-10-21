@@ -2,7 +2,7 @@ module github.com/aos-ref/cmd/aos-attestation
 
 go 1.25
 
-toolchain go1.26.9
+toolchain go1.26.10
 
 require (
 	github.com/aos-ref/platform/attestation v0.0.0
