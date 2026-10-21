@@ -23,9 +23,12 @@ package main
 // compõe o seu próprio gateway, sem governação da rota, e as suas chamadas passam pelo mesmo
 // proxy sem serem comparadas — em nenhum dos modos. Estas variáveis só governam o nó.
 //
-// O ENDPOINT: `enforce` exige `AOS_MODEL_ROUTE_API_HOST` — sem ela, uma troca só de endpoint
-// passaria por `igual` num modo que promete falhar. `observe` aceita-a por definir, e declara no
-// arranque que o endpoint não é comparado. Com `off` a variável não é usada: um valor inválido é
+// O ENDPOINT: `AOS_MODEL_ROUTE_API_HOST` é opcional nos dois modos (AOS-543, decisão do dono de
+// 2026-10-21). Medido em produção nesse dia: o proxy, com a OpenRouter, NÃO declara o endpoint que
+// usou — com o host definido, cada turno saía `nao_reportado`, e em `enforce` todos falhariam.
+// Sem o host, `enforce` impõe só o MODELO servido (uma troca de modelo na configuração do proxy
+// falha o turno) e declara no arranque que uma troca só de endpoint passa por `igual`. Com o
+// host definido, o endpoint é comparado e imposto como antes. Com `off` a variável não é usada: um valor inválido é
 // ignorado com um aviso, e não aborta o arranque de um nó que não liga a governação.
 
 import (
@@ -52,12 +55,6 @@ var ErrBadModelRouteGovernance = errors.New("aos: AOS_MODEL_ROUTE_GOVERNANCE inv
 // ErrBadModelRouteAPIHost — AOS_MODEL_ROUTE_API_HOST não é um host (`nome` ou `nome:porta`). O
 // valor NÃO vai na mensagem: quem colou ali um URL com credenciais não as vê repetidas num log.
 var ErrBadModelRouteAPIHost = errors.New("aos: AOS_MODEL_ROUTE_API_HOST invalida — tem de ser so o host do endpoint que o proxy deve declarar (nome ou nome:porta), sem esquema, credenciais, caminho nem query; o valor recebido nao e repetido aqui")
-
-// ErrModelRouteEnforceWithoutHost — AOS_MODEL_ROUTE_GOVERNANCE=enforce sem
-// AOS_MODEL_ROUTE_API_HOST. Fail-closed: o nó não arranca. Sem o host esperado, uma troca só de
-// endpoint no proxy daria `igual` em todos os turnos, num modo cuja promessa é falhar o que não se
-// prove igual.
-var ErrModelRouteEnforceWithoutHost = errors.New("aos: AOS_MODEL_ROUTE_GOVERNANCE=enforce exige AOS_MODEL_ROUTE_API_HOST — sem o host esperado do endpoint, uma troca so de endpoint no proxy passaria por igual; defina AOS_MODEL_ROUTE_API_HOST (nome ou nome:porta, tal como o proxy o declara) ou use observe")
 
 // ErrModelRouteWithoutProfile — a governação da rota está ligada e o modelo do nó
 // (AOS_MODEL_NAME) não tem perfil de rota. Fail-closed: sem perfil não há esperado com que
@@ -120,9 +117,6 @@ func modelRouteFromEnvCom(model string, perfis *modelgateway.RouteProfileSet) (m
 	if err != nil {
 		return modelgateway.RouteGovernance{}, nil, err
 	}
-	if mode == modelgateway.RouteGovernanceEnforce && host == "" {
-		return modelgateway.RouteGovernance{}, nil, ErrModelRouteEnforceWithoutHost
-	}
 	if _, ok := perfis.For(model); !ok {
 		return modelgateway.RouteGovernance{}, nil, fmt.Errorf("%w (modelo %q)", ErrModelRouteWithoutProfile, model)
 	}
@@ -144,6 +138,9 @@ func modelRouteBannerCom(gatewayComposed bool, mode, model string, hostDefinido 
 	}
 	perfil, _ := perfis.For(model)
 	endpoint := "o endpoint NAO e comparado (AOS_MODEL_ROUTE_API_HOST por definir) — uma troca so de endpoint no proxy passa por igual"
+	if mode == modelgateway.RouteGovernanceEnforce && !hostDefinido {
+		endpoint = "IMPOSICAO SO DO MODELO (AOS-543): o endpoint NAO e comparado (AOS_MODEL_ROUTE_API_HOST por definir; o proxy com a OpenRouter nao o declara) — uma troca so de endpoint no proxy passa por igual"
+	}
 	if hostDefinido {
 		endpoint = "o host do endpoint declarado e comparado com AOS_MODEL_ROUTE_API_HOST (minusculas e sem ponto final dos dois lados; a porta compara-se como esta)"
 	}
