@@ -36,8 +36,10 @@ const (
 var reAOS527Montagem = regexp.MustCompile(`(?m)^\s+- (\./model-pricing[^:\s]*):([^:\s]+)(?::([a-z,]+))?\s*(?:#.*)?$`)
 
 // TestAOS527ComposeMontaAPastaDePrecosSoNoNo: a montagem é de uma PASTA, só de leitura, no serviço
-// `aos` e não no `aos-orq` (que não mede dólares); a variável continua vazia por omissão, que é o
-// que deixa um servidor sem tabela arrancar como antes; e o caminho documentado cai dentro dela.
+// `aos`; a variável continua vazia por omissão, que é o que deixa um servidor sem tabela arrancar
+// como antes; e o caminho documentado cai dentro dela. Desde o AOS-544 o `aos-orq` mede os dólares
+// do planeador com a MESMA tabela: recebe a mesma pasta, só de leitura, e a variável vazia por
+// omissão.
 func TestAOS527ComposeMontaAPastaDePrecosSoNoNo(t *testing.T) {
 	compose := lerFonteDeTeste(t, aos527Compose)
 	no := blocoDoServico(t, compose, "aos")
@@ -48,8 +50,12 @@ func TestAOS527ComposeMontaAPastaDePrecosSoNoNo(t *testing.T) {
 		t.Fatalf("o serviço `aos` tem %d montagens de ./model-pricing, quero exactamente uma", len(montagens))
 	}
 	origem, destino, opcoes := montagens[0][1], montagens[0][2], montagens[0][3]
-	if strings.Contains(orq, "model-pricing") || strings.Contains(orq, "AOS_MODEL_PRICING_PATH") {
-		t.Errorf("o `aos-orq` não mede dólares e não deve receber a tabela de preços")
+	// AOS-544: a MESMA tabela no `aos-orq` — a mesma pasta, só de leitura, e a variável vazia por omissão.
+	if m := reAOS527Montagem.FindAllStringSubmatch(orq, -1); len(m) != 1 || m[0][1] != "./model-pricing" || m[0][2] != "/etc/aos/model-pricing" || m[0][3] != "ro" {
+		t.Errorf("o `aos-orq` tem de montar a mesma pasta da tabela, so de leitura: %v", m)
+	}
+	if !strings.Contains(orq, `AOS_MODEL_PRICING_PATH: "${AOS_MODEL_PRICING_PATH:-}"`) {
+		t.Errorf("o `aos-orq` tem de receber AOS_MODEL_PRICING_PATH vazia por omissao")
 	}
 	if !strings.Contains(no, `AOS_MODEL_PRICING_PATH: "${AOS_MODEL_PRICING_PATH:-}"`) {
 		t.Errorf("AOS_MODEL_PRICING_PATH tem de passar vazia por omissão — um valor fixo obrigaria todo o servidor a ter a tabela")
