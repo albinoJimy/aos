@@ -39,6 +39,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -74,6 +75,9 @@ func construirAosOrq(t *testing.T) string {
 		t.Skipf("toolchain `go` indisponivel: %v", err)
 	}
 	bin := filepath.Join(t.TempDir(), "aos-orq-477")
+	if runtime.GOOS == "windows" {
+		bin += ".exe" // sem a extensão o exec não encontra o binário em Windows
+	}
 	cmd := exec.Command("go", "build", "-ldflags=-s -w", "-o", bin, ".")
 	cmd.Dir = filepath.Join("..", "aos-orq")
 	if out, err := cmd.CombinedOutput(); err != nil {
