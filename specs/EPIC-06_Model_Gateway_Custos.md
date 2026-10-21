@@ -5276,6 +5276,46 @@ ligar o tecto em dólares por run — sem mudar o arranque de um servidor que n�
 
 ---
 
+## AOS-543 — A governação da rota impõe o modelo servido sem exigir o endpoint
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 — Model Gateway e Custos |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — resíduo «a rota sob governação corre em `observe`» |
+| Tipo | feat |
+| Prioridade | P1 |
+| Estimativa | S |
+| Dependências | AOS-505; emenda de 2026-10-21 ao ADR-036 §2.8 |
+| Responsável sugerido | Engenheiro de Plataforma |
+| Documentos de referência | `docs/adr/ADR-036-o-tail-e-a-forma-canonica-da-conversa.md` (§2.8, emenda de 2026-10-21); `packages/cmd/aos/model_route_env.go`; `packages/platform/model-gateway/route.go` |
+
+### Contexto
+
+A governação da rota (AOS-505) corria em `observe` em produção: uma troca do modelo na
+configuração do proxy ficava anotada e o turno seguia. O `enforce` exigia
+`AOS_MODEL_ROUTE_API_HOST`. Medido a 2026-10-21: 1 992 turnos com `route_check: igual`; com o host
+`openrouter.ai` definido, os quatro turnos de um plano de teste (`plan-e2e-rota1-1792587436`)
+saíram `nao_reportado` — o proxy, com a OpenRouter, não declara o endpoint. O dono escolheu impor
+só o modelo (opção A).
+
+### Critérios de Aceitação
+
+- [x] `enforce` sem `AOS_MODEL_ROUTE_API_HOST` compõe-se e impõe só o modelo servido; o arranque
+      diz `IMPOSICAO SO DO MODELO` e que uma troca só de endpoint passa por `igual`.
+- [x] Com o host definido, o comportamento é o de antes (endpoint comparado e imposto).
+- [x] Em `enforce` sem host, um modelo servido diferente do perfil dá `diferente` e falha o turno; o
+      mesmo modelo dá `igual`.
+- [ ] Em produção: `AOS_MODEL_ROUTE_GOVERNANCE=enforce` com o host vazio, e um plano de prova.
+
+*Nota de 2026-10-21:* `TestAOS505_Env_EnforceExigeOHostDoEndpoint` (reescrito para o requisito novo)
+e a suite AOS-505 do nó composto.
+
+### Fora de âmbito
+
+- Fazer o proxy declarar o endpoint; comparar as chamadas do `aos-orq`.
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -5318,3 +5358,4 @@ ligar o tecto em dólares por run — sem mudar o arranque de um servidor que n�
 | 3.15 | 2026-10-14 | AOS-526, revisão adversarial: o campo só vai enquanto o run não pediu tool nenhuma (`PromptView.CompletionToForce`), o que fecha os laços da tool recusada, da tool falhada e da outra tool sob `required`; limite do replay com parâmetros do pedido que variam por turno declarado | Equipa AOS |
 | 3.16 | 2026-10-14 | +AOS-527: o custo do modelo em produção — o compose monta só de leitura a pasta da tabela de preços do operador (`/etc/aos/model-pricing`), o CD semeia-a só quando falta, com o par (`gpt-4o`, `eu`) ao preço da OpenRouter para o Claude Haiku; `.env.example` e README com os passos do operador e o tecto em dólares. Aplicar em produção por fazer | Equipa AOS |
 | 3.17 | 2026-10-15 | AOS-527 em produção na v0.1.56: custo do modelo ARMADO com a tabela externa e tecto de 0,10 USD por run ligado. Falta ver um run com custo diferente de zero | Equipa AOS |
+| 1.10 | 2026-10-21 | +AOS-543: a governação da rota impõe o modelo servido sem exigir o endpoint (emenda de 2026-10-21 ao ADR-036 §2.8, decisão do dono) | Equipa AOS |

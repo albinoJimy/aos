@@ -15,6 +15,7 @@ import (
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/kernel/agent-runtime/replay"
 	modelgateway "github.com/aos-ref/platform/model-gateway"
+	"github.com/aos-ref/platform/model-gateway/port"
 	"github.com/aos-ref/substrate/eventstore"
 )
 
@@ -536,9 +537,9 @@ func TestAOS505_Contadores_VocabularioFechado(t *testing.T) {
 	}
 }
 
-// E4 — `enforce` SEM O HOST ESPERADO RECUSA O ARRANQUE. Sem ele, uma troca só de endpoint no
-// proxy daria `igual` num modo que promete falhar. `observe` sem ele continua permitido, e o
-// banner diz que o endpoint não é comparado.
+// E4 — `enforce` SEM O HOST ESPERADO (AOS-543, decisão do dono de 2026-10-21): compõe-se e impõe só
+// o MODELO; o arranque diz que o endpoint não é comparado. Antes recusava o arranque — mas o proxy,
+// com a OpenRouter, não declara o endpoint, e com o host definido todos os turnos falhariam.
 func TestAOS505_Env_EnforceExigeOHostDoEndpoint(t *testing.T) {
 	t.Setenv("AOS_MODEL_ENDPOINT", "http://127.0.0.1:1")
 	t.Setenv("AOS_MODEL_NAME", aos486Modelo)
@@ -546,16 +547,21 @@ func TestAOS505_Env_EnforceExigeOHostDoEndpoint(t *testing.T) {
 	for _, vazio := range []string{"", "   "} {
 		t.Setenv("AOS_MODEL_ROUTE_API_HOST", vazio)
 		cfg, contadores, err := modelRouteFromEnv(aos486Modelo)
-		if !errors.Is(err, ErrModelRouteEnforceWithoutHost) || contadores != nil || !reflect.DeepEqual(cfg, modelgateway.RouteGovernance{}) {
-			t.Fatalf("host %q: enforce sem host tinha de recusar; veio %+v %v %v", vazio, cfg, contadores, err)
+		if err != nil || contadores == nil || cfg.Mode != "enforce" || cfg.ExpectedAPIHost != "" {
+			t.Fatalf("host %q: enforce sem host compoe-se e impoe so o modelo; veio %+v %v %v", vazio, cfg, contadores, err)
 		}
-		if !strings.Contains(err.Error(), "AOS_MODEL_ROUTE_API_HOST") || !strings.Contains(err.Error(), "enforce") {
-			t.Fatalf("a mensagem tem de nomear a variavel e o modo: %v", err)
+		linhas := modelRouteBanner(true, "enforce", aos486Modelo, false)
+		if len(linhas) != 1 || !strings.Contains(linhas[0], "IMPOSICAO SO DO MODELO") || !strings.Contains(linhas[0], "passa por igual") {
+			t.Fatalf("host %q: o arranque tem de dizer que so o modelo e imposto: %v", vazio, linhas)
 		}
-		// E pelo caminho do arranque, antes de qualquer efeito da composição.
-		if client, binder, err := parseModelFromEnv(false); !errors.Is(err, ErrModelRouteEnforceWithoutHost) || client != nil || binder != nil {
-			t.Fatalf("host %q: o arranque tinha de recusar; veio %v", vazio, err)
-		}
+	}
+	// Um modelo servido diferente FALHA o turno em enforce sem host; o mesmo modelo passa.
+	perfil, _ := (*modelgateway.RouteProfileSet)(nil).For(aos486Modelo)
+	if check, _ := modelgateway.CompareServedRoute(perfil, true, port.ServedRoute{Model: "openai/outro"}, ""); check != port.RouteCheckDifferent {
+		t.Fatalf("enforce sem host: um modelo diferente tinha de ser diferente, veio %q", check)
+	}
+	if check, _ := modelgateway.CompareServedRoute(perfil, true, port.ServedRoute{Model: perfil.ExpectedModel}, ""); check != port.RouteCheckEqual {
+		t.Fatalf("enforce sem host: o mesmo modelo tinha de ser igual, veio %q", check)
 	}
 	// Com o host, `enforce` compõe-se e leva-o normalizado.
 	t.Setenv("AOS_MODEL_ROUTE_API_HOST", "API.Kimi.Com.")

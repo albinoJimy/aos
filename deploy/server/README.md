@@ -1038,8 +1038,10 @@ versão, ou uma opção que os desliga): o `alerta-rota.sh` avisa («rota do mod
 `endpoint_diferente` logo no primeiro turno, o mais provável é a porta: compara a variável com o
 `api_base`.
 
-**Antes de `enforce`.** O nó só arranca em `enforce` com `AOS_MODEL_ROUTE_API_HOST` definida. E
-lembra o limite: as chamadas do `aos-orq` não são comparadas, pelo que `enforce` no nó não impede
+**Antes de `enforce`.** Sem `AOS_MODEL_ROUTE_API_HOST` o `enforce` impõe só o modelo (AOS-543): o
+proxy, com a OpenRouter, não declara o `api_base`, e com a variável definida todos os turnos saem
+`nao_reportado` — medido a 2026-10-21. Defina-a só se o proxy declarar o endpoint (veja o
+`route_check` de um turno em `observe` antes). E lembra o limite: as chamadas do `aos-orq` não são comparadas, pelo que `enforce` no nó não impede
 um plano decomposto por outro modelo.
 
 **3. Passar a pedir o nome real do modelo** (opcional, e independente de 2). Hoje o nó pede

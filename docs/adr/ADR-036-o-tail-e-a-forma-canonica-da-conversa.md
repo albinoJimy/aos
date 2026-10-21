@@ -654,6 +654,18 @@ nome sem perfil não fixa nada. Numa descida de tier, o turno é servido por out
 manifesto traz o digest dessa rota: o run está fixado no perfil do nome que pede. E quem submete
 não fixa nem desfixa — `POST /runs` não tem campo por onde o digest entre.
 
+#### Imposição só do modelo (AOS-543, emenda de 2026-10-21; decisão do dono, opção A)
+
+`AOS_MODEL_ROUTE_GOVERNANCE=enforce` deixa de exigir `AOS_MODEL_ROUTE_API_HOST`. Medido em produção
+a 2026-10-21: em 1 992 turnos com `observe`, todos `igual` no modelo servido; com o host definido
+(`openrouter.ai`), os quatro turnos de um plano de teste saíram `nao_reportado` no endpoint — o
+proxy, com a OpenRouter, não declara o `api_base` que usou. Com o host obrigatório o `enforce` era
+impossível. Sem o host, o `enforce` impõe só o **modelo**: uma troca de modelo na configuração do
+proxy falha o turno; uma troca só de endpoint com o mesmo nome de modelo continua a passar por
+`igual`, como em `observe` — e o arranque diz `IMPOSICAO SO DO MODELO`. Com o host definido, o
+endpoint é comparado e imposto como antes. Os limites de sempre ficam: não detecta uma troca
+feita pelo fornecedor por trás do mesmo nome, e as chamadas do `aos-orq` não são comparadas.
+
 ## 3. Alternativas rejeitadas
 
 - **Só o preâmbulo de protocolo no `system`.** É uma instrução ao modelo sobre um facto que ele
