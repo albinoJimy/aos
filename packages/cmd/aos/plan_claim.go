@@ -365,6 +365,11 @@ type desfechoPayload struct {
 	// PlanoValidado — depois desta geração o log do run tem `plan.validated` (AOS-467): a geração
 	// seguinte retoma pelo documento, sem modelo, e não conta para o tecto. nil quando não declarou.
 	PlanoValidado *bool `json:"plano_validado,omitempty"`
+	// Consumo (AOS-544) é o consumo de planeamento desta geração tal como o drenador o declarou:
+	// tokens e dólares, com os `..._medidos` a dizer se se sabe. Fica no facto de desfecho para que o
+	// custo do planeador seja legível em cada plano mesmo sem a quota por principal configurada (sem
+	// ela a parcela de planeamento não se grava). nil quando o drenador não o declarou.
+	Consumo *consumoReportado `json:"consumo,omitempty"`
 }
 
 // respostaDeReclamo é o que a rota devolve quando há trabalho.
@@ -768,6 +773,8 @@ func (h *apiHandler) handlePlanOutcome(w http.ResponseWriter, r *http.Request) {
 		// AOS-467: o que o tecto de gerações conta.
 		ChamouModelo:  req.ChamouModelo,
 		PlanoValidado: req.PlanoValidado,
+		// AOS-544: o consumo declarado, já validado acima (sem negativos).
+		Consumo: req.Consumo,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "erro interno")

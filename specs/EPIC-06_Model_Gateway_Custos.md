@@ -5348,6 +5348,12 @@ no nó. O dono escolheu medi-los (opção B).
       as chamadas foram medidas; desarmado ⇒ não medido; zero chamadas ⇒ zero medido.
 - [x] O compose de produção passa a variável ao serviço `aos-orq` e monta a pasta da tabela só de
       leitura.
+- [x] O consumo declarado fica no facto de desfecho do plano (`planrequest.outcome`, campo `consumo`),
+      legível em cada plano mesmo sem a quota por principal. *Nota de 2026-10-21:* em produção a quota
+      por principal NÃO está configurada (`AOS_BUDGET_PRINCIPAL_MAX_TOKENS` por definir) e a parcela de
+      planeamento só se grava com ela — o plano `plan-e2e-custo1-1792607413` (v0.1.66) declarou o
+      consumo e o nó deitou-o fora. Decisão do dono: gravá-lo no desfecho (opção B), sem ligar a quota.
+      `packages/cmd/aos/aos544_custo_no_desfecho_test.go`.
 - [ ] Em produção: um plano cujo desfecho declara o custo do planeamento medido e diferente de zero.
 
 *Nota de 2026-10-21:* `packages/cmd/aos-orq/aos544_custo_do_planeador_test.go`.
