@@ -562,7 +562,7 @@ func (s *Store) lerSubject(ctx context.Context, subject string, prazo time.Durat
 
 	evs, err := lerEmLotes(subject, total, janelaDeLeitura,
 		func(inicio, quantos uint64) (loteLido, error) {
-			return s.lerLote(ctx, subject, inicio, quantos, prazo)
+			return s.lerLoteRecolocado(ctx, subject, inicio, quantos, prazo)
 		})
 	if err != nil {
 		return nil, 0, nil, 0, err
@@ -672,6 +672,45 @@ func lerEmLotes(subject string, total, janela uint64, lote func(inicio, quantos 
 	return evs, nil
 }
 
+// errLeituraParada — o consumidor efémero de um lote não entregou o que o subject tem, dentro do
+// prazo. Ver [Store.lerLoteRecolocado].
+var errLeituraParada = errors.New("jetstream: leitura parada")
+
+// tentativasDeLeitura é quantos consumidores efémeros um lote parado chega a criar.
+const tentativasDeLeitura = 3
+
+// lerLoteRecolocado é [Store.lerLote] com a leitura PARADA recolocada num consumidor novo.
+//
+// # O consumidor R1 num par que ainda não tem o evento
+//
+// O consumidor da leitura é R1 e o servidor sorteia-lhe o par entre as réplicas do stream. Medido no
+// gate nats (run 39301696184, 2026-10-19, TestAOS100_NServeEmParaleloSobreOSubstratoReplicado): dois
+// de quatro processos receberam «leitura de "…lease:run-paralelo" parou em 0 de 1 eventos ao fim de
+// 10s» — o evento existia (o subject contava 1), e o consumidor não o entregou. É o mesmo género do
+// AOS-449 (o par do R1 não serve): a resposta é a mesma, um consumidor NOVO, que o servidor volta a
+// sortear. Só a leitura PARADA se repete, até [tentativasDeLeitura] consumidores; qualquer outro erro
+// sai à primeira, e depois da última tentativa sai o erro de sempre — um log servido truncado
+// continua a ser pior do que o erro.
+func (s *Store) lerLoteRecolocado(ctx context.Context, subject string, inicio, quantos uint64, prazo time.Duration) (loteLido, error) {
+	return recolocarLeituraParada(ctx, func() (loteLido, error) {
+		return s.lerLote(ctx, subject, inicio, quantos, prazo)
+	})
+}
+
+// recolocarLeituraParada é a regra de [Store.lerLoteRecolocado], isolada do cliente para se testar
+// sem cluster: cada chamada a `ler` cria um consumidor efémero novo.
+func recolocarLeituraParada(ctx context.Context, ler func() (loteLido, error)) (loteLido, error) {
+	var ultimo error
+	for tentativa := 1; tentativa <= tentativasDeLeitura; tentativa++ {
+		lido, err := ler()
+		if err == nil || !errors.Is(err, errLeituraParada) || ctx.Err() != nil {
+			return lido, err
+		}
+		ultimo = err
+	}
+	return loteLido{}, fmt.Errorf("%w (%d consumidores tentados)", ultimo, tentativasDeLeitura)
+}
+
 // lerLote traz até `quantos` eventos do subject a partir do seq físico `inicio`, por
 // entrega push num consumidor efémero. Devolve também o seq FÍSICO da última mensagem
 // que trouxe — o valor por onde [lerEmLotes] avança a janela.
@@ -768,8 +807,8 @@ func (s *Store) lerLote(ctx context.Context, subject string, inicio, quantos uin
 			}
 			evs = append(evs, ev)
 		case <-temporizador.C:
-			return loteLido{}, fmt.Errorf("jetstream: leitura de %q parou em %d de %d eventos ao fim de %s — um log servido truncado seria pior do que este erro",
-				subject, len(evs), quantos, prazo)
+			return loteLido{}, fmt.Errorf("%w: leitura de %q parou em %d de %d eventos ao fim de %s — um log servido truncado seria pior do que este erro",
+				errLeituraParada, subject, len(evs), quantos, prazo)
 		case <-ctx.Done():
 			return loteLido{}, ctx.Err()
 		}

@@ -899,7 +899,7 @@ Nomeados no fecho. Nenhum ficou resolvido pelo fecho; os que a fase A4 herda est
 - **(k) As primeiras falhas do titular subiram a 2026-10-12** (2 em 5 e 4 em 33, todas
   recuperadas), sem causa procurada (§5).
 - **(l) As três sondas com HTTP 500 de 2026-10-11** continuam sem causa determinada.
-- **(m) Testes:** `TestAOS453…` e `TestAOS432…` são intermitentes, e `TestAOS477…` falha em
+- **(m) — resolvido a 2026-10-21 (AOS-545):** 60 runs de CI sem `TestAOS432` nem `TestAOS453` vermelhos desde o AOS-531; o `TestAOS477` corre em Windows; a falha restante do `TestAOS100` (a leitura parada) recoloca-se num consumidor novo. Texto original: **(m) Testes:** `TestAOS453…` e `TestAOS432…` são intermitentes, e `TestAOS477…` falha em
   Windows.
 - **(n) Um titular e um candidato.** O nó escolhe o modelo uma vez por run, entre dois, por
   uma função do plano; não há escolha por passo nem mais de dois modelos. *Herdado pela A4:*

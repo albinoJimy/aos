@@ -1686,8 +1686,43 @@ emissor.
 
 ---
 
+## AOS-545 — Os testes intermitentes: a leitura parada recoloca-se num consumidor novo, e o `TestAOS477` corre em Windows
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-01 — Fundações do Plano de Controlo |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — resíduo «(m) Testes» |
+| Tipo | fix |
+| Prioridade | P2 |
+| Estimativa | S |
+| Dependências | AOS-531; AOS-449 |
+| Responsável sugerido | Engenheiro de Plataforma |
+| Documentos de referência | `packages/substrate/eventstore/jetstream/store.go` (`lerLoteRecolocado`); `packages/cmd/aos/aos477_sentido_inverso_test.go` |
+
+### Contexto
+
+O resíduo «(m)» (2026-10-12) dava o `TestAOS453` e o `TestAOS432` como intermitentes e o
+`TestAOS477` como partido em Windows. Medido a 2026-10-21: nos 60 runs de CI desde o AOS-531, o
+`TestAOS432` e o `TestAOS453` não falharam nenhuma vez, e o `TestAOS453` passou 200 de 200 repetições
+locais do teste concorrente e 30 de 30 de todos os AOS-453; o `TestAOS477` falhava em Windows por
+o binário ser compilado sem `.exe`; e o `TestAOS100` falhou uma vez (run 39301696184, 2026-10-19),
+com o stderr dos dois processos inesperados a dizer «leitura de "…lease:run-paralelo" parou em 0 de
+1 eventos ao fim de 10s» — o segundo mecanismo do flake, por medir até aqui.
+
+### Critérios de Aceitação
+
+- [x] Uma leitura parada recoloca-se num consumidor efémero novo, até três; outro erro sobe à
+      primeira; com o contexto cancelado não se recoloca. `aos100_leitura_parada_test.go`, com
+      mutação.
+- [x] O `TestAOS477DoToolCallAoPedidoSoPorCampos` compila o binário com `.exe` em Windows e passa;
+      deixa de ser preciso saltá-lo nas suites locais.
+- [ ] O gate nats sem o `TestAOS100` vermelho nos runs seguintes.
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
+| 1.1 | 2026-10-21 | +AOS-545: os testes intermitentes — a leitura parada recoloca-se num consumidor novo; o TestAOS477 corre em Windows | Equipa AOS |
