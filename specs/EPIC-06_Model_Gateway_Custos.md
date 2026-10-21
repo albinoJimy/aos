@@ -5354,7 +5354,9 @@ no nó. O dono escolheu medi-los (opção B).
       planeamento só se grava com ela — o plano `plan-e2e-custo1-1792607413` (v0.1.66) declarou o
       consumo e o nó deitou-o fora. Decisão do dono: gravá-lo no desfecho (opção B), sem ligar a quota.
       `packages/cmd/aos/aos544_custo_no_desfecho_test.go`.
-- [ ] Em produção: um plano cujo desfecho declara o custo do planeamento medido e diferente de zero.
+- [x] Em produção: um plano cujo desfecho declara o custo do planeamento medido e diferente de zero.
+      *Nota de 2026-10-21:* v0.1.67, plano `plan-e2e-custo2-1792618914` (código 0): o `planrequest.outcome`
+      leva `consumo` = 4969 tokens e 1066 µUSD, ambos medidos.
 
 *Nota de 2026-10-21:* `packages/cmd/aos-orq/aos544_custo_do_planeador_test.go`.
 
@@ -5409,3 +5411,4 @@ no nó. O dono escolheu medi-los (opção B).
 | 1.10 | 2026-10-21 | +AOS-543: a governação da rota impõe o modelo servido sem exigir o endpoint (emenda de 2026-10-21 ao ADR-036 §2.8, decisão do dono) | Equipa AOS |
 | 1.11 | 2026-10-21 | AOS-543 em produção na v0.1.65: a governação da rota em `enforce` (só o modelo); plano de prova com 4 turnos `igual` | Equipa AOS |
 | 1.12 | 2026-10-21 | +AOS-544: o custo do planeador — o aos-orq deriva os dólares de cada chamada com a tabela do nó (decisão do dono, opção B) | Equipa AOS |
+| 1.13 | 2026-10-21 | AOS-544 em produção na v0.1.67: o custo do planeador no desfecho do plano (4969 tokens, 1066 µUSD, medidos) | Equipa AOS |
