@@ -1555,6 +1555,15 @@ nó executa com segurança.
       snapshot.
 - [x] A barreira do nó não muda: uma call de efeito depois de os dados entrarem continua negada pelo
       gate de taint (coberto pelos testes do AOS-540, `TestPedirAntesDeLer_Turno1SoTextoEEfeitoNoTurno2Negado`).
+- [x] Revisão adversarial independente — achado ALTO corrigido: o nó só anuncia se TODAS as tools
+      que o `aos-orq` conta como de efeito forem privilegiadas para o gate composto
+      (`toolsDeEfeitoForaDoGate`; com uma de fora, o nó não anuncia e diz quais na linha de arranque);
+      achado MÉDIO corrigido: cada nó consumidor de um plano validado com a P4 relaxada leva
+      `requires_first_turn_trusted` no `POST /runs`, e um nó que não o garanta (reiniciado sem o
+      interruptor, gate desarmado, tool de efeito fora do gate) recusa com 400. Resíduos: o regime
+      da P4 não fica selado no `plan.validated` (só no log da drenagem); a composição no `serve`
+      (`aplicarAnuncioDaP4`, a cópia para o executor) não tem teste próprio; o flag vive no
+      `Snapshot`, partilhado com outros leitores (o `EffectOracle` e o `ResolveRisks` não o lêem).
 - [ ] Em produção: repetir a série de cinco planos e contar os pedidos tardios (runs no layout 1.6.0 com
       uma call de efeito negada por taint).
 
@@ -1562,9 +1571,9 @@ nó executa com segurança.
 `packages/control-plane/orchestrator/planvalidate/aos542_p4_pelo_anuncio_test.go`,
 `packages/cmd/aos-orq/aos542_anuncio_p4_test.go` e `packages/cmd/aos/aos542_anuncio_no_test.go`
 (nó composto, quatro combinações das duas condições). Oito mutações à mão, todas vermelhas. O
-`aos-orq decide` (decisão humana de um plano `danger`) valida com o snapshot do ficheiro, sem o
-anúncio: um plano que só passe com a P4 relaxada e precise de decisão humana é recusado aí — o lado
-seguro, e fica como resíduo. O prompt do planeador (regra 8) continua a pedir que as tools de efeito
+`aos-orq decide` (decisão humana de um plano `danger`) não volta a correr a P4: um plano aceite com
+a P4 relaxada é decidido normalmente; se depois o nó deixar de anunciar, a retoma (`--plan-doc`)
+recusa-o na validação, depois da decisão humana — o lado seguro, como resíduo. O prompt do planeador (regra 8) continua a pedir que as tools de efeito
 não fiquem em consumidores: o planeador pode separar o passo, como fez nos planos 1 e 2, e o
 validador deixa de recusar quando não separa.
 

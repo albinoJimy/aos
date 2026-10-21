@@ -2437,8 +2437,20 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		return nil, err
 	}
 	privileged := privilegedComDestinos(cfg.Privileged, toolDests)
-	// AOS-542: o que o `GET /tools` anuncia ao `aos-orq` — o «pedir antes de ler» E o gate armado.
+	// AOS-542: o que o `GET /tools` anuncia ao `aos-orq` — o «pedir antes de ler», o gate armado E
+	// todas as tools de efeito cobertas por ele ([toolsDeEfeitoForaDoGate]). Com uma tool de efeito
+	// fora do gate o nó não anuncia, e diz porquê.
 	primeiroTurno := pedirAntesDeLer && gateDeTaintArmado(privileged)
+	if primeiroTurno {
+		fora, ferr := toolsDeEfeitoForaDoGate(privileged)
+		if ferr != nil {
+			return nil, ferr
+		}
+		if len(fora) > 0 {
+			primeiroTurno = false
+			log("primeiro turno confiavel (AOS-542): NAO ANUNCIADO — tools de efeito fora do gate de taint: %s. O aos-orq mantem a regra P4 inteira; para as cobrir, declare o egress/mutacao/reversibilidade delas ou ponha a capability em AOS_PRIVILEGED_CAPS", strings.Join(fora, ", "))
+		}
+	}
 	// AOS-541: com o gate de taint a escalar, o destino das escaladas reconhece como do taint a
 	// escalada de outro hook sobre uma call que o taint também escalaria — a mesma classificação
 	// do gate composto na cadeia, sobre o mesmo `privileged`.

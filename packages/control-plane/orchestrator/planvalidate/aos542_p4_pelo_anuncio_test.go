@@ -7,7 +7,7 @@ import (
 	"github.com/aos-ref/control-plane/orchestrator/plannerevents"
 )
 
-// AOS-542 (emenda de 2026-10-20 ao ADR-034, decisão do dono): com o anúncio do nó executor
+// AOS-542 (emenda de 2026-10-21 ao ADR-034, decisão do dono): com o anúncio do nó executor
 // (Snapshot.ConsumerFirstTurnTrusted), a regra (P4) deixa um consumidor de material untrusted ter
 // tools de EFEITO — a fronteira passa a ser o primeiro turno do run, imposta pelo nó. Sem o
 // anúncio, recusa como antes. O resto da direita da resolução continua fail-closed.

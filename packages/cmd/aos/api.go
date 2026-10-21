@@ -788,6 +788,12 @@ type submitRequest struct {
 	// ([validarContratoDeConclusao]). Ausente ⇒ run sem contrato, como sempre. O MODO de
 	// aplicação do veredicto não tem campo: é do nó (`AOS_COMPLETION_VERDICT`).
 	CompletionRequires []string `json:"completion_requires,omitempty"`
+	// RequiresFirstTurnTrusted (AOS-542): quem submete exige que ESTE nó só deixe pedir tools no
+	// primeiro turno de um run com `inputs` e as negue depois com o gate de taint armado — o que o
+	// `GET /tools` anuncia (`plan_input_deferral`). O `aos-orq` envia-o nos nós consumidores dos
+	// planos que validou com a regra P4 relaxada; um nó que não o garanta (reiniciado sem o
+	// interruptor, gate desarmado) recusa com 400 em vez de correr sem a fronteira.
+	RequiresFirstTurnTrusted bool `json:"requires_first_turn_trusted,omitempty"`
 	// OutputFromTool é a ORIGEM DECLARADA da saída do run (AOS-498, ADR-038): o nome de uma tool
 	// da lista-branca `tools` do MESMO pedido. OutputSourceBinding é o vínculo dessa declaração —
 	// `measure` (só medição) ou `binding` (vinculativa) — e os dois vêm sempre juntos
@@ -929,6 +935,11 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	// (400, com mensagem própria), antes de autenticar e de qualquer escrita.
 	if cerr := validarContratoDeConclusao(req.CompletionRequires, req.Tools); cerr != "" {
 		writeError(w, http.StatusBadRequest, cerr)
+		return
+	}
+	// AOS-542: a exigência do primeiro turno confiável, antes de autenticar e de qualquer escrita.
+	if req.RequiresFirstTurnTrusted && (h.node == nil || !h.node.primeiroTurnoConfiavel) {
+		writeError(w, http.StatusBadRequest, "requires_first_turn_trusted: este no nao garante o primeiro turno confiavel (AOS_PLAN_INPUT_DEPOIS_DO_PRIMEIRO_TURNO desligado, gate de taint desarmado, ou tools de efeito fora do gate) — o plano foi validado com a regra P4 relaxada e nao corre sem essa fronteira")
 		return
 	}
 	// AOS-498: a origem declarada da saída, contra a mesma lista-branca. Recusa de pedido, como a

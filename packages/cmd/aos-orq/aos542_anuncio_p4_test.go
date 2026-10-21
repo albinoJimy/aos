@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -55,5 +57,32 @@ func TestAOS542_SoComSnapshotConferido(t *testing.T) {
 	}
 	if c := aplicarAnuncioDaP4(snapshotConferido{snap: planvalidate.Snapshot{Hash: "h"}, ok: true}, anuncioDoNo{}); c.snap.ConsumerFirstTurnTrusted || !strings.Contains(bannerDaP4(anuncioDoNo{}, true), "COMO ANTES") {
 		t.Fatal("sem o anuncio a P4 nao se relaxa")
+	}
+}
+
+// Revisão adversarial do AOS-542 (achado MÉDIO 1): o `POST /runs` de um consumidor leva a exigência
+// do primeiro turno confiável quando o plano foi validado com a P4 relaxada; sem ela, o campo não
+// vai no corpo (um nó anterior recusava-o com 400).
+func TestAOS542_SubmitLevaAExigencia(t *testing.T) {
+	var ultimo map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ultimo = map[string]any{}
+		_ = json.NewDecoder(r.Body).Decode(&ultimo)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+	cred := filepath.Join(t.TempDir(), "cred")
+	if err := os.WriteFile(cred, []byte("token-de-teste"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cli := &nodeClient{base: srv.URL, http: srv.Client(), credFile: cred, principal: "nhi:teste"}
+	for _, exige := range []bool{true, false} {
+		if err := cli.Submit(context.Background(), pedidoDeRun{RunID: "r", Objective: "o", Tools: []string{"ocr_read"}, RequiresFirstTurnTrusted: exige}); err != nil {
+			t.Fatalf("submit: %v", err)
+		}
+		v, tem := ultimo["requires_first_turn_trusted"]
+		if exige != tem || (tem && v != true) {
+			t.Fatalf("exige=%v: campo presente=%v valor=%v", exige, tem, v)
+		}
 	}
 }

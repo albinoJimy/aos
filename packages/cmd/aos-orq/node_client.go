@@ -119,6 +119,10 @@ type pedidoDeRun struct {
 	// CompletionRequires é o contrato de conclusão do run (AOS-495): as tools de que a conclusão
 	// depende. Vazio ⇒ o campo NÃO vai no corpo — um nó anterior ao AOS-494 recusa-o com 400.
 	CompletionRequires []string
+	// RequiresFirstTurnTrusted (AOS-542): o plano foi validado com a regra P4 relaxada e este nó
+	// consome dados de outro — o nó tem de garantir o primeiro turno confiável, ou recusa (400).
+	// Falso ⇒ o campo não vai no corpo.
+	RequiresFirstTurnTrusted bool
 	// OutputFromTool é a origem declarada da saída do run (AOS-499): a tool cujo resultado o
 	// kernel do nó deve designar. Vazio ⇒ os dois campos NÃO vão no corpo — um nó anterior ao
 	// AOS-498 recusa-os com 400.
@@ -417,6 +421,9 @@ func (c *nodeClient) Submit(ctx context.Context, p pedidoDeRun) error {
 	}
 	if len(p.CompletionRequires) > 0 {
 		campos["completion_requires"] = p.CompletionRequires
+	}
+	if p.RequiresFirstTurnTrusted {
+		campos["requires_first_turn_trusted"] = true
 	}
 	if p.OutputFromTool != "" {
 		if p.OutputBinding != agentruntime.OutputSourceMeasure && p.OutputBinding != agentruntime.OutputSourceBinds {
