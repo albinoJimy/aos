@@ -302,9 +302,9 @@ func aplicarAnuncioDaP4(c snapshotConferido, a anuncioDoNo) snapshotConferido {
 // (AOS-542). Só se imprime com um anúncio que se leu.
 func bannerDaP4(a anuncioDoNo, comSnapshot bool) string {
 	if a.primeiroTurnoConfiavel && comSnapshot {
-		return "regra P4 do plano (AOS-542): RELAXADA — o no anuncia que so deixa pedir tools no primeiro turno de um no consumidor, antes de os dados do passo anterior entrarem, e que o gate de taint as nega depois (plan_input_deferral.first_turn_trusted). Um no com consumes pode ter tools de efeito (ex.: ocr_read); a fronteira e o primeiro turno do run, imposta pelo no"
+		return "regra P4 do plano (AOS-542): RELAXADA — o no anuncia que so deixa pedir tools no primeiro turno de um no consumidor, antes de os dados do passo anterior entrarem, e que o gate de taint as nega depois (plan_input_deferral.first_turn_trusted). Um no com consumes pode ter tools que enviam ou mudam (ex.: ocr_read); a fronteira e o primeiro turno do run, imposta pelo no"
 	}
-	return "regra P4 do plano (AOS-542): COMO ANTES — o no nao anuncia plan_input_deferral (pedir antes de ler desligado, ou gate de taint desarmado), ou nao ha snapshot conferido: um no com consumes de material untrusted nao pode ter tools de efeito"
+	return "regra P4 do plano (AOS-542): COMO ANTES — o no nao anuncia plan_input_deferral (pedir antes de ler desligado, ou gate de taint desarmado), ou nao ha snapshot conferido: um no com consumes de material untrusted nao pode ter tools que enviam ou mudam"
 }
 
 // modoImprimivel reduz o modo anunciado a um dos três que este binário conhece. O valor vem de
