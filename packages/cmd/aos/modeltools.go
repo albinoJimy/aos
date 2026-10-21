@@ -413,6 +413,19 @@ func toolDestinationsFromEnv() (referencemonitor.ToolDestinations, error) {
 // privilegedComDestinos compõe o classificador do gate de taint com o destino das tools
 // (AOS-538). Só embrulha um classificador que exista: sem AOS_PRIVILEGED_CAPS o gate continua
 // desarmado (nil) e nada muda; sem tools declaradas, a regra é a de antes.
+// gateDeTaintArmado diz se o classificador COMPOSTO torna o gate de taint eficaz — o critério do
+// kernel ([referencemonitor.EffectivePrivilegedAuthorizer]); um classificador opaco presume-se
+// eficaz, como no kernel. nil ⇒ desarmado. É a segunda condição do anúncio do AOS-542.
+func gateDeTaintArmado(p referencemonitor.PrivilegedAuthorizer) bool {
+	if p == nil {
+		return false
+	}
+	if e, ok := p.(referencemonitor.EffectivePrivilegedAuthorizer); ok {
+		return e.HasPrivileged()
+	}
+	return true
+}
+
 func privilegedComDestinos(base referencemonitor.PrivilegedAuthorizer, dests referencemonitor.ToolDestinations) referencemonitor.PrivilegedAuthorizer {
 	if base == nil || dests.Len() == 0 {
 		return base

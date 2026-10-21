@@ -109,7 +109,7 @@ func checkPayloadContracts(doc plan.PlanDocument, snap Snapshot) Verdict {
 		}
 		// A autoridade do consumidor é a MESMA para todas as suas arestas de dados:
 		// deriva-se uma vez por nó, não uma vez por contrato.
-		privileged := privilegedAuthority(n, idx)
+		privileged := privilegedAuthority(n, idx, snap.ConsumerFirstTurnTrusted)
 		edges := incomingEdges(n) // união dos dois canais, ordem declarada
 		for _, c := range n.Consumes {
 			// (P1) A origem tem de ser uma ARESTA DE ENTRADA declarada.
@@ -161,13 +161,19 @@ func checkPayloadContracts(doc plan.PlanDocument, snap Snapshot) Verdict {
 //
 // Um nó SEM tools não tem autoridade nenhuma: não é privilegiado, e pode consumir
 // material untrusted à vontade (é o caso do nó que resume, agrega ou redige). Puro.
-func privilegedAuthority(n plan.Node, idx map[toolKey]Capability) bool {
+//
+// primeiroTurnoConfiavel ([Snapshot.ConsumerFirstTurnTrusted], AOS-542): o nó executor anunciou
+// que só deixa pedir as tools de efeito no primeiro turno, antes de o material untrusted entrar,
+// e que o gate de taint as nega depois. Então uma tool de EFEITO resolvida deixa de tornar o
+// consumidor privilegiado. O resto da direita da resolução continua fail-closed: uma tool que não
+// resolve, com digest divergente, deprecada ou inadmissível conta sempre como privilegiada.
+func privilegedAuthority(n plan.Node, idx map[toolKey]Capability, primeiroTurnoConfiavel bool) bool {
 	for _, t := range n.Tools {
 		c, ok := idx[toolKey{name: t.Name, version: t.Version}]
 		if !ok || c.Digest != t.Digest || c.Deprecated || !c.Admissible {
 			return true
 		}
-		if IsEffectTool(c) {
+		if IsEffectTool(c) && !primeiroTurnoConfiavel {
 			return true
 		}
 	}

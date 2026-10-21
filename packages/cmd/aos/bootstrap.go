@@ -1107,6 +1107,10 @@ type Node struct {
 	// plan_input_env.go.
 	pedirAntesDeLer bool
 
+	// primeiroTurnoConfiavel (AOS-542): pedirAntesDeLer E o gate de taint armado com o conjunto
+	// composto. É o que o `GET /tools` anuncia ao `aos-orq` ([anuncioDoAdiamentoDoNo]).
+	primeiroTurnoConfiavel bool
+
 	// stateGates é a costura por-run (AOS-218) que resolve o [control.StateGate] durável
 	// (AOS-017) que o canal de steer usa para materializar running↔paused. O loop de
 	// serviço ABRE/LIBERTA um gate por run hospedado (ver service.go hostRun); o loop base
@@ -2433,6 +2437,8 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		return nil, err
 	}
 	privileged := privilegedComDestinos(cfg.Privileged, toolDests)
+	// AOS-542: o que o `GET /tools` anuncia ao `aos-orq` — o «pedir antes de ler» E o gate armado.
+	primeiroTurno := pedirAntesDeLer && gateDeTaintArmado(privileged)
 	// AOS-541: com o gate de taint a escalar, o destino das escaladas reconhece como do taint a
 	// escalada de outro hook sobre uma call que o taint também escalaria — a mesma classificação
 	// do gate composto na cadeia, sobre o mesmo `privileged`.
@@ -3458,6 +3464,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		estadoDoProvider:        estadoDoCliente(cfg.Model),    // AOS-514: estado opaco do provider por resultado, para o /metrics (nil ⇒ desligada)
 		completionVerdict:       completionVerdict,             // AOS-493: modo do veredicto de conclusão dos runs novos
 		pedirAntesDeLer:         pedirAntesDeLer,               // ADR-034 §4: runs novos com plan_input no layout 1.6.0
+		primeiroTurnoConfiavel:  primeiroTurno,                 // AOS-542: anunciado no GET /tools
 		stateGates:              stateGates,                    // AOS-218: fonte do StateGate durável por-run para o steer
 		breakers:                breakers,                      // AOS-080/081/251: disjuntores por-run (libertados no fim do run)
 		anomaliaAutonomia:       anomaliaAutonomia,             // AOS-090/DEF-908: demoção automática por anomalia (arrancada no loop de serviço)

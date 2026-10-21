@@ -205,6 +205,10 @@ type anuncioDoNo struct {
 	// fechou `empty_output` (`run_retry.empty_output`, AOS-510). Falso ⇒ um nó anterior, ou com
 	// esse interruptor desligado: essa tentativa não é pedida.
 	tentativaVazia bool
+	// primeiroTurnoConfiavel (AOS-542): o nó anunciou `plan_input_deferral.first_turn_trusted` —
+	// só deixa pedir tools no primeiro turno de um run com `plan_input` e nega-as depois com o gate
+	// de taint armado. Lê-se na MESMA resposta. Falso ⇒ a regra P4 do validador fica como antes.
+	primeiroTurnoConfiavel bool
 }
 
 // ContratoDeConclusao lê do `GET /tools` se o nó aceita o contrato de conclusão.
@@ -249,11 +253,15 @@ func (c *nodeClient) ContratoDeConclusao(ctx context.Context) (anuncioDoNo, erro
 			Max         int  `json:"max"`
 			EmptyOutput bool `json:"empty_output"`
 		} `json:"run_retry"`
+		PlanInputDeferral *struct {
+			FirstTurnTrusted bool `json:"first_turn_trusted"`
+		} `json:"plan_input_deferral"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&corpo); err != nil {
 		return anuncioDoNo{}, fmt.Errorf("anúncio do contrato de conclusão: resposta ilegível: %w", err)
 	}
 	var anuncio anuncioDoNo
+	anuncio.primeiroTurnoConfiavel = corpo.PlanInputDeferral != nil && corpo.PlanInputDeferral.FirstTurnTrusted
 	if corpo.RunRetry != nil && corpo.RunRetry.Max > 0 {
 		// O valor vem de outro processo: fica dentro do que este binário sabe usar.
 		anuncio.tentativas = corpo.RunRetry.Max
@@ -279,6 +287,24 @@ func (c *nodeClient) ContratoDeConclusao(ctx context.Context) (anuncioDoNo, erro
 	}
 	anuncio.aceita, anuncio.modo = true, modoImprimivel(corpo.CompletionContract.Mode)
 	return anuncio, nil
+}
+
+// aplicarAnuncioDaP4 marca o snapshot conferido com o anúncio do AOS-542. Só com o anúncio E um
+// snapshot conferido com este nó: sem conferência fica como antes (a regra P4 inteira).
+func aplicarAnuncioDaP4(c snapshotConferido, a anuncioDoNo) snapshotConferido {
+	if a.primeiroTurnoConfiavel && c.ok {
+		c.snap.ConsumerFirstTurnTrusted = true
+	}
+	return c
+}
+
+// bannerDaP4 declara, no arranque do `serve`, se a regra P4 do validador do plano está relaxada
+// (AOS-542). Só se imprime com um anúncio que se leu.
+func bannerDaP4(a anuncioDoNo, comSnapshot bool) string {
+	if a.primeiroTurnoConfiavel && comSnapshot {
+		return "regra P4 do plano (AOS-542): RELAXADA — o no anuncia que so deixa pedir tools no primeiro turno de um no consumidor, antes de os dados do passo anterior entrarem, e que o gate de taint as nega depois (plan_input_deferral.first_turn_trusted). Um no com consumes pode ter tools de efeito (ex.: ocr_read); a fronteira e o primeiro turno do run, imposta pelo no"
+	}
+	return "regra P4 do plano (AOS-542): COMO ANTES — o no nao anuncia plan_input_deferral (pedir antes de ler desligado, ou gate de taint desarmado), ou nao ha snapshot conferido: um no com consumes de material untrusted nao pode ter tools de efeito"
 }
 
 // modoImprimivel reduz o modo anunciado a um dos três que este binário conhece. O valor vem de

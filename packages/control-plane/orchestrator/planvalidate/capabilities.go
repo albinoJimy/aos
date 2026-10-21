@@ -95,6 +95,14 @@ func (m Mutation) String() string {
 type Snapshot struct {
 	Hash  string
 	Tools []Capability
+	// ConsumerFirstTurnTrusted (AOS-542, emenda de 2026-10-20 ao ADR-034, decisão do dono): o nó
+	// que executa os nós do plano ANUNCIOU que o primeiro turno de um nó consumidor vê só o
+	// objectivo (AOS-540 ligado) e que o gate de taint está armado. Com isso a fronteira da
+	// autoridade passa a ser o primeiro turno do run, e não o nó inteiro: a regra (P4) deixa de
+	// recusar tools de EFEITO num nó com `consumes` de material untrusted, porque o nó só as deixa
+	// pedir antes de ver esse material e nega-as depois. Não é conteúdo do catálogo: não entra no
+	// digest do snapshot nem no hash. Falso por omissão — a regra de antes.
+	ConsumerFirstTurnTrusted bool
 }
 
 // toolKey é a chave de resolução (nome+versão). O digest é conferido à parte para

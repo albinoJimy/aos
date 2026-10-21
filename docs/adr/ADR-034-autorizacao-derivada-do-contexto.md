@@ -261,6 +261,22 @@ de fora. Quatro olhos fica para quando houver mais de um aprovador. Resíduos ac
 não vê os argumentos da call (só o hash na preview); não há rota de recusa (a saída sem aprovação é
 a expiração, e o run falha na retoma).
 
+**Emenda de 2026-10-21 (AOS-542; decisão do dono, opção A).** A regra P4 do validador do plano
+(um nó com `consumes` de material `untrusted` não pode ter tools de efeito) foi escrita antes do
+AOS-540 e fazia a mesma separação que o nó passou a fazer melhor: com o «pedir antes de ler» ligado,
+o primeiro turno de um nó consumidor vê só o objectivo e as calls dele são autorizadas como trusted;
+depois de os dados entrarem, o gate de taint nega (ou escala) as calls privilegiadas. A P4 recusava
+planos seguros — numa série de produção de 2026-10-20, 3 de 5 planos que pediam a OCR de uma imagem
+nomeada no objectivo, num passo que recebia o resumo de outro. A P4 passa a deixar um nó consumidor
+ter tools de efeito **só** quando o nó executor o anuncia no `GET /tools`
+(`plan_input_deferral.first_turn_trusted`), o que ele faz apenas com o «pedir antes de ler» ligado e
+o gate de taint armado com o conjunto composto, e só com o snapshot conferido com esse nó. Sem o
+anúncio, a regra de antes. Uma tool que não resolve no snapshot continua a tornar o consumidor
+privilegiado. Resíduo aceite: um plano em que o modelo só pede a tool de efeito depois de ver os
+dados já não é recusado à partida; corre, e o nó nega a call (o run do nó falha com
+`contract_unmet_after_denial`), com o gasto dos turnos até aí. Conta-se pelos runs no layout 1.6.0
+com uma call de efeito negada por taint.
+
 ## 3. Alternativas consideradas
 
 - **(A) Dual-LLM / CaMeL completo** — um planeador que só vê trusted + handles e um executor que
