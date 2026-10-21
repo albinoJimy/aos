@@ -5305,7 +5305,9 @@ só o modelo (opção A).
 - [x] Com o host definido, o comportamento é o de antes (endpoint comparado e imposto).
 - [x] Em `enforce` sem host, um modelo servido diferente do perfil dá `diferente` e falha o turno; o
       mesmo modelo dá `igual`.
-- [ ] Em produção: `AOS_MODEL_ROUTE_GOVERNANCE=enforce` com o host vazio, e um plano de prova.
+- [x] Em produção: `AOS_MODEL_ROUTE_GOVERNANCE=enforce` com o host vazio, e um plano de prova.
+      *Nota de 2026-10-21:* v0.1.65; `.env` com `enforce` (cópia `.env.antes-aos543`); o arranque diz
+      `IMPOSICAO SO DO MODELO`; plano `plan-e2e-rota2-1792591244` com código 0 e 4 turnos `igual`.
 
 *Nota de 2026-10-21:* `TestAOS505_Env_EnforceExigeOHostDoEndpoint` (reescrito para o requisito novo)
 e a suite AOS-505 do nó composto.
@@ -5359,3 +5361,4 @@ e a suite AOS-505 do nó composto.
 | 3.16 | 2026-10-14 | +AOS-527: o custo do modelo em produção — o compose monta só de leitura a pasta da tabela de preços do operador (`/etc/aos/model-pricing`), o CD semeia-a só quando falta, com o par (`gpt-4o`, `eu`) ao preço da OpenRouter para o Claude Haiku; `.env.example` e README com os passos do operador e o tecto em dólares. Aplicar em produção por fazer | Equipa AOS |
 | 3.17 | 2026-10-15 | AOS-527 em produção na v0.1.56: custo do modelo ARMADO com a tabela externa e tecto de 0,10 USD por run ligado. Falta ver um run com custo diferente de zero | Equipa AOS |
 | 1.10 | 2026-10-21 | +AOS-543: a governação da rota impõe o modelo servido sem exigir o endpoint (emenda de 2026-10-21 ao ADR-036 §2.8, decisão do dono) | Equipa AOS |
+| 1.11 | 2026-10-21 | AOS-543 em produção na v0.1.65: a governação da rota em `enforce` (só o modelo); plano de prova com 4 turnos `igual` | Equipa AOS |
