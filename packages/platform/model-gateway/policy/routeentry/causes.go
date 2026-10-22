@@ -62,6 +62,11 @@ const (
 	// declara EXACTAMENTE uma capacidade de media: nem `imagem` nem `video`, ou as duas (AOS-530,
 	// ADR-042 §2.3 e §2.4; o perfil de vídeo é do AOS-536).
 	CauseToolProfileCapabilities = "perfil_de_tool_com_capacidades_erradas"
+	// CauseRunProfileMedia — um registo de uso [UseRun] declara uma capacidade de media (`imagem` ou
+	// `video`) no perfil. O modelo do run só vê media com uma medida própria no banco de ensaio, que
+	// o relatório de qualificação do titular não traz (AOS-546, ADR-043 §2.2; a medida é o
+	// AOS-547). Até lá, recusado.
+	CauseRunProfileMedia = "perfil_de_run_com_media_sem_medida"
 	// CauseOtherEnvironment — o registo foi assinado para outro board ou outra região.
 	CauseOtherEnvironment = "registo_de_outro_ambiente"
 	// CauseProxyImageNotDeclared — a imagem do proxy que o registo cita não é a declarada para

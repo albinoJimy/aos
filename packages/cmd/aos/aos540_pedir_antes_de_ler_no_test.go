@@ -265,11 +265,11 @@ func TestAOS540_Env_VocabularioBannerELayout(t *testing.T) {
 		t.Fatalf("banner: %v", b)
 	}
 	com := agentruntime.Goal{Inputs: []agentruntime.PlanInput{{From: "n0"}}}
-	if layoutDoRunNovo(false, true, com) != agentruntime.AssemblyVersion160 ||
-		layoutDoRunNovo(true, true, com) != agentruntime.AssemblyVersion160 ||
-		layoutDoRunNovo(false, true, agentruntime.Goal{}) != agentruntime.AssemblyVersion ||
-		layoutDoRunNovo(true, false, com) != agentruntime.AssemblyVersion150 ||
-		layoutDoRunNovo(false, false, com) != agentruntime.AssemblyVersion {
+	if layoutDoRunNovo(false, true, false, com) != agentruntime.AssemblyVersion160 ||
+		layoutDoRunNovo(true, true, false, com) != agentruntime.AssemblyVersion160 ||
+		layoutDoRunNovo(false, true, false, agentruntime.Goal{}) != agentruntime.AssemblyVersion ||
+		layoutDoRunNovo(true, false, false, com) != agentruntime.AssemblyVersion150 ||
+		layoutDoRunNovo(false, false, false, com) != agentruntime.AssemblyVersion {
 		t.Fatal("layoutDoRunNovo")
 	}
 }

@@ -220,6 +220,12 @@ func ParseEntry(raw []byte) (Entry, error) {
 		}
 		e.Media = media
 	}
+	// O PERFIL DE UM REGISTO DE USO RUN NÃO DECLARA MEDIA (AOS-546): a capacidade `imagem` (ou
+	// `video`) faria o gateway deixar passar a media do tail para o modelo do run, e o relatório que
+	// o registo cita só mede o protocolo de tools. A medida de media do titular é o AOS-547.
+	if !e.ForTool() && (slices.Contains(profile.Capabilities, modelgateway.CapabilityImage) || slices.Contains(profile.Capabilities, modelgateway.CapabilityVideo)) {
+		return Entry{}, refuse(CauseRunProfileMedia, "")
+	}
 	e.Profile = profile
 	return e, nil
 }

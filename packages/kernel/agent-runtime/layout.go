@@ -53,6 +53,14 @@ const (
 	// Um run SEM `plan_input` materializa nela os mesmos bytes que na 1.5.0. Não é o layout dos
 	// runs novos: só o usa o nó que liga o interruptor, e só para runs com `plan_input`.
 	AssemblyVersion160 = "1.6.0"
+	// AssemblyVersion170 — a 1.6.0, byte a byte, mais a MEDIA NO TURNO (AOS-546, ADR-043 §2.2):
+	// um turno que despachou a [MediaViewTool] com sucesso acrescenta, a seguir a todos os
+	// resultados do turno, um segmento [TailMedia] por cada imagem que o run ainda não tinha visto,
+	// pela ordem dos resultados. Um run sem referências a media materializa nela os mesmos bytes
+	// que na 1.6.0 — e, sem `plan_input` nem estado do provider, os mesmos que na 1.4.0. Não é o
+	// layout dos runs novos: só o usa o nó que liga a media no turno, e aí TODOS os runs novos
+	// ficam nela (o manifesto e a série de métricas dizem 1.7.0).
+	AssemblyVersion170 = "1.7.0"
 )
 
 // layout é o que UMA versão do assembler monta. Só se obtém por [layoutFor] (ou
@@ -76,6 +84,9 @@ type layout struct {
 	// entradasDepoisDoPrimeiroTurno: os `plan_input` de um run não entram na semente; entram a
 	// seguir ao que o primeiro turno acrescenta, e esse turno não termina o run (1.6.0).
 	entradasDepoisDoPrimeiroTurno bool
+	// mediaPorDigest: um resultado de tool que é uma referência a media acrescenta, depois de
+	// todos os resultados do turno, um segmento [TailMedia] (1.7.0).
+	mediaPorDigest bool
 }
 
 func layout130() layout { return layout{version: AssemblyVersion130} }
@@ -110,6 +121,15 @@ func layout160() layout {
 	return l
 }
 
+// layout170 é o [layout160] com os segmentos de media. Constrói-se a partir dele pela mesma razão:
+// fora das referências a media, nada tem por onde divergir da 1.6.0.
+func layout170() layout {
+	l := layout160()
+	l.version = AssemblyVersion170
+	l.mediaPorDigest = true
+	return l
+}
+
 // layoutCorrente é o layout de [AssemblyVersion] — o dos runs novos.
 // [TestLayout_OCorrenteEODaConstante] amarra os dois.
 func layoutCorrente() layout { return layout140() }
@@ -128,8 +148,10 @@ func layoutFor(version string) (layout, error) {
 		return layout150(), nil
 	case AssemblyVersion160:
 		return layout160(), nil
+	case AssemblyVersion170:
+		return layout170(), nil
 	default:
-		return layout{}, fmt.Errorf("%w: %q (suportadas: %s, %s, %s, %s)", ErrUnknownAssemblyVersion, version, AssemblyVersion130, AssemblyVersion140, AssemblyVersion150, AssemblyVersion160)
+		return layout{}, fmt.Errorf("%w: %q (suportadas: %s, %s, %s, %s, %s)", ErrUnknownAssemblyVersion, version, AssemblyVersion130, AssemblyVersion140, AssemblyVersion150, AssemblyVersion160, AssemblyVersion170)
 	}
 }
 
@@ -137,7 +159,7 @@ func layoutFor(version string) (layout, error) {
 // antiga para a mais recente. É o vocabulário FECHADO de quem rotula por layout (a métrica de
 // runs hospedados do nó).
 func SupportedAssemblyVersions() []string {
-	return []string{AssemblyVersion130, AssemblyVersion140, AssemblyVersion150, AssemblyVersion160}
+	return []string{AssemblyVersion130, AssemblyVersion140, AssemblyVersion150, AssemblyVersion160, AssemblyVersion170}
 }
 
 // DefersPlanInputs diz se o layout da versão dada adia os `plan_input` de um run para depois do
@@ -679,6 +701,9 @@ type TailSequence struct {
 	// digestDasAdiadas é o [digestDasEntradas] das adiadas, calculado na abertura e mantido até à
 	// entrega (o turno que se monta sem elas é o que o grava).
 	digestDasAdiadas string
+	// mediaVista são os digests das imagens que o run já levou ao tail (1.7.0): uma imagem entra
+	// uma vez por run.
+	mediaVista map[string]bool
 }
 
 // DeferredPlanInputs devolve quantos `plan_input` do run ainda não entraram no tail: o número
@@ -917,6 +942,14 @@ func (s *TailSequence) turnoDoModelo(stepID, text, stateDigest string, results [
 		if s.lay.avisoDeRepeticao && vista.seguidas == RepeatNoticeAt {
 			segs = append(segs, tailFromRepeatNotice(vista.primeiroID))
 		}
+	}
+	// A media vem DEPOIS de todos os resultados do turno (1.7.0): na projecção nativa os
+	// resultados são mensagens `tool` seguidas, e a media vai na mensagem `user` a seguir.
+	if s.lay.mediaPorDigest {
+		if s.mediaVista == nil {
+			s.mediaVista = map[string]bool{}
+		}
+		segs = append(segs, mediaDoTurno(results, s.mediaVista)...)
 	}
 	return segs, repetidas
 }

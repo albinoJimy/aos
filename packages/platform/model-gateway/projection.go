@@ -146,9 +146,13 @@ func ParseProjection(mode string) (string, error) {
 // do primeiro turno, e com esse turno a não terminar o run. Os segmentos são os mesmos kinds; a
 // forma nova é um turno do modelo SÓ COM TEXTO a meio do tail (o turno 1 que não pediu tools),
 // que a projecção desta versão fecha num `assistant` sem `tool_calls` ([ProjectNativeVersion]).
+//
+// A 1.7.0 (AOS-546) é a 1.6.0 com segmentos `media` a seguir aos resultados de um turno. Cada um
+// sai na mensagem `user` seguinte, com o seu cabeçalho, e leva a imagem que referencia — só por
+// [ProjectNativeVersionWithMedia], que resolve os bytes.
 func projecaoNativaSuporta(assemblyVersion string) bool {
 	switch assemblyVersion {
-	case agentruntime.AssemblyVersion140, agentruntime.AssemblyVersion150, agentruntime.AssemblyVersion160:
+	case agentruntime.AssemblyVersion140, agentruntime.AssemblyVersion150, agentruntime.AssemblyVersion160, agentruntime.AssemblyVersion170:
 		return true
 	default:
 		return false
@@ -580,9 +584,24 @@ func ProjectNative(view agentruntime.PromptView) ([]port.Message, error) {
 // modelo numa mensagem `assistant` não é um segmento — não tem cabeçalho —, não leva fim e fica
 // só com a neutralização do kernel.
 func ProjectNativeVersion(version string, view agentruntime.PromptView) ([]port.Message, error) {
-	system, err := protocoloDaVersao(version)
+	msgs, media, err := projetarNativo(version, view)
 	if err != nil {
 		return nil, err
+	}
+	if len(media) > 0 {
+		// Um tail com media (1.7.0) só se projecta com quem resolva os bytes
+		// ([ProjectNativeVersionWithMedia]): sem eles o modelo veria o segmento sem a imagem.
+		return nil, &MediaUnavailableError{Cause: MediaCauseNoResolver}
+	}
+	return msgs, nil
+}
+
+// projetarNativo é a projecção de [ProjectNativeVersion], mais as referências a media de cada
+// mensagem `user` que leva segmentos [agentruntime.TailMedia] (pelo índice da mensagem).
+func projetarNativo(version string, view agentruntime.PromptView) ([]port.Message, map[int][]agentruntime.MediaRef, error) {
+	system, err := protocoloDaVersao(version)
+	if err != nil {
+		return nil, nil, err
 	}
 	// A linha de fim e o escape das quase-forjas são da 1.1.0 e de todas as que lhe sucedem; a
 	// 1.0.0 fica sem eles, byte a byte. `protocoloDaVersao` já recusou o que não é do vocabulário.
@@ -597,9 +616,11 @@ func ProjectNativeVersion(version string, view agentruntime.PromptView) ([]port.
 	msgs := []port.Message{{Role: port.RoleSystem, Content: system}}
 
 	var (
-		pendente []byte       // a mensagem `user` em construção
-		turno    *turnoNativo // o turno do modelo aberto
-		vistos   = map[string]bool{}
+		pendente      []byte                  // a mensagem `user` em construção
+		pendenteMedia []agentruntime.MediaRef // a media dessa mensagem (1.7.0)
+		media         map[int][]agentruntime.MediaRef
+		turno         *turnoNativo // o turno do modelo aberto
+		vistos        = map[string]bool{}
 		// fechados conta os turnos do modelo já projectados. Na 1.6.0 o PRIMEIRO pode ser só
 		// texto: é o turno que não pediu tools e a seguir ao qual o loop entregou os
 		// `plan_input` adiados — e que, por isso, não terminou o run.
@@ -610,6 +631,13 @@ func ProjectNativeVersion(version string, view agentruntime.PromptView) ([]port.
 		if len(pendente) > 0 {
 			msgs = append(msgs, port.Message{Role: port.RoleUser, Content: string(pendente)})
 			pendente = nil
+		}
+		if len(pendenteMedia) > 0 {
+			if media == nil {
+				media = map[int][]agentruntime.MediaRef{}
+			}
+			media[len(msgs)-1] = pendenteMedia
+			pendenteMedia = nil
 		}
 	}
 	fecharTurno := func() error {
@@ -672,14 +700,14 @@ func ProjectNativeVersion(version string, view agentruntime.PromptView) ([]port.
 		switch seg.Kind {
 		case agentruntime.TailHistory:
 			if err := fecharTurno(); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			// O texto do modelo vai no papel `assistant`, sem cabeçalho: o papel já diz de quem
 			// é. É NEUTRALIZADO como qualquer corpo — o modelo pode ter ecoado conteúdo de uma
 			// tool, e assim nenhuma linha de nenhuma mensagem abre por '<' sem ser do runtime.
 			texto, err := agentruntime.NeutralizeContent(versao, seg.Content)
 			if err != nil {
-				return nil, fmt.Errorf("%w: %w", ErrNativeProjection, err)
+				return nil, nil, fmt.Errorf("%w: %w", ErrNativeProjection, err)
 			}
 			turno = &turnoNativo{texto: string(texto)}
 			turno.estado, _ = rotulo(seg, agentruntime.StateDigestLabel)
@@ -688,15 +716,15 @@ func ProjectNativeVersion(version string, view agentruntime.PromptView) ([]port.
 			id, _ := rotulo(seg, "id")
 			pai, _, ok := agentruntime.ToolStepParent(id)
 			if !ok {
-				return nil, fmt.Errorf("%w: tool_call com id %q, que nao tem a forma <passo>-tool-<n>", ErrNativeProjection, id)
+				return nil, nil, fmt.Errorf("%w: tool_call com id %q, que nao tem a forma <passo>-tool-<n>", ErrNativeProjection, id)
 			}
 			if vistos[id] {
-				return nil, fmt.Errorf("%w: id de tool call repetido no tail: %q", ErrNativeProjection, id)
+				return nil, nil, fmt.Errorf("%w: id de tool call repetido no tail: %q", ErrNativeProjection, id)
 			}
 			vistos[id] = true
 			if turno != nil && turno.pai != "" && turno.pai != pai {
 				if err := fecharTurno(); err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 			}
 			if turno == nil {
@@ -708,7 +736,7 @@ func ProjectNativeVersion(version string, view agentruntime.PromptView) ([]port.
 			turno.pai = pai
 			args, err := argumentosDaChamada(seg)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			nome, _ := rotulo(seg, "name")
 			turno.chamadas = append(turno.chamadas, port.ToolCall{
@@ -721,7 +749,7 @@ func ProjectNativeVersion(version string, view agentruntime.PromptView) ([]port.
 		case agentruntime.TailToolResult:
 			id, tem := rotulo(seg, "id")
 			if !tem || id == "" {
-				return nil, fmt.Errorf("%w: tool_result sem id", ErrNativeProjection)
+				return nil, nil, fmt.Errorf("%w: tool_result sem id", ErrNativeProjection)
 			}
 			pos := -1
 			if turno != nil {
@@ -733,35 +761,42 @@ func ProjectNativeVersion(version string, view agentruntime.PromptView) ([]port.
 				}
 			}
 			if pos < 0 {
-				return nil, fmt.Errorf("%w: tool_result %q sem tool_call no mesmo turno", ErrNativeProjection, id)
+				return nil, nil, fmt.Errorf("%w: tool_result %q sem tool_call no mesmo turno", ErrNativeProjection, id)
 			}
 			if turno.resultados[pos] != nil {
-				return nil, fmt.Errorf("%w: a tool call %q tem mais de um resultado", ErrNativeProjection, id)
+				return nil, nil, fmt.Errorf("%w: a tool call %q tem mais de um resultado", ErrNativeProjection, id)
 			}
 			corpo, err := render(seg)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			turno.resultados[pos] = &port.Message{Role: port.RoleTool, ToolCallID: id, Content: string(corpo)}
 
 		default:
 			corpo, err := render(seg)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if seg.Kind == agentruntime.TailNotice && turno != nil {
 				turno.depois = append(turno.depois, corpo...)
 				continue
 			}
 			if err := fecharTurno(); err != nil {
-				return nil, err
+				return nil, nil, err
+			}
+			if seg.Kind == agentruntime.TailMedia {
+				ref, ok := agentruntime.MediaOfSegment(seg)
+				if !ok || !agentruntime.HasMediaSegments(versao) {
+					return nil, nil, fmt.Errorf("%w: segmento media fora do layout que o tem, ou sem a referencia", ErrNativeProjection)
+				}
+				pendenteMedia = append(pendenteMedia, ref)
 			}
 			pendente = append(pendente, corpo...)
 		}
 	}
 	if err := fecharTurno(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	despejarUser()
-	return msgs, nil
+	return msgs, media, nil
 }

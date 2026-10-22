@@ -543,7 +543,7 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 	}
 
 	s := &NodeService{
-		layouts:      novoRunsPorLayout(node.estadoDoProvider != nil, node.pedirAntesDeLer),
+		layouts:      novoRunsPorLayout(node.estadoDoProvider != nil, node.pedirAntesDeLer, node.media != nil),
 		desfechos:    novoDesfechosDeRuns(),
 		node:         node,
 		assigner:     assigner,
@@ -1229,7 +1229,7 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	//
 	// PEDIR ANTES DE LER (ADR-034 §4): com o interruptor ligado, um run novo com `plan_input` fica
 	// na 1.6.0, em que os `plan_input` só entram depois do primeiro turno. Os outros não mudam.
-	layoutNovo := layoutDoRunNovo(s.node.estadoDoProvider != nil, s.node.pedirAntesDeLer, goal)
+	layoutNovo := layoutDoRunNovo(s.node.estadoDoProvider != nil, s.node.pedirAntesDeLer, s.node.media != nil, goal)
 	if goal.AssemblyVersion == "" {
 		goal.AssemblyVersion = layoutNovo
 	}

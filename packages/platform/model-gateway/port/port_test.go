@@ -104,11 +104,11 @@ func TestChatRequest_Normalize(t *testing.T) {
 // pode declarar onde volta o estado que veio no saco do proxy e o parametro `reasoning` (AOS-516). 1.11.0 desde que o pedido
 // leva as tools do contrato que a regra pode forcar e o `tool_choice` nomeia a funcao no wire (AOS-526). 1.12.0 desde que
 // uma mensagem `user` do pedido pode levar partes de imagem (AOS-530, ADR-042). 1.13.0 desde que pode levar uma parte
-// de vídeo MP4 (AOS-535). O teste de formato sozinho compara a constante consigo
+// de vídeo MP4 (AOS-535). 1.14.0 desde a parte de media genérica de entrada (AOS-546). O teste de formato sozinho compara a constante consigo
 // própria e deixava a versão mudar em silêncio, enquanto a prosa de tecnica/06 §5 a afirma.
 func TestVersion_ValorFixado(t *testing.T) {
 	t.Parallel()
-	const quer = "1.13.0"
+	const quer = "1.14.0"
 	if port.Version != quer {
 		t.Fatalf("port.Version = %q, quer %q — se a mudança é deliberada, actualize tecnica/06 §5 e este teste", port.Version, quer)
 	}

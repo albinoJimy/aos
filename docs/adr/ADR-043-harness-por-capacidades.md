@@ -1,13 +1,13 @@
 # ADR-043 — Harness por capacidades: conteúdo genérico, artefactos, modelos escolhidos pela tarefa
 
-- **Estado:** Proposto. O dono aceitou o roteiro v2 a 2026-10-22 («aceito o roteiro v2, escreve
-  o R0»). Este documento espera a ratificação dele. **Nada do que aqui está foi implementado.**
+- **Estado:** Aceite — **ratificado pelo dono a 2026-10-22** («ratifico, prossiga com o AOS-546»).
+  A fase R1a é o AOS-546; o resto do roteiro (§7) por fazer.
 - **Data:** 2026-10-22
 - **Deciders:** Dono do produto. A análise de base é
   `docs/reports/analise-critica-harness-flexivel-2026-10-22.md` (v2): foi sujeita a duas revisões
   adversariais independentes (factos e proposta), e a sua §8 regista o que caiu.
-- **Tickets:** nenhum ainda. Cada fase do roteiro (§7) abre o seu ticket na epic do componente
-  que muda, e cada ticket cita este ADR.
+- **Tickets:** AOS-546 (fase R1a, o modelo do run vê media). Cada fase seguinte do roteiro (§7)
+  abre o seu ticket na epic do componente que muda, e cada ticket cita este ADR.
 - **Relacionados:**
   - ADR-002 (Reference Monitor mandatório), ADR-003 (NHI), ADR-005/ADR-034 (taint e autoridade do
     contexto), ADR-010 (replay e WORM), ADR-011 (policy-as-code e soberania), ADR-013 (SA-ROC);

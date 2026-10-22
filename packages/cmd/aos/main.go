@@ -452,6 +452,11 @@ func run(w io.Writer) error {
 		fmt.Fprintf(w, "[aos] %s\n", line)
 	}
 
+	// MEDIA NO TURNO (AOS-546): com `off` não sai linha. Já composta em [nodeConfigFromEnv].
+	for _, line := range mediaNoTurnoBanner(cfg.MediaNoTurno) {
+		fmt.Fprintf(w, "[aos] %s\n", line)
+	}
+
 	// AUDIT DE GOVERNAÇÃO DO GATEWAY (AOS-265): declara se a activação da allowlist e as
 	// decisões por chamada selam num WORM DURÁVEL (AOS_MODEL_AUDIT_PATH) ou num MemStore
 	// volátil. Amarrado ao estado composto (cfg.Model != nil): sem gateway não há linha.
@@ -1005,6 +1010,16 @@ func nodeConfigFromEnv() (Config, error) {
 	}
 	cfg.PlanInputDepoisDoPrimeiroTurno = pedirAntesDeLer
 
+	// MEDIA NO TURNO (AOS-546, ADR-043 §2.2). Vocabulário fechado (`off`/`on`); `on` exige o «pedir
+	// antes de ler», a `media_view` declarada no registo de tools e a pasta semeada.
+	mediaLigada, err := parseMediaNoTurnoFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
+	if cfg.MediaNoTurno, err = comporMediaNoTurno(mediaLigada, pedirAntesDeLer); err != nil {
+		return Config{}, err
+	}
+
 	// O GATE DE TAINT ESCALA EM VEZ DE NEGAR (AOS-541). Vocabulário fechado (`off`/`on`): um valor
 	// desconhecido aborta o arranque. Vazia ⇒ `off`. A exigência de aprovadores é do [Bootstrap].
 	taintEscala, err := parseTaintEscalaFromEnv()
@@ -1231,9 +1246,13 @@ func nodeConfigFromEnv() (Config, error) {
 	// (OmniRoute/OpenRouter/…). Fail-closed: config incompleta ABORTA (ErrBadModelConfig) e, em
 	// produção, um gateway sem ficheiro de credencial ABORTA (ErrProductionNeedsModelCredential,
 	// AOS-247) em vez de apresentar o bearer de DEV embebido.
-	modelClient, modelBinder, err := parseModelFromEnv(production)
+	modelClient, modelBinder, err := parseModelFromEnv(production, cfg.MediaNoTurno.opcaoDoAdaptador()...)
 	if err != nil {
 		return Config{}, err
+	}
+	// A media só chega ao modelo do run pelo adaptador do gateway (AOS-546).
+	if cfg.MediaNoTurno != nil && modelClient == nil {
+		return Config{}, ErrMediaNoTurnoSemGateway
 	}
 	// AOS-407: com a soberania por board ligada, cada tool call leva a obrigação `region` do board
 	// e o PEP nega uma tool cuja região não seja essa. Uma tool declarada sem região, ou numa região
@@ -2351,7 +2370,7 @@ func parseModelEgressTimeoutFromEnv() (time.Duration, error) {
 // fail-closed até o [Bootstrap] o ligar ao verifier REAL do nó. Por isso devolve TAMBÉM o
 // binder — a closure que o Bootstrap chama com esse verifier (Config.ModelIdentityBinder).
 // Sem gateway (endpoint vazio) ⇒ (nil, nil, nil): sem modelo e sem binder.
-func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identity.Verifier), error) {
+func parseModelFromEnv(production bool, extra ...opcaoDoAdaptador) (agentruntime.ModelClient, func(*identity.Verifier), error) {
 	// O INTERRUPTOR DO CANDIDATO (AOS-520) valida-se ANTES de qualquer retorno antecipado — incluindo
 	// o de um nó sem gateway de modelo: um valor fora do vocabulário aborta o arranque em qualquer
 	// composição, em vez de passar por `off` onde ninguém o lê.
@@ -2553,7 +2572,7 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 		parametrosRecusados = novosContadoresDeParametros(conjunto.WithParams())
 	}
 	client, err := newGatewayModelClientComPerfis(modelVerifier, endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit, costRec, production, egressHosts, egressTimeout,
-		rota, forma, estado, assinados, append(estadoOpcoes, modelProjectionOption(projection), modelProjectionVersionOption(projectionVersion), formaOpcao, rejeicaoOpcao)...)
+		rota, forma, estado, assinados, append(append(estadoOpcoes, modelProjectionOption(projection), modelProjectionVersionOption(projectionVersion), formaOpcao, rejeicaoOpcao), extra...)...)
 	if err != nil {
 		return nil, nil, err
 	}
