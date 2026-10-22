@@ -488,6 +488,9 @@ type Config struct {
 	// 1.6.0, em que o primeiro turno não vê os `plan_input`. false ⇒ o layout de sempre. Ver
 	// plan_input_env.go.
 	PlanInputDepoisDoPrimeiroTurno bool
+	// MediaNoTurno é a `media_view` composta com `AOS_MEDIA_NO_TURNO=on` (AOS-546, ADR-043 §2.2):
+	// os runs novos ficam no layout 1.7.0 e a tool é registada no RM. nil ⇒ desligada.
+	MediaNoTurno *ligacaoMedia
 	// TaintEscala troca a NEGAÇÃO do gate de taint por ESCALADA para aprovação humana de quatro
 	// olhos (AOS-541, `AOS_TAINT_ESCALA=on`). Exige aprovadores ([Config.Approvers]); sem eles o
 	// Bootstrap recusa com [ErrTaintEscalaSemAprovadores]. false ⇒ o gate nega, como sempre. Ver
@@ -1106,6 +1109,10 @@ type Node struct {
 	// pedirAntesDeLer: os runs NOVOS com `plan_input` ficam no layout 1.6.0 (ADR-034 §4). Ver
 	// plan_input_env.go.
 	pedirAntesDeLer bool
+
+	// media: a `media_view` ligada (AOS-546). Não nil ⇒ os runs NOVOS ficam no layout 1.7.0. Ver
+	// media_turno.go.
+	media *ligacaoMedia
 
 	// primeiroTurnoConfiavel (AOS-542): pedirAntesDeLer E o gate de taint armado com o conjunto
 	// composto. É o que o `GET /tools` anuncia ao `aos-orq` ([anuncioDoAdiamentoDoNo]).
@@ -2648,7 +2655,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// AOS-344: recebe `cfg.ProductionMode` porque a escolha do driver é uma decisão de POSTURA —
 	// em produção o driver de referência in-process deixa de ser eleito
 	// ([ErrProductionNeedsSandboxDriver]).
-	if err := registerSandboxLaunchers(sec, es, sandboxBindings, sandboxSemExecutor, cfg.ProductionMode, log); err != nil {
+	if err := registerSandboxLaunchers(sec, es, sandboxBindings, semMediaView(sandboxSemExecutor, cfg.MediaNoTurno != nil), cfg.ProductionMode, log); err != nil {
 		return nil, err
 	}
 	// (7-ter) A TOOL `ocr_read` (AOS-530, ADR-042 §2.1) — uma CostingToolFunc no RM do nó, cujo
@@ -2663,6 +2670,12 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	videoLigada.ligarCusto(runBudget, registoDeCustoDeTool(es, producerDoCustoDeTool()), log)
 	if err := registarVideo(sec, videoLigada, log); err != nil {
 		return nil, err
+	}
+	// (7-quinquies) A TOOL `media_view` (AOS-546): uma leitura local, sem custo de modelo.
+	if cfg.MediaNoTurno != nil {
+		if err := sec.Register(mediaViewToolName, cfg.MediaNoTurno.executar); err != nil {
+			return nil, fmt.Errorf("aos: registar a tool %s: %w", mediaViewToolName, err)
+		}
 	}
 
 	// (7b) SOBERANIA DE LEITURA (AOS-172, D7). A REGRA fail-closed board→região é FIXA (Carta
@@ -3476,6 +3489,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		estadoDoProvider:        estadoDoCliente(cfg.Model),    // AOS-514: estado opaco do provider por resultado, para o /metrics (nil ⇒ desligada)
 		completionVerdict:       completionVerdict,             // AOS-493: modo do veredicto de conclusão dos runs novos
 		pedirAntesDeLer:         pedirAntesDeLer,               // ADR-034 §4: runs novos com plan_input no layout 1.6.0
+		media:                   cfg.MediaNoTurno,              // AOS-546: a media_view (nil ⇒ desligada); runs novos no layout 1.7.0
 		primeiroTurnoConfiavel:  primeiroTurno,                 // AOS-542: anunciado no GET /tools
 		stateGates:              stateGates,                    // AOS-218: fonte do StateGate durável por-run para o steer
 		breakers:                breakers,                      // AOS-080/081/251: disjuntores por-run (libertados no fim do run)
@@ -3526,6 +3540,7 @@ func (n *Node) Close() error {
 	// AOS-530: a pasta semeada da `ocr_read`, aberta com os.Root no arranque. Nil-safe sem a tool.
 	n.ocr.fechar()
 	n.video.fechar() // AOS-536: a pasta da `video_read`, idem.
+	n.media.fechar() // AOS-546: a pasta da `media_view`, idem.
 	return firstErr
 }
 

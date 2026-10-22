@@ -61,8 +61,9 @@ type runsPorLayout struct {
 // `/metrics` tem as séries de sempre. Mas um run em 1.5.0 re-hospedado num nó que entretanto a
 // desligou — o recuo — NÃO fica invisível: a série aparece assim que conta um (ver
 // [runsPorLayout.publicadas]). A da 1.6.0 («pedir antes de ler», ADR-034 §4) segue a mesma regra
-// com o seu interruptor: a zero só com `AOS_PLAN_INPUT_DEPOIS_DO_PRIMEIRO_TURNO=on`.
-func novoRunsPorLayout(capturaDoEstado, pedirAntesDeLer bool) *runsPorLayout {
+// com o seu interruptor: a zero só com `AOS_PLAN_INPUT_DEPOIS_DO_PRIMEIRO_TURNO=on`. E a da 1.7.0
+// (AOS-546) com o seu: a zero só com `AOS_MEDIA_NO_TURNO=on`.
+func novoRunsPorLayout(capturaDoEstado, pedirAntesDeLer, media bool) *runsPorLayout {
 	r := &runsPorLayout{todas: agentruntime.SupportedAssemblyVersions(), sempre: map[string]bool{}, total: map[string]*atomic.Int64{}}
 	for _, v := range r.todas {
 		r.total[v] = new(atomic.Int64)
@@ -71,6 +72,8 @@ func novoRunsPorLayout(capturaDoEstado, pedirAntesDeLer bool) *runsPorLayout {
 			r.sempre[v] = capturaDoEstado
 		case agentruntime.AssemblyVersion160:
 			r.sempre[v] = pedirAntesDeLer
+		case agentruntime.AssemblyVersion170:
+			r.sempre[v] = media
 		default:
 			r.sempre[v] = true
 		}

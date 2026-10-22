@@ -59,6 +59,9 @@ type ModelClientAdapter struct {
 	// perfis: o conjunto de perfis de rota de onde o adaptador lê a versão da projecção da rota
 	// ([WithRouteProfileSet], AOS-513). nil — o valor-zero — é a tabela em código.
 	perfis *RouteProfileSet
+	// media resolve os bytes da media de um tail da 1.7.0 ([WithMediaResolver], AOS-546). nil — o
+	// valor-zero — é o adaptador de sempre: um turno com media falha em vez de sair sem ela.
+	media MediaResolver
 }
 
 // Compile-time: o adaptador satisfaz a porta do runtime.
@@ -300,9 +303,12 @@ func (a *ModelClientAdapter) Call(ctx context.Context, view agentruntime.PromptV
 		if versaoNativa, perr = a.versaoDaProjeccao(view); perr != nil {
 			return agentruntime.ModelResponse{}, perr
 		}
-		if msgs, perr = ProjectNativeVersion(versaoNativa, view); perr != nil {
+		if msgs, perr = ProjectNativeVersionWithMedia(versaoNativa, view, a.media); perr != nil {
 			return agentruntime.ModelResponse{}, perr
 		}
+	} else if err := anexarMedia(&msgs[0], mediaDoTail(view), a.media); err != nil {
+		// O texto único leva a media do tail inteiro na sua única mensagem `user` (AOS-546).
+		return agentruntime.ModelResponse{}, err
 	}
 	req := port.ChatRequest{
 		Model:     a.model,

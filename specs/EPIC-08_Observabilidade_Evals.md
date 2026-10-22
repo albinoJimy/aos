@@ -3127,6 +3127,41 @@ tool `video_read` no nó.
 - Um registo de uso `tool` com mais de uma capacidade de media, ou de uso `run` com vídeo.
 - Vídeos reais, outros contentores além do MP4, e subir o tecto de 4 MiB do AOS-535.
 
+## AOS-547 — O banco de ensaio mede o titular a ver fotografias, e o registo de uso run com `imagem` exige essa medida
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-08 — Observabilidade e Evals |
+| Fase | Harness por capacidades (ADR-043), fase R1a — a parte do banco |
+| Tipo | feat |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-546 (o modelo do run vê media; o registo de uso run com media é recusado até este ticket) |
+| Responsável sugerido | Engenheiro de Plataforma |
+| Documentos de referência | `docs/adr/ADR-043-harness-por-capacidades.md` (§2.7, §7); `packages/qa/banco-ensaio/` (o molde da experiência `ocr`, AOS-529, e da `video`, AOS-537); `packages/platform/model-gateway/policy/routeentry/verdict.go` (`CheckReport`) |
+
+### Contexto
+
+O AOS-546 deixa o modelo do run ver uma imagem, mas só numa rota cujo perfil declare `imagem`, e
+recusa um registo de uso `run` com essa capacidade (`perfil_de_run_com_media_sem_medida`): o
+relatório que esse registo cita só mede o protocolo de tools. Este ticket dá ao titular a medida
+que falta — descrever fotografias —, como o AOS-529 deu ao modelo de visão a do OCR.
+
+### Critérios de Aceitação
+
+- [ ] Uma experiência do banco que mede o modelo do run a descrever fotografias (uma bateria com
+      factos esperados por imagem: divisões, objectos, contagens), pelo proxy fixado, com
+      veredicto contra um limiar de factos e relatório selado.
+- [ ] Um registo de uso `run` com `imagem` passa a ser aceite se citar um relatório qualificado
+      do protocolo de tools E da nova experiência para o mesmo perfil; sem a segunda medida
+      continua recusado.
+- [ ] A qualificação real (custo autorizado pelo dono), o registo assinado pelo dono e, em
+      produção, o caso do AOS-546: um run cujo modelo descreve uma fotografia semeada.
+
+### Fora de âmbito
+
+- Vídeo para o modelo do run (fica recusado no registo de uso run).
+
 ---
 
 ## Controlo de versões
@@ -3169,3 +3204,4 @@ tool `video_read` no nó.
 | 1.33 | 2026-10-19 | AOS-536 parte 2 feita no ramo: a tool `video_read` no nó, no molde da `ocr_read` e com o código dela partilhado; a pasta, a capability e o recurso são os da `ocr_read`; tecto de 60 s; reserva função da duração. Fora do `tools.json` de produção até à decisão do dono sobre o ADR-034 §2.7 | Equipa AOS |
 | 1.34 | 2026-10-19 | O dono estende à `video_read` a excepção do ADR-034 §2.7 (emenda de 2026-10-19), com a mesma forma da `ocr_read`; o teste da excepção cobre as duas. Revisão adversarial da parte 2: a duração da `mvhd` dava a volta numa `time.Duration` abaixo da guarda das unidades — corrigido, com teste | Equipa AOS |
 | 1.35 | 2026-10-19 | AOS-536 feito: a `video_read` entra no `tools.json` de produção (#523) e está em produção na v0.1.61; qualificação real, assinatura e série `vid1`–`vid5` (5 de 5) registadas. O «Fora de âmbito» que excluía alterar a allowlist embebida e o `tools.json` foi ultrapassado pelas decisões do dono de 2026-10-19 | Equipa AOS |
+| 1.36 | 2026-10-22 | +AOS-547: o banco de ensaio mede o titular a ver fotografias, e o registo de uso run com `imagem` exige essa medida (ADR-043, fase R1a) | Equipa AOS |

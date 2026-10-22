@@ -41,7 +41,11 @@ import (
 //
 // 1.13.0 (AOS-535, A6.1): uma mensagem `user` de um pedido pode levar uma parte de vídeo MP4
 // ([Message.Videos]), no máximo uma por pedido e nunca com imagens; as respostas continuam só texto.
-const Version = "1.13.0"
+//
+// 1.14.0 (AOS-546, ADR-043 §2.2): a parte de media genérica de entrada ([MediaPart]), com a classe
+// derivada do tipo por uma tabela única ([MediaClassOf]) e posta no campo da sua classe por
+// [Message.AttachMedia]; o wire e as regras das partes de imagem e de vídeo não mudam.
+const Version = "1.14.0"
 
 // Role é o papel de uma mensagem na conversa (forma OpenAI).
 type Role string

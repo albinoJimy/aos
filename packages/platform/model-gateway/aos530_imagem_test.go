@@ -411,7 +411,8 @@ func TestAOS530_Gateway_AdaptadorHTTP(t *testing.T) {
 	}
 }
 
-// BARREIRA 1: o adaptador RT→GW dos turnos não tem por onde produzir uma parte de imagem. Prova
+// BARREIRA 1: o adaptador RT→GW dos turnos não tem por onde produzir uma parte de imagem fora do
+// segmento `media` da 1.7.0 (AOS-546, ver o fim do teste). Prova
 // dinâmica — o pedido que chega ao gateway, em texto único e em cada versão publicada da projecção
 // nativa — e prova pela fonte: nem o adaptador nem a projecção nomeiam o campo.
 func TestAOS530_AdaptadorDoRuntime_NuncaProduzImagens(t *testing.T) {
@@ -441,6 +442,16 @@ func TestAOS530_AdaptadorDoRuntime_NuncaProduzImagens(t *testing.T) {
 				t.Fatalf("%s nomeia %s: o adaptador dos turnos nao pode produzir imagens (ADR-042 §2.4, barreira 1)", f, nome)
 			}
 		}
+	}
+	// AOS-546 (ADR-043 §2.2): o ÚNICO caminho por onde um turno do run leva uma imagem é o segmento
+	// `media` de um tail da 1.7.0, anexado por projection_media.go — que nunca preenche a tool de
+	// origem. Uma vista sem esse segmento (as de cima) continua sem imagens.
+	fonte, err := os.ReadFile("projection_media.go")
+	if err != nil {
+		t.Fatalf("ReadFile(projection_media.go): %v", err)
+	}
+	if strings.Contains(string(fonte), "OriginTool") {
+		t.Fatal("projection_media.go nomeia OriginTool: a media de um turno nao e de uma tool de modelo")
 	}
 }
 

@@ -139,6 +139,10 @@ var (
 
 const aos486Modelo = "gpt-4o"
 
+// aos486OpcoesExtra são opções do adaptador do gateway que um teste acrescenta à composição
+// (AOS-546: o resolvedor da media). Vazio na omissão.
+var aos486OpcoesExtra []opcaoDoAdaptador
+
 // aos486No é o nó composto com o gateway real e as contagens de execução das suas tools.
 type aos486No struct {
 	node     *Node
@@ -194,7 +198,7 @@ func aos486ComporCom(t *testing.T, projeccao string, tweak func(*Config)) *aos48
 	t.Setenv("AOS_MODEL_EGRESS_TIMEOUT", "")
 	t.Setenv("AOS_MODEL_PROJECTION", projeccao)
 	t.Setenv("AOS_MODEL_TOOLS", writeTools(t, "["+strings.Join(specs, ",")+"]"))
-	modelo, binder, err := parseModelFromEnv(false)
+	modelo, binder, err := parseModelFromEnv(false, aos486OpcoesExtra...)
 	if err != nil {
 		t.Fatalf("parseModelFromEnv: %v", err)
 	}
@@ -243,6 +247,9 @@ func aos486ComporCom(t *testing.T, projeccao string, tweak func(*Config)) *aos48
 
 	n := &aos486No{node: node, upstream: up, execs: map[string]*int64{}, nativo: projeccao != "text", log: bytes.NewBuffer(append([]byte(nil), logArranque.Bytes()...))}
 	for _, nome := range aos486OrdemDoFicheiro {
+		if nome == mediaViewToolName && cfg.MediaNoTurno != nil {
+			continue // AOS-546: registada pelo Bootstrap, com o executor do nó
+		}
 		conta := new(int64)
 		n.execs[nome] = conta
 		if err := node.Runtime.Register(nome, func(context.Context, []byte) ([]byte, error) {

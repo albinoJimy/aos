@@ -429,10 +429,11 @@ func TestAOS489_MetricasDoLayoutEDasRepeticoes(t *testing.T) {
 		}
 	}
 	// Uma amostra por layout suportado — menos a 1.5.0 (AOS-514), que so tem serie num no com a
-	// captura do estado opaco ligada, e a 1.6.0 (AOS-540), que so a tem num no que pede antes de
-	// ler; este no nao tem nenhum dos dois interruptores.
-	if n := strings.Count(corpo, "aos_runs_hosted_total{"); n != len(agentruntime.SupportedAssemblyVersions())-2 || strings.Contains(corpo, agentruntime.AssemblyVersion150) || strings.Contains(corpo, agentruntime.AssemblyVersion160) {
-		t.Fatalf("a familia tem %d amostras; queria uma por layout suportado, sem a 1.5.0 e a 1.6.0", n)
+	// captura do estado opaco ligada, a 1.6.0 (AOS-540), que so a tem num no que pede antes de
+	// ler, e a 1.7.0 (AOS-546), que so a tem num no com a media no turno; este no nao tem nenhum
+	// dos tres interruptores.
+	if n := strings.Count(corpo, "aos_runs_hosted_total{"); n != len(agentruntime.SupportedAssemblyVersions())-3 || strings.Contains(corpo, agentruntime.AssemblyVersion150) || strings.Contains(corpo, agentruntime.AssemblyVersion160) || strings.Contains(corpo, `"`+agentruntime.AssemblyVersion170+`"`) {
+		t.Fatalf("a familia tem %d amostras; queria uma por layout suportado, sem a 1.5.0, a 1.6.0 e a 1.7.0", n)
 	}
 	// Um run em 1.5.0 re-hospedado num no sem a captura conta, e a serie aparece com ele.
 	if !h.svc.layouts.contar(agentruntime.AssemblyVersion150) || h.svc.layouts.lido(agentruntime.AssemblyVersion150) != 1 {

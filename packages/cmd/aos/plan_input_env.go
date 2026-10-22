@@ -75,7 +75,13 @@ func planInputDepoisBanner(ligado bool) []string {
 // layoutDoRunNovo é o layout em que um run NOVO deste nó fica fixado: o 1.6.0 quando o nó pede
 // antes de ler e o run tem `plan_input`; senão o de [layoutDosRunsNovos]. Um run retomado não
 // passa por aqui: continua no layout do seu registo de retoma.
-func layoutDoRunNovo(capturaDoEstado, pedirAntesDeLer bool, goal agentruntime.Goal) string {
+//
+// Com a media no turno ligada (AOS-546) todos os runs novos ficam no 1.7.0 — o 1.6.0 com a media:
+// um run sem `plan_input` nem media materializa nele os bytes de sempre.
+func layoutDoRunNovo(capturaDoEstado, pedirAntesDeLer, media bool, goal agentruntime.Goal) string {
+	if media {
+		return agentruntime.AssemblyVersion170
+	}
 	if pedirAntesDeLer && len(goal.Inputs) > 0 {
 		return agentruntime.AssemblyVersion160
 	}

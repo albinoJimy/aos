@@ -5387,21 +5387,36 @@ parte de conteúdo genérica e responde às três (§6). Este ticket é a fase R
 
 ### Critérios de Aceitação
 
-- [ ] A porta ganha uma parte genérica de entrada (`media_type` + bytes ou referência por digest), e
+- [x] A porta ganha uma parte genérica de entrada (`media_type` + bytes ou referência por digest), e
       `ImagePart`/`VideoPart` passam a casos dela, sem mudar o wire nem os testes de contrato
-      existentes.
-- [ ] O perfil da rota declara os tipos de media aceites na entrada; um tipo não declarado é
-      **recusado** antes de sair, nunca descartado (a garantia do AOS-509).
-- [ ] O tail ganha um segmento de referência a media (digest, tipo, tamanho) que entra no
+      existentes. *Nota de 2026-10-22:* porta 1.14.0, `port.MediaPart`, com a classe tirada do tipo
+      por uma tabela única (`MediaClassOf`) e `Message.AttachMedia`; a referência por digest vive no
+      kernel (`agentruntime.MediaRef`), e a porta recebe sempre os bytes já resolvidos.
+- [x] O perfil da rota declara os tipos de media aceites na entrada; um tipo não declarado é
+      **recusado** antes de sair, nunca descartado (a garantia do AOS-509). *Nota de 2026-10-22:* a
+      declaração é por CLASSE (`imagem`, `video`), que é o nome da capacidade do perfil; um pedido
+      com imagem para uma rota sem `imagem` é recusado pelo gateway antes da credencial
+      (`TestAOS546_GatewayReal_SoUmaRotaComImagemRecebeAMediaDoRun`). Declarar tipos exactos fica
+      para as partes de saída (fase R3).
+- [x] O tail ganha um segmento de referência a media (digest, tipo, tamanho) que entra no
       `prompt_hash` pelo digest; a projecção resolve os bytes e confere o digest antes de os enviar.
-- [ ] O segmento é `untrusted`; com o «pedir antes de ler» (AOS-540) o media chega no segundo turno.
-- [ ] O replay reconstrói pelo digest sem voltar a ler os bytes; uma continuação sem os bytes falha
-      com causa própria.
-- [ ] O custo dos tokens de imagem conta no run como os restantes.
+      *Nota de 2026-10-22:* layout 1.7.0 (a 1.6.0 com o segmento `media` a seguir aos resultados do
+      turno), a tool local `media_view` e `AOS_MEDIA_NO_TURNO` (off por omissão).
+- [x] O segmento é `untrusted`; com o «pedir antes de ler» (AOS-540) o media chega no segundo turno.
+      *Nota:* `on` exige `AOS_PLAN_INPUT_DEPOIS_DO_PRIMEIRO_TURNO=on`.
+- [x] O replay reconstrói pelo digest sem voltar a ler os bytes; uma continuação sem os bytes falha
+      com causa própria. *Nota:* `TestAOS546_ReplayDeUmRunComMediaSemOsBytes`;
+      `ErrMediaUnavailable` com as causas `sem_resolvedor`, `media_ilegivel`,
+      `media_nao_bate_com_a_referencia` e `media_recusada`.
+- [x] O custo dos tokens de imagem conta no run como os restantes. *Nota:* o provider inclui-os
+      em `prompt_tokens`, que o gateway já contabiliza; a estimativa de admissão
+      (`integration/model_admission.go`) continua a não ver a imagem — resíduo declarado.
 - [ ] Um registo de perfil do titular com a capacidade de imagem, qualificado no banco de ensaio
-      (uma experiência que descreve fotografias), assinado pelo dono.
+      (uma experiência que descreve fotografias), assinado pelo dono. *Nota de 2026-10-22:* até
+      haver a medida, um registo de uso run com `imagem` ou `video` é RECUSADO
+      (`perfil_de_run_com_media_sem_medida`); a experiência e a regra que a exige são o AOS-547.
 - [ ] Em produção: um run cujo modelo descreve uma fotografia semeada, com o digest no
-      `prompt_hash` e o replay verificado.
+      `prompt_hash` e o replay verificado. *Nota:* depende do AOS-547.
 
 ### Fora de âmbito
 
