@@ -285,6 +285,12 @@ func (h *apiHandler) tabelaDeRotas() []rota {
 		// do registo de retoma e devolve o veredicto de fidelidade, SEM conteúdo. Desligado (501)
 		// sem o gate soberano ou sem o registo de retoma composto. Ver replay_verificavel.go.
 		{"GET /runs/{id}/replay", h.handleReplay, planoDados},
+		// Plano de DADOS — OS ARTEFACTOS DO RUN (AOS-548): as MESMAS portas do /reconstruct, com
+		// selo próprio (`read:artifact`); a lista sai dos eventos `artifact.created`, e o conteúdo
+		// de um digest que o run declara sai como anexo. Desligado (501) sem AOS_ARTIFACT_DIR. Ver
+		// artifact_api.go.
+		{"GET /runs/{id}/artifacts", h.handleArtifacts, planoDados},
+		{"GET /runs/{id}/artifacts/{digest}", h.handleArtifact, planoDados},
 
 		// Plano de CONTROLO TRUSTED (cada um autenticado na fronteira real do nó: a admissão e o
 		// mTLS vêm do invólucro; a assinatura ed25519 do corpo, que é quem DECIDE, fica no handler).

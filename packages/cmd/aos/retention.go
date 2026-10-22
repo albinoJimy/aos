@@ -112,6 +112,13 @@ func subjectOf(e eventstore.Event) string {
 			return ""
 		}
 		return p.Subject
+	case EventTypeArtifactCreated:
+		// AOS-548: o artefacto está cifrado sob a KEK do titular do evento; expira com ela.
+		var p artefactoCriado
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			return ""
+		}
+		return p.SealedSubject
 	case EventTypePlanRequestSubmitted:
 		var p planRequestSubjectWire
 		if err := json.Unmarshal(e.Payload, &p); err != nil {

@@ -488,6 +488,10 @@ type Config struct {
 	// 1.6.0, em que o primeiro turno não vê os `plan_input`. false ⇒ o layout de sempre. Ver
 	// plan_input_env.go.
 	PlanInputDepoisDoPrimeiroTurno bool
+	// ArtifactDir e ArtifactMaxBytes ligam o armazém de artefactos do run (AOS-548, ADR-043 §2.3):
+	// a pasta do volume e o tecto em bytes. Pasta vazia ⇒ desligado.
+	ArtifactDir      string
+	ArtifactMaxBytes int64
 	// MediaNoTurno é a `media_view` composta com `AOS_MEDIA_NO_TURNO=on` (AOS-546, ADR-043 §2.2):
 	// os runs novos ficam no layout 1.7.0 e a tool é registada no RM. nil ⇒ desligada.
 	MediaNoTurno *ligacaoMedia
@@ -1114,6 +1118,9 @@ type Node struct {
 	// media_turno.go.
 	media *ligacaoMedia
 
+	// artefactos: o armazém de artefactos do run (AOS-548). nil ⇒ desligado. Ver artifact_store.go.
+	artefactos *armazemDeArtefactos
+
 	// primeiroTurnoConfiavel (AOS-542): pedirAntesDeLer E o gate de taint armado com o conjunto
 	// composto. É o que o `GET /tools` anuncia ao `aos-orq` ([anuncioDoAdiamentoDoNo]).
 	primeiroTurnoConfiavel bool
@@ -1695,6 +1702,17 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	}
 	dsarIndex := audit.NewInMemorySubjectPartitionIndex()
 	contentCipher := newContentSealer(dsarVault, dsarIndex)
+	// O ARMAZÉM DE ARTEFACTOS (AOS-548): com o cifrador por titular, nunca sem ele.
+	armazem, aerr := abrirArmazemDeArtefactos(cfg.ArtifactDir, cfg.ArtifactMaxBytes, contentCipher)
+	if aerr != nil {
+		return nil, aerr
+	}
+	armazemEntregue := false
+	defer func() {
+		if !armazemEntregue {
+			armazem.fechar()
+		}
+	}()
 
 	// (2c) EXECUÇÃO DURÁVEL (AOS-180). Quando configurada, compõe o checkpointer,
 	// capturer de não-determinismo e step-ledger sobre o MESMO Event Store. São
@@ -2598,7 +2616,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	runtimeOpts = append(runtimeOpts, agentruntime.WithModelAdmission(modelAdmission.port()))
 
 	sec, err := integration.NewSecuredRuntime(integration.SecuredConfig{
-		EffectRewriter: comporReescritas(newSandboxEffectRewriter(sandboxBindings), juntarReescritasDeModelo(ocrRewriter, videoRewriter)), // AOS-005: args→ExecRequest; AOS-530/536: args→entrada da ocr_read/video_read; nil ⇒ sem reescrita
+		EffectRewriter: reescritaDoEfeito(sandboxBindings, ocrRewriter, videoRewriter, armazem != nil), // AOS-005: args→ExecRequest; AOS-530/536: args→entrada da ocr_read/video_read; AOS-548: args→entrada da artifact_write; nil ⇒ sem reescrita
 		Model:          model,
 		Recorder:       agentruntime.NewTurnRecorder(es),
 		Catalog:        catalog,
@@ -2675,6 +2693,17 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	if cfg.MediaNoTurno != nil {
 		if err := sec.Register(mediaViewToolName, cfg.MediaNoTurno.executar); err != nil {
 			return nil, fmt.Errorf("aos: registar a tool %s: %w", mediaViewToolName, err)
+		}
+	}
+	// (7-sexies) A TOOL `artifact_write` (AOS-548): grava no armazém do run, cifrado pelo MESMO
+	// cifrador por titular das capturas, e sela a proveniência no stream do run.
+	if armazem != nil {
+		armazem.registar = registoDeArtefacto(es)
+		if err := sec.Register(artifactWriteToolName, armazem.executar); err != nil {
+			return nil, fmt.Errorf("aos: registar a tool %s: %w", artifactWriteToolName, err)
+		}
+		for _, l := range artifactBanner(armazem) {
+			log("%s", l)
 		}
 	}
 
@@ -3422,6 +3451,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	success = true    // o bootstrap concluiu: a guarda de limpeza não fecha os stores.
 	arranqueOK = true // ... nem larga a posse dos ficheiros (AOS-285/284): passa a ser do Node.Close.
 	ocrEntregue = true
+	armazemEntregue = true
 	return &Node{
 		BackupExporter: backupExporter, // AOS-101: nil ⇒ o nó não exporta backups (por omissão)
 		Runtime:        sec,
@@ -3490,6 +3520,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		completionVerdict:       completionVerdict,             // AOS-493: modo do veredicto de conclusão dos runs novos
 		pedirAntesDeLer:         pedirAntesDeLer,               // ADR-034 §4: runs novos com plan_input no layout 1.6.0
 		media:                   cfg.MediaNoTurno,              // AOS-546: a media_view (nil ⇒ desligada); runs novos no layout 1.7.0
+		artefactos:              armazem,                       // AOS-548: o armazém de artefactos (nil ⇒ desligado)
 		primeiroTurnoConfiavel:  primeiroTurno,                 // AOS-542: anunciado no GET /tools
 		stateGates:              stateGates,                    // AOS-218: fonte do StateGate durável por-run para o steer
 		breakers:                breakers,                      // AOS-080/081/251: disjuntores por-run (libertados no fim do run)
@@ -3539,8 +3570,9 @@ func (n *Node) Close() error {
 	}
 	// AOS-530: a pasta semeada da `ocr_read`, aberta com os.Root no arranque. Nil-safe sem a tool.
 	n.ocr.fechar()
-	n.video.fechar() // AOS-536: a pasta da `video_read`, idem.
-	n.media.fechar() // AOS-546: a pasta da `media_view`, idem.
+	n.video.fechar()      // AOS-536: a pasta da `video_read`, idem.
+	n.media.fechar()      // AOS-546: a pasta da `media_view`, idem.
+	n.artefactos.fechar() // AOS-548: a pasta do armazém de artefactos, idem.
 	return firstErr
 }
 
