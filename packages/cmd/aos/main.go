@@ -1020,6 +1020,11 @@ func nodeConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 
+	// O ARMAZÉM DE ARTEFACTOS (AOS-548). Vazio ⇒ desligado; o Bootstrap abre-o com o cifrador.
+	if cfg.ArtifactDir, cfg.ArtifactMaxBytes, err = artifactConfigFromEnv(); err != nil {
+		return Config{}, err
+	}
+
 	// O GATE DE TAINT ESCALA EM VEZ DE NEGAR (AOS-541). Vocabulário fechado (`off`/`on`): um valor
 	// desconhecido aborta o arranque. Vazia ⇒ `off`. A exigência de aprovadores é do [Bootstrap].
 	taintEscala, err := parseTaintEscalaFromEnv()

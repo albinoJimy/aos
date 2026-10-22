@@ -428,7 +428,7 @@ func comporReescritas(sandboxRw, modeloRw func(referencemonitor.Call) (reference
 		return modeloRw
 	}
 	return func(call referencemonitor.Call) (referencemonitor.Call, error) {
-		if call.ToolID == ocrToolName || call.ToolID == videoToolName {
+		if call.ToolID == ocrToolName || call.ToolID == videoToolName || call.ToolID == artifactWriteToolName {
 			return modeloRw(call)
 		}
 		return sandboxRw(call)

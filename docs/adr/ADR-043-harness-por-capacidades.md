@@ -91,10 +91,12 @@ por classe de API.
 ### 2.3 O armazém de artefactos
 
 Os bytes produzidos ou recebidos por um run vivem num **armazém endereçado por conteúdo**: a chave
-é (board, `sha256`), sem deduplicação entre boards. Regras:
+é (run, `sha256`), sem deduplicação entre runs (correcção de 2026-10-22, AOS-548). Regras:
 
-- **Cifra por board**, com a mesma hierarquia de chaves das capturas. O crypto-shredding da DSAR
-  e a retenção apagam também os artefactos (ADR-011).
+- **Cifra por titular** — a hierarquia de chaves das capturas, a que a DSAR e a retenção cobrem
+  (correcção de 2026-10-22, AOS-548: o texto original dizia «por board», mas a hierarquia que existe
+  e que o crypto-shredding alcança é por titular). O crypto-shredding da DSAR e a retenção tornam
+  também os artefactos ilegíveis (ADR-011).
 - O Event Store guarda **só metadados**. Cada artefacto tem um evento de proveniência selado:
   run, passo, tool, modelo e fornecedor efectivos, custo, e os digests das entradas e da
   instrução.

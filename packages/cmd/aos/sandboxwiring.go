@@ -263,3 +263,15 @@ func declararSemExecutor(semExecutor []string, log func(string, ...any)) {
 		"DELIBERADO (e o que a demo de defesa-em-profundidade mostra: oferecer nao e executar); o "+
 		"que nao pode e ficar por dizer", len(semExecutor), semExecutor)
 }
+
+// reescritaDoEfeito é a reescrita do efeito que o nó compõe: a da sandbox, a das tools de modelo e
+// — com o armazém de artefactos ligado (AOS-548) — a da `artifact_write`, que põe na entrada o run,
+// o passo e o titular da tool call REAL. Sem ela a tool recebia os argumentos do modelo, e um modelo
+// podia escrever no stream de outro run em nome de outro titular (achado 1 da revisão do AOS-548).
+func reescritaDoEfeito(bindings map[string]sandbox.SandboxBinding, ocrRw, videoRw func(referencemonitor.Call) (referencemonitor.Call, error), artefactos bool) func(referencemonitor.Call) (referencemonitor.Call, error) {
+	var artRw func(referencemonitor.Call) (referencemonitor.Call, error)
+	if artefactos {
+		artRw = newArtifactRewriter()
+	}
+	return comporReescritas(newSandboxEffectRewriter(bindings), juntarReescritasDeModelo(ocrRw, videoRw, artRw))
+}

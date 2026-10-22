@@ -210,6 +210,9 @@ func TestClassificacaoDasRotasEDeliberada(t *testing.T) {
 		"GET /runs/{id}/reconstruct": planoDados,
 		// AOS-533: o replay verificável é uma LEITURA com as portas do /reconstruct.
 		"GET /runs/{id}/replay": planoDados,
+		// AOS-548: os artefactos do run, LEITURAS com as portas do /reconstruct.
+		"GET /runs/{id}/artifacts":          planoDados,
+		"GET /runs/{id}/artifacts/{digest}": planoDados,
 
 		"POST /runs/{id}/steer":      planoControlo,
 		"POST /runs/{id}/pause":      planoControlo,

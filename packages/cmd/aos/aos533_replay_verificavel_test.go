@@ -74,6 +74,8 @@ type aos533Opcoes struct {
 	vault audit.KeyVault
 	// svc são opções a mais do serviço (o relógio do lease da incarnação nova).
 	svc []NodeServiceOption
+	// artefactos, quando dada, liga o armazém de artefactos nessa pasta (AOS-548).
+	artefactos string
 }
 
 type aos533No struct {
@@ -121,6 +123,7 @@ func aos533Compor(t *testing.T, o aos533Opcoes, guiao func(agentruntime.PromptVi
 	if o.vault != nil {
 		cfg.DSARVault = o.vault
 	}
+	cfg.ArtifactDir, cfg.ArtifactMaxBytes = o.artefactos, 1<<30
 	cfg.Model = model
 	cfg.Catalog = catalogStub{entries: []domain.Entry{acnEntry(t, signer, "passo_um"), acnEntry(t, signer, "passo_dois")}}
 	cfg.SignedToolRegistry = nodeSignedRegistrySpec(signer, nil)

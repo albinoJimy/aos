@@ -1586,6 +1586,83 @@ validador deixa de recusar quando não separa.
 - Mudar o prompt do planeador.
 - Uma métrica dedicada aos pedidos tardios (conta-se pelos eventos).
 
+## AOS-548 — O armazém de artefactos do run: a tool `artifact_write` e o download soberano (fase R1b do ADR-043)
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-07 — Segurança e Isolamento |
+| Fase | Harness por capacidades (ADR-043), fase R1b |
+| Tipo | feat |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-546 (a tool de código do nó e o layout do run); a permissão de ponta a ponta é o AOS-549 |
+| Responsável sugerido | Engenheiro de Plataforma |
+| Documentos de referência | `docs/adr/ADR-043-harness-por-capacidades.md` (§2.3); `docs/reports/desenho-r1b-armazem-de-artefactos-2026-10-22.md` (§2); `packages/cmd/aos/dsar.go` (o cifrador por titular); `packages/cmd/aos/sovereign_replay.go` (`portasDaLeituraDeConteudo`) |
+
+### Contexto
+
+O modelo do run vê media (R1a, AOS-546) mas não grava nada: nada do que gera sobrevive ao run. O
+ADR-043 §2.3 fixa um armazém de artefactos endereçado por conteúdo, cifrado, com proveniência selada
+e entregue por um download soberano. O desenho está em
+`docs/reports/desenho-r1b-armazem-de-artefactos-2026-10-22.md`.
+
+### Critérios de Aceitação
+
+- [ ] `AOS_ARTIFACT_DIR` (vazio ⇒ desligado, o nó de sempre): um ficheiro cifrado por artefacto,
+      pelo cifrador do titular do nó; ligado sem cifrador ⇒ o nó não arranca.
+- [ ] A tool `artifact_write` (código do nó) grava texto num vocabulário fechado de tipos
+      (JSON validado, Markdown, CSV, texto, SVG sem script, `foreignObject`, `on*`, ligações
+      externas nem DOCTYPE), com tectos por artefacto, por run e do volume, e devolve uma referência
+      pequena; run, passo e titular vêm do rewriter, nunca do modelo.
+- [ ] Um evento `artifact.created` sela a proveniência no stream do run (família `artifact.*`) e
+      entra na retenção e na DSAR pelo titular.
+- [ ] `GET /runs/{id}/artifacts` e `GET /runs/{id}/artifacts/{digest}` pelas portas da leitura de
+      conteúdo (soberania, posse do stream, selo da leitura): só um digest que o evento do próprio
+      run declara; `attachment`, `nosniff`, CSP `sandbox`; apagado ⇒ 410.
+- [ ] Em produção (com o AOS-549): o dono descarrega um artefacto gravado por um run.
+
+### Fora de âmbito
+
+- Entregar o artefacto ao nó seguinte do plano e o `artifact_read` entre runs (fase R2, handles).
+- Apagar fisicamente os blobs de um titular apagado (o crypto-shred torna-os ilegíveis; resíduo).
+
+## AOS-549 — A escrita local do run: `mutation: run_artifact` no registo, no taint, no risco, na política assinada e no planeador
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-07 — Segurança e Isolamento |
+| Fase | Harness por capacidades (ADR-043), fase R1b |
+| Tipo | feat |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-548. **Cerimónias do dono:** assinatura do bundle de política 1.1.0, mandato re-assinado, autonomia do domínio `artifact`, `authority.json` |
+| Responsável sugerido | Engenheiro de Plataforma |
+| Documentos de referência | `docs/reports/desenho-r1b-armazem-de-artefactos-2026-10-22.md` (§3, §4); ADR-034 (taint por destino); ADR-022 (o eixo de mutação do plano) |
+
+### Contexto
+
+Decisão do dono de 2026-10-22: gravar no armazém do **próprio run** depois de o contexto ficar
+untrusted é escrita local permitida, e a capability nova `cap:artifact.write` entra na política
+assinada por ele. Hoje uma tool que escreve é privilegiada no gate de taint, `danger` no risco,
+negada pela política (default-deny) e irreversível no planeador.
+
+### Critérios de Aceitação
+
+- [ ] O registo de tools aceita `mutation: "run_artifact"` só com `cap:artifact.write`,
+      `egress: none`, `reversible` e uma tool de código do nó; noutra forma o nó não arranca.
+- [ ] O gate de taint não a trata como privilegiada (razão `local_run_write`); o risco classifica
+      `cap:artifact.*` como local.
+- [ ] A política 1.1.0 tem `allow_artifact_write` com a cláusula de taint e a excepção da escrita
+      local do run, cujo destino vem do registo trusted; golden allow/deny e cobertura por regra.
+- [ ] O planeador lê `run_artifact` como efeito local reversível: não dá cartão humano por si.
+- [ ] Emendas ao ADR-034 e ao ADR-022.
+- [ ] Em produção, depois das cerimónias do dono: um plano vê a planta e grava `comodos.json` e
+      `planta.svg`, e o dono descarrega os dois.
+
+### Fora de âmbito
+
+- Qualquer escrita fora do armazém do run (continua a ser efeito, privilegiada).
+
 ---
 
 ## Controlo de versões
@@ -1609,3 +1686,4 @@ validador deixa de recusar quando não separa.
 | 1.14 | 2026-10-20 | AOS-539, revisão adversarial: o validador do registo de tools recusa `resource_sensitivity` com egress não `none` sem bloco `modelo`, com `args_from` ou com recurso de rede, e `mutation: "none"` com verbo de escrita na capability ou no comando (M-1); a absorção de um degrau do taint pela declaração documentada (M-2); a `ocr_read` real no nó composto; o snapshot sintetizado da paridade e a falta de conferência da sensibilidade no arranque registados como resíduo (B-1) | Equipa AOS |
 | 1.15 | 2026-10-21 | +AOS-542: a regra P4 do plano relaxa-se quando o nó anuncia que só deixa pedir no primeiro turno (emenda de 2026-10-21 ao ADR-034, decisão do dono) | Equipa AOS |
 | 1.16 | 2026-10-21 | AOS-542 em produção na v0.1.64 (com o Go 1.26.10): série `p3a1`–`p3a5`, 5 de 5, a OCR no nó consumidor no primeiro turno, 0 pedidos tardios | Equipa AOS |
+| 1.17 | 2026-10-22 | +AOS-548 (armazém de artefactos) e +AOS-549 (a escrita local do run), fase R1b do ADR-043 | Equipa AOS |
