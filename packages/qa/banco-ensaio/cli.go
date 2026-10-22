@@ -92,6 +92,14 @@ type Ambiente struct {
 	// opção nem variável de ambiente que cá chegue.
 	entreACorridaEAPreparacao func(feita *corridaFeita)
 	depoisDeEscreverOPacote   func(pacote string)
+	// medidaDeImagemASeguir é o pior caso, em pedidos, da medida de imagem que o `qualificar` corre
+	// a seguir a esta qualificação (AOS-547), e zero sem ela. Com ela, a qualificação só arranca se
+	// o dia ainda tiver as DUAS vagas do perfil e da rota e o contador couber nas duas corridas: a
+	// medida não pode ser recusada depois de a qualificação ter sido paga.
+	medidaDeImagemASeguir int64
+	// entreAMedidaEAPreparacao é outra COSTURA DE TESTE do `qualificar` (AOS-547): chamada com a
+	// medida de imagem feita e antes de se preparar o pacote.
+	entreAMedidaEAPreparacao func(m *medidaDeMedia)
 	// dockerDeTeste, quando presente, faz de Docker do motor de OCR em contentor (AOS-529). Só os
 	// testes do próprio pacote a definem.
 	dockerDeTeste corredorDocker
@@ -873,7 +881,7 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 		cfg.RegiaoDeclarada = rota.RegiaoDeclarada
 		// Mais um: a sonda antes da corrida conta no tecto como um pedido.
 		cfg.Sondar = true
-		if err := cfg.Contador.Cabe(previstos + 1); err != nil {
+		if err := cfg.Contador.Cabe(previstos + 1 + amb.medidaDeImagemASeguir); err != nil {
 			return naoCoube(err)
 		}
 		// O CONTADOR DO CONSELHEIRO (AOS-528): o mesmo ficheiro e a mesma trava, na linha do
@@ -902,6 +910,11 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 			feitas, qerr := QualificacoesDeHoje(caminhoDasQualificacoes, pastasDeRelatorios, chaveDaQualificacao)
 			if qerr == nil && feitas.esgotada() {
 				qerr = ErrQualificacoesDoDia
+			}
+			// A MEDIDA DE IMAGEM A SEGUIR (AOS-547) conta como outra qualificação do mesmo perfil e da
+			// mesma rota: as duas vagas têm de existir já.
+			if qerr == nil && amb.medidaDeImagemASeguir > 0 && (feitas.DoPerfil+2 > QualificacoesPorPerfilPorDia || feitas.DaRota+2 > QualificacoesPorRotaPorDia) {
+				qerr = fmt.Errorf("%w: a medida de imagem (AOS-547) corre a seguir e conta como outra; o dia ja nao tem as duas vagas deste perfil e desta rota", ErrQualificacoesDoDia)
 			}
 			if qerr != nil {
 				fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", qerr)

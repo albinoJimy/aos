@@ -29,7 +29,7 @@ func ProductionProxyImageDigest() string {
 	return digest
 }
 
-// Os sufixos dos três ficheiros de um registo.
+// Os sufixos dos ficheiros de um registo: três, e o quarto num registo de uso run com `imagem`.
 const (
 	// SuffixEntry é o sufixo do ficheiro do registo de entrada.
 	SuffixEntry = ".registo.json"
@@ -37,6 +37,9 @@ const (
 	SuffixSignature = ".registo.sig"
 	// SuffixReport é o sufixo do ficheiro do relatório citado.
 	SuffixReport = ".relatorio.json"
+	// SuffixMediaReport é o sufixo do ficheiro do relatório da medida de imagem que um registo de
+	// uso run com `imagem` cita (AOS-547).
+	SuffixMediaReport = ".relatorio-de-media.json"
 )
 
 // Tectos da pasta.
@@ -129,7 +132,7 @@ func trustAnchor(cfg Config) (ed25519.PublicKey, error) {
 }
 
 // scan lê a pasta e devolve os rótulos dos registos, ordenados. Recusa a pasta que não se lê, a
-// entrada que não é um dos três ficheiros de um registo, a assinatura ou o relatório sem registo,
+// entrada que não é um dos ficheiros de um registo, a assinatura ou um relatório sem registo,
 // e o excesso de registos. A falta de uma assinatura ou de um relatório NÃO é daqui: tem causa
 // própria, em [loadOne].
 func scan(dir string) ([]string, error) {
@@ -170,7 +173,7 @@ func scan(dir string) ([]string, error) {
 // splitName parte o nome de um ficheiro no rótulo e no sufixo. `known` é false quando o sufixo não
 // é um dos três ou o rótulo não passa em [validLabel].
 func splitName(name string) (label, suffix string, known bool) {
-	for _, s := range []string{SuffixEntry, SuffixSignature, SuffixReport} {
+	for _, s := range []string{SuffixEntry, SuffixSignature, SuffixReport, SuffixMediaReport} {
 		if l, has := strings.CutSuffix(name, s); has {
 			return l, s, validLabel(l)
 		}
@@ -224,6 +227,25 @@ func loadOne(cfg Config, pub ed25519.PublicKey, label string) (Entry, error) {
 	}
 	if err := CheckReport(e, report); err != nil {
 		return Entry{}, err
+	}
+	// A MEDIDA DE IMAGEM DO MODELO DO RUN (AOS-547), quando o registo a cita. Um ficheiro de medida
+	// que o registo NÃO cita recusa-se, como qualquer ficheiro que o registo não explica.
+	if e.MediaReportDigest == "" {
+		if _, state := readCapped(filepath.Join(cfg.Dir, label+SuffixMediaReport), MaxReportBytes); state != fileMissing {
+			return Entry{}, refuse(CauseMediaReportOutOfPlace, "")
+		}
+	}
+	if e.MediaReportDigest != "" {
+		media, state := readCapped(filepath.Join(cfg.Dir, label+SuffixMediaReport), MaxReportBytes)
+		switch state {
+		case fileMissing:
+			return Entry{}, refuse(CauseMediaReportMissing, "")
+		case fileUnreadable:
+			return Entry{}, refuse(CauseReportUnreadable, "")
+		}
+		if err := CheckMediaReport(e, media); err != nil {
+			return Entry{}, err
+		}
 	}
 	// A ALLOWLIST CONTINUA A MANDAR. O perfil diz o que um nome significa; quem autoriza o nome,
 	// para este board e esta região, é a allowlist assinada — e sabe-se aqui, no arranque, e não

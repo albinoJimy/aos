@@ -1511,15 +1511,21 @@ vazias por omissão, e monta `/opt/aos/perfis-de-rota` em `/etc/aos/perfis-de-ro
 `/etc/aos/perfis-de-rota`. A pasta do servidor tem de ser legível pelo uid `65532` e não precisa
 de ser escrita por ele. Os passos no servidor, por ordem, estão em «Ligar a fase A3 em produção».
 
-**Os três ficheiros de um registo** (`<rotulo>` é livre: letras, dígitos, `_` e `-`):
+**Os ficheiros de um registo** — três, e um quarto num registo de uso `run` com `imagem` (AOS-547) (`<rotulo>` é livre: letras, dígitos, `_` e `-`):
 
 | Ficheiro | O que é |
 |---|---|
 | `<rotulo>.registo.json` | `formato` (`aos-registo-de-entrada-de-perfil/1`), `board`, `regiao`, `perfil` (o JSON do `--perfil` do banco), `digest_do_perfil`, `digest_do_relatorio`, `digest_da_imagem_do_proxy`, `fatia_inicial_percentagem` (0 a 100) e, opcional, `uso` (`run`, a omissão, ou `tool` — AOS-530). Os três digests copiam-se do relatório. Um registo `tool` é o perfil de um alias que só uma tool chama: nunca é candidato, tem fatia 0, não pode ser do alias do titular, e o perfil declara exactamente uma capacidade de media, sem `tools`. Com `imagem` (a `ocr_read`, AOS-530) cita um relatório `ocr` do modo real com veredicto `qualificado`, preparado pelo `aos-ensaio qualificar-ocr`; com `video` (o alias `video-visao`, AOS-536) cita um relatório `video` (versão 2) do modo real com veredicto `qualificado`, preparado pelo `aos-ensaio qualificar-video`. Um relatório de uma media num registo da outra recusa com `relatorio_de_outra_experiencia` |
 | `<rotulo>.registo.sig` | A assinatura do dono, escrita pelo `aos-issuer route-profile-sign` |
 | `<rotulo>.relatorio.json` | O relatório da qualificação (`aos-ensaio real --experiencia qualificacao`; para um registo `tool`, o da experiência `ocr`), tal como o banco o escreveu |
+| `<rotulo>.relatorio-de-media.json` | Só num registo de uso `run` cujo perfil declara `imagem` (o modelo do run vê imagens, AOS-546/AOS-547): a **medida de imagem** do mesmo perfil — um relatório `ocr` do modo real, `qualificado` —, citada pelo membro `digest_do_relatorio_de_media` do registo. Sem ela o nó recusa o registo (`perfil_de_run_com_media_sem_medida`); com o ficheiro em falta, `relatorio_de_media_em_falta`; com o membro ou o ficheiro noutro registo, `relatorio_de_media_fora_de_lugar`. O `aos-ensaio qualificar real` de um perfil com `imagem` prepara-o, e o `route-profile-sign` assina-o com `--media-report` |
 
 Qualquer outro ficheiro na pasta faz o nó recusar arrancar.
+
+**Recuo de versão com a medida de imagem (AOS-547).** Um binário do nó anterior ao AOS-547 não
+conhece o membro `digest_do_relatorio_de_media` nem o ficheiro `.relatorio-de-media.json`, e
+**recusa arrancar** com um registo que os tenha (`registo_ilegivel` ou `ficheiro_nao_reconhecido`).
+Antes de voltar a um binário anterior, tire da pasta os quatro ficheiros desse registo.
 
 **Recuo de versão com um registo `uso` na pasta (AOS-530).** Um binário do nó anterior ao AOS-530
 não conhece o membro `uso` e **recusa arrancar** com um registo que o tenha (`registo_ilegivel`),

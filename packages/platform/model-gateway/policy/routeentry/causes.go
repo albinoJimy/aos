@@ -19,7 +19,7 @@ const (
 	CauseSharedTrustAnchor = "ancora_partilhada"
 	// CauseDirUnreadable — a pasta não existe, não é uma pasta ou não se lê.
 	CauseDirUnreadable = "pasta_ilegivel"
-	// CauseUnknownFile — a pasta tem uma entrada que não é um dos três ficheiros de um registo:
+	// CauseUnknownFile — a pasta tem uma entrada que não é um dos ficheiros de um registo:
 	// outro nome, uma subpasta, uma ligação simbólica, ou uma assinatura ou um relatório sem registo.
 	CauseUnknownFile = "ficheiro_nao_reconhecido"
 	// CauseTooManyEntries — a pasta tem mais registos do que [MaxEntries].
@@ -62,11 +62,15 @@ const (
 	// declara EXACTAMENTE uma capacidade de media: nem `imagem` nem `video`, ou as duas (AOS-530,
 	// ADR-042 §2.3 e §2.4; o perfil de vídeo é do AOS-536).
 	CauseToolProfileCapabilities = "perfil_de_tool_com_capacidades_erradas"
-	// CauseRunProfileMedia — um registo de uso [UseRun] declara uma capacidade de media (`imagem` ou
-	// `video`) no perfil. O modelo do run só vê media com uma medida própria no banco de ensaio, que
-	// o relatório de qualificação do titular não traz (AOS-546, ADR-043 §2.2; a medida é o
-	// AOS-547). Até lá, recusado.
+	// CauseRunProfileMedia — um registo de uso [UseRun] declara `video` no perfil, ou declara
+	// `imagem` sem citar o relatório da medida de imagem (AOS-546/AOS-547, ADR-043 §2.2).
 	CauseRunProfileMedia = "perfil_de_run_com_media_sem_medida"
+	// CauseMediaReportOutOfPlace — o registo cita um relatório de medida de imagem sem ser de uso
+	// [UseRun] com `imagem`, ou a pasta tem o ficheiro de uma medida que o registo não cita (AOS-547).
+	CauseMediaReportOutOfPlace = "relatorio_de_media_fora_de_lugar"
+	// CauseMediaReportMissing — o registo cita um relatório de medida de imagem e o ficheiro não está
+	// na pasta (AOS-547).
+	CauseMediaReportMissing = "relatorio_de_media_em_falta"
 	// CauseOtherEnvironment — o registo foi assinado para outro board ou outra região.
 	CauseOtherEnvironment = "registo_de_outro_ambiente"
 	// CauseProxyImageNotDeclared — a imagem do proxy que o registo cita não é a declarada para
@@ -123,7 +127,8 @@ func Causes() []string {
 		CauseNoTrustAnchor, CauseBadTrustAnchor, CauseSharedTrustAnchor, CauseDirUnreadable, CauseUnknownFile, CauseTooManyEntries,
 		CauseSignatureMissing, CauseSignatureInvalid,
 		CauseEntryUnreadable, CauseUnknownFormat, CauseShareOutOfRange, CauseBadUse, CauseToolWithShare, CauseBadProfile, CauseBadRouteName,
-		CauseProfileDigestMismatch, CauseProfileReturnsState, CauseToolProfileCapabilities, CauseOtherEnvironment, CauseProxyImageNotDeclared,
+		CauseProfileDigestMismatch, CauseProfileReturnsState, CauseToolProfileCapabilities, CauseRunProfileMedia, CauseMediaReportOutOfPlace,
+		CauseOtherEnvironment, CauseProxyImageNotDeclared, CauseMediaReportMissing,
 		CauseReportMissing, CauseReportUnreadable, CauseReportInvalid, CauseReportNotCited, CauseReportOfOtherExperiment, CauseReportUnknownShape,
 		CauseReportWithoutVerdict, CauseVerdictNotForProduction, CauseNotQualified, CauseVerdictOfOtherProfile, CauseVerdictOfOtherProxyImage,
 		CauseNameNotAllowlisted, CauseDuplicateName,

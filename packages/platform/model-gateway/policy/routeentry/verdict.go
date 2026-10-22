@@ -296,6 +296,44 @@ func readMediaVerdict(raw []byte, shape mediaReport) (Verdict, error) {
 	return v, nil
 }
 
+// CheckMediaReport confere o relatório da MEDIDA DE IMAGEM que um registo de uso run com `imagem`
+// cita (AOS-547, ADR-043 §2.2) pelas regras de [CheckReport]: o digest do relatório é o citado
+// pelo registo assinado (antes de se ler o resto), a leitura fechada é a da experiência `ocr`
+// ([ReadOCRVerdict] — o modelo do run lê as imagens da bateria de OCR), a corrida é do modo real e
+// vale para produção, o veredicto é `qualificado`, o perfil medido é o do registo e a imagem do
+// proxy é a citada. Um registo sem a medida nunca chega aqui: [ParseEntry] já o recusou.
+func CheckMediaReport(e Entry, report []byte) error {
+	digest, err := VerifyReportDigest(report)
+	if err != nil {
+		return refuse(CauseReportInvalid, "")
+	}
+	if e.MediaReportDigest == "" || digest != e.MediaReportDigest {
+		return refuse(CauseReportNotCited, "")
+	}
+	v, err := ReadOCRVerdict(report)
+	if err != nil {
+		return err
+	}
+	return conferirVeredicto(e, v)
+}
+
+// conferirVeredicto são os passos 4 a 7 de [CheckReport], partilhados com [CheckMediaReport].
+func conferirVeredicto(e Entry, v Verdict) error {
+	if v.Mode != ModeReal || !v.ValidForProduction {
+		return refuse(CauseVerdictNotForProduction, "")
+	}
+	if v.Verdict != VerdictQualified {
+		return refuse(CauseNotQualified, "")
+	}
+	if v.ProfileDigest != e.ProfileDigest {
+		return refuse(CauseVerdictOfOtherProfile, "")
+	}
+	if v.ProxyImageDigest != e.ProxyImageDigest {
+		return refuse(CauseVerdictOfOtherProxyImage, "")
+	}
+	return nil
+}
+
 // CheckReport confere o relatório citado contra o registo de entrada. A ORDEM é fixa:
 //
 //  1. o relatório confere o seu próprio digest;
@@ -331,17 +369,5 @@ func CheckReport(e Entry, report []byte) error {
 	if err != nil {
 		return err
 	}
-	if v.Mode != ModeReal || !v.ValidForProduction {
-		return refuse(CauseVerdictNotForProduction, "")
-	}
-	if v.Verdict != VerdictQualified {
-		return refuse(CauseNotQualified, "")
-	}
-	if v.ProfileDigest != e.ProfileDigest {
-		return refuse(CauseVerdictOfOtherProfile, "")
-	}
-	if v.ProxyImageDigest != e.ProxyImageDigest {
-		return refuse(CauseVerdictOfOtherProxyImage, "")
-	}
-	return nil
+	return conferirVeredicto(e, v)
 }

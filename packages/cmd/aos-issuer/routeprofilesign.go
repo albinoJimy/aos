@@ -48,6 +48,7 @@ func runRouteProfileSign(args []string, out, diag io.Writer) error {
 	fs.SetOutput(io.Discard)
 	entryPath := fs.String("entry", "", "o registo de entrada a assinar (<rotulo>.registo.json)")
 	reportPath := fs.String("report", "", "o relatorio de qualificacao que o registo cita (<rotulo>.relatorio.json)")
+	mediaPath := fs.String("media-report", "", "o relatorio da medida de imagem que um registo de uso run com imagem cita (<rotulo>.relatorio-de-media.json, AOS-547)")
 	keyFile := fs.String("key-file", "", "ficheiro com a seed (hex) da chave dos perfis de rota")
 	outPath := fs.String("out", "", "onde escrever a assinatura (<rotulo>.registo.sig); vazio = stdout")
 	if err := fs.Parse(args); err != nil {
@@ -75,9 +76,28 @@ func runRouteProfileSign(args []string, out, diag io.Writer) error {
 	if err := routeentry.CheckReport(e, report); err != nil {
 		return fmt.Errorf("route-profile-sign: o registo nao e assinavel: %w", err)
 	}
+	// A MEDIDA DE IMAGEM DO MODELO DO RUN (AOS-547): um registo que a cita só se assina com ela, e
+	// conferida como o nó a confere; um registo que não a cita não leva uma.
+	switch {
+	case e.MediaReportDigest != "" && *mediaPath == "":
+		return errors.New("route-profile-sign: o registo cita um relatorio da medida de imagem (digest_do_relatorio_de_media): passe-o com --media-report; nada foi assinado")
+	case e.MediaReportDigest == "" && *mediaPath != "":
+		return errors.New("route-profile-sign: --media-report so vale para um registo que cite a medida de imagem; nada foi assinado")
+	case e.MediaReportDigest != "":
+		media, merr := os.ReadFile(*mediaPath) // #nosec G304 -- caminho dado pelo operador na linha de comandos
+		if merr != nil {
+			return errors.New("route-profile-sign: nao foi possivel ler o relatorio de --media-report")
+		}
+		if err := routeentry.CheckMediaReport(e, media); err != nil {
+			return fmt.Errorf("route-profile-sign: o registo nao e assinavel: %w", err)
+		}
+	}
 	// A assinatura não pode ir parar por cima do que se assinou, do relatório ou da chave.
 	if *outPath != "" {
-		for nome, outro := range map[string]string{"--entry": *entryPath, "--report": *reportPath, "--key-file": *keyFile} {
+		for nome, outro := range map[string]string{"--entry": *entryPath, "--report": *reportPath, "--media-report": *mediaPath, "--key-file": *keyFile} {
+			if outro == "" {
+				continue
+			}
 			if mesmoFicheiro(*outPath, outro) {
 				return fmt.Errorf("route-profile-sign: --out e o mesmo ficheiro de %s — a assinatura nao se escreve por cima dele; nada foi escrito", nome)
 			}

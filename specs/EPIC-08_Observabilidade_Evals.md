@@ -3149,12 +3149,18 @@ que falta — descrever fotografias —, como o AOS-529 deu ao modelo de visão 
 
 ### Critérios de Aceitação
 
-- [ ] Uma experiência do banco que mede o modelo do run a descrever fotografias (uma bateria com
-      factos esperados por imagem: divisões, objectos, contagens), pelo proxy fixado, com
-      veredicto contra um limiar de factos e relatório selado.
-- [ ] Um registo de uso `run` com `imagem` passa a ser aceite se citar um relatório qualificado
+- [x] Uma experiência do banco que mede o modelo do run a ver imagens, pelo proxy fixado, com
+      veredicto contra um limiar de factos e relatório selado. *Nota de 2026-10-22:* é a experiência
+      `ocr` (AOS-529/530) aplicada ao perfil do titular (`ocr --titular`), e não uma bateria nova de
+      fotografias: mede o que a capacidade `imagem` autoriza — que a rota recebe imagens e o modelo as
+      lê, contra o limiar de 90% dos factos do dono —, já foi validada em produção, e não descarrega
+      nada. O `qualificar` de um perfil com `imagem` corre-a a seguir à qualificação, na mesma execução
+      (o banco só empacota relatórios das suas corridas).
+- [x] Um registo de uso `run` com `imagem` passa a ser aceite se citar um relatório qualificado
       do protocolo de tools E da nova experiência para o mesmo perfil; sem a segunda medida
-      continua recusado.
+      continua recusado. *Nota:* membro `digest_do_relatorio_de_media`, ficheiro
+      `<rotulo>.relatorio-de-media.json`, `routeentry.CheckMediaReport`; o `aos-issuer
+      route-profile-sign` exige `--media-report` quando o registo o cita.
 - [ ] A qualificação real (custo autorizado pelo dono), o registo assinado pelo dono e, em
       produção, o caso do AOS-546: um run cujo modelo descreve uma fotografia semeada.
 
