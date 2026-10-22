@@ -47,7 +47,9 @@ func TestAOS539_ManifestoDeProducao_ClasseDeRiscoEEscaladaEmL4(t *testing.T) {
 		t.Fatal(err)
 	}
 	quer := map[string]struct{ antes, depois risk.Class }{
-		"doc_read":   {risk.ClassGray, risk.ClassSafe},
+		"doc_read": {risk.ClassGray, risk.ClassSafe},
+		// AOS-546: a media_view e uma leitura local e publica, como a doc_read.
+		"media_view": {risk.ClassGray, risk.ClassSafe},
 		"ocr_read":   {risk.ClassGray, risk.ClassGray},
 		"video_read": {risk.ClassGray, risk.ClassGray},
 	}

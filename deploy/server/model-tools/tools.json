@@ -58,5 +58,24 @@
     "resource_sensitivity": "public",
     "egress": "external",
     "modelo": { "alias": "video-visao" }
+  },
+  {
+    "name": "media_view",
+    "description": "Mostra-te uma imagem (PNG ou JPEG) da pasta de documentos, por id: a imagem chega-te junto da mensagem seguinte. Usa isto quando precisares de VER uma fotografia, uma planta ou um desenho.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "doc_id": { "type": "string", "description": "id da imagem (o nome do ficheiro, por exemplo sala.jpg)" }
+      },
+      "required": ["doc_id"]
+    },
+    "capability": "cap:fs.read",
+    "reversibility": "reversible",
+    "mutation": "none",
+    "resource_type": "file",
+    "resource_value": "doc://{doc_id}",
+    "resource_region": "eu-west",
+    "resource_sensitivity": "public",
+    "egress": "none"
   }
 ]
