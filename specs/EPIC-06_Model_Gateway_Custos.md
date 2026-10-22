@@ -5411,12 +5411,13 @@ parte de conteúdo genérica e responde às três (§6). Este ticket é a fase R
 - [x] O custo dos tokens de imagem conta no run como os restantes. *Nota:* o provider inclui-os
       em `prompt_tokens`, que o gateway já contabiliza; a estimativa de admissão
       (`integration/model_admission.go`) continua a não ver a imagem — resíduo declarado.
-- [ ] Um registo de perfil do titular com a capacidade de imagem, qualificado no banco de ensaio
-      (uma experiência que descreve fotografias), assinado pelo dono. *Nota de 2026-10-22:* até
-      haver a medida, um registo de uso run com `imagem` ou `video` é RECUSADO
-      (`perfil_de_run_com_media_sem_medida`); a experiência e a regra que a exige são o AOS-547.
-- [ ] Em produção: um run cujo modelo descreve uma fotografia semeada, com o digest no
-      `prompt_hash` e o replay verificado. *Nota:* depende do AOS-547.
+- [x] Um registo de perfil do titular com a capacidade de imagem, qualificado no banco de ensaio
+      (uma experiência que descreve fotografias), assinado pelo dono. *Nota de 2026-10-22:* a medida
+      é a do AOS-547 (a experiência `ocr` com o perfil do titular): qualificação e medida no modo real
+      na mesma execução, **74 de 74 factos** em 12 imagens, ~0,046 USD; registo `gpt-4o` com
+      `[tools, imagem]` assinado pelo dono e carregado em produção na v0.1.68.
+- [x] Em produção: um run cujo modelo descreve uma fotografia semeada, com o digest no
+      `prompt_hash` e o replay verificado. *Nota de 2026-10-22:* plano `plan-e2e-med1-1792686853` (v0.1.68, 2026-10-22): um nó, layout 1.7.0, `media_view` mediada (permit, `local_read`, `safe`) sobre `planta-t2.png`, turno 2 a 341 µUSD contra 175 do 1 (a imagem entrou), resposta «5 divisões: SALA, COZINHA, QUARTO 1, QUARTO 2, WC», veredicto `fulfilled`; `GET /runs/{id}/replay` com fidelidade 1, 2 de 2 turnos, sem os bytes da imagem.
 
 ### Fora de âmbito
 
@@ -5472,3 +5473,4 @@ parte de conteúdo genérica e responde às três (§6). Este ticket é a fase R
 | 1.12 | 2026-10-21 | +AOS-544: o custo do planeador — o aos-orq deriva os dólares de cada chamada com a tabela do nó (decisão do dono, opção B) | Equipa AOS |
 | 1.13 | 2026-10-21 | AOS-544 em produção na v0.1.67: o custo do planeador no desfecho do plano (4969 tokens, 1066 µUSD, medidos) | Equipa AOS |
 | 1.14 | 2026-10-22 | +AOS-546: o modelo do run vê media — a parte de conteúdo genérica de entrada (fase R1a do ADR-043, proposto) | Equipa AOS |
+| 1.15 | 2026-10-22 | AOS-546 feito: em produção na v0.1.68 com `AOS_MEDIA_NO_TURNO=on`; o modelo do run viu uma planta e listou os 5 cômodos, replay com fidelidade 1 | Equipa AOS |

@@ -1,7 +1,8 @@
 # ADR-043 — Harness por capacidades: conteúdo genérico, artefactos, modelos escolhidos pela tarefa
 
 - **Estado:** Aceite — **ratificado pelo dono a 2026-10-22** («ratifico, prossiga com o AOS-546»).
-  A fase R1a é o AOS-546; o resto do roteiro (§7) por fazer.
+  A fase R1a (AOS-546 e AOS-547) está em produção desde a v0.1.68 (2026-10-22): o modelo do run
+  viu uma planta e listou os cômodos, com replay de fidelidade 1. O resto do roteiro (§7) por fazer.
 - **Data:** 2026-10-22
 - **Deciders:** Dono do produto. A análise de base é
   `docs/reports/analise-critica-harness-flexivel-2026-10-22.md` (v2): foi sujeita a duas revisões

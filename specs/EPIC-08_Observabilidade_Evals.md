@@ -3161,8 +3161,10 @@ que falta — descrever fotografias —, como o AOS-529 deu ao modelo de visão 
       continua recusado. *Nota:* membro `digest_do_relatorio_de_media`, ficheiro
       `<rotulo>.relatorio-de-media.json`, `routeentry.CheckMediaReport`; o `aos-issuer
       route-profile-sign` exige `--media-report` quando o registo o cita.
-- [ ] A qualificação real (custo autorizado pelo dono), o registo assinado pelo dono e, em
-      produção, o caso do AOS-546: um run cujo modelo descreve uma fotografia semeada.
+- [x] A qualificação real (custo autorizado pelo dono), o registo assinado pelo dono e, em
+      produção, o caso do AOS-546: um run cujo modelo descreve uma fotografia semeada. *Nota de
+      2026-10-22:* qualificação QUALIFICADO (97 pedidos, ~0,045 USD) e medida QUALIFICADA (74/74
+      factos, 0,0014 USD); assinado pelo dono e conferido com a âncora de produção; plano `plan-e2e-med1-1792686853` (v0.1.68, 2026-10-22): um nó, layout 1.7.0, `media_view` mediada (permit, `local_read`, `safe`) sobre `planta-t2.png`, turno 2 a 341 µUSD contra 175 do 1 (a imagem entrou), resposta «5 divisões: SALA, COZINHA, QUARTO 1, QUARTO 2, WC», veredicto `fulfilled`; `GET /runs/{id}/replay` com fidelidade 1, 2 de 2 turnos, sem os bytes da imagem.
 
 ### Fora de âmbito
 
@@ -3211,3 +3213,4 @@ que falta — descrever fotografias —, como o AOS-529 deu ao modelo de visão 
 | 1.34 | 2026-10-19 | O dono estende à `video_read` a excepção do ADR-034 §2.7 (emenda de 2026-10-19), com a mesma forma da `ocr_read`; o teste da excepção cobre as duas. Revisão adversarial da parte 2: a duração da `mvhd` dava a volta numa `time.Duration` abaixo da guarda das unidades — corrigido, com teste | Equipa AOS |
 | 1.35 | 2026-10-19 | AOS-536 feito: a `video_read` entra no `tools.json` de produção (#523) e está em produção na v0.1.61; qualificação real, assinatura e série `vid1`–`vid5` (5 de 5) registadas. O «Fora de âmbito» que excluía alterar a allowlist embebida e o `tools.json` foi ultrapassado pelas decisões do dono de 2026-10-19 | Equipa AOS |
 | 1.36 | 2026-10-22 | +AOS-547: o banco de ensaio mede o titular a ver fotografias, e o registo de uso run com `imagem` exige essa medida (ADR-043, fase R1a) | Equipa AOS |
+| 1.37 | 2026-10-22 | AOS-547 feito: medida real 74/74, registo do titular com `imagem` assinado e em produção na v0.1.68 | Equipa AOS |
