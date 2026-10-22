@@ -5364,6 +5364,50 @@ no nó. O dono escolheu medi-los (opção B).
 
 - Mostrar o custo do planeamento no `GET /plans/{id}` (fica na quota do principal, como os tokens).
 
+## AOS-546 — O modelo do run vê media: a parte de conteúdo genérica de entrada (fase R1a do ADR-043)
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 — Model Gateway e Custos |
+| Fase | Harness por capacidades (ADR-043), fase R1a |
+| Tipo | feat |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | **ADR-043 ratificado pelo dono.** AOS-530 e AOS-535 (as partes de imagem e de vídeo da porta, que esta generaliza) |
+| Responsável sugerido | Engenheiro de Plataforma |
+| Documentos de referência | `docs/adr/ADR-043-harness-por-capacidades.md` (§2.2, §6, §7); `docs/reports/analise-critica-harness-flexivel-2026-10-22.md`; `packages/platform/model-gateway/port/image.go`; `packages/platform/model-gateway/port/video.go`; `packages/platform/model-gateway/route.go` |
+
+### Contexto
+
+Medido a 2026-10-22: o modelo do run (o titular) não vê media. Só a `ocr_read` e a `video_read`
+constroem partes de imagem e de vídeo, cada uma num campo próprio da porta (`ImagePart` na 1.12.0,
+`VideoPart` na 1.13.0), com uma capacidade própria no perfil da rota. O ADR-042 §3 adiou o «titular
+vê media» com três objecções (D1): custo por turno, `prompt_hash` e replay. O ADR-043 (§2.2) fixa uma
+parte de conteúdo genérica e responde às três (§6). Este ticket é a fase R1a: só a **entrada**.
+
+### Critérios de Aceitação
+
+- [ ] A porta ganha uma parte genérica de entrada (`media_type` + bytes ou referência por digest), e
+      `ImagePart`/`VideoPart` passam a casos dela, sem mudar o wire nem os testes de contrato
+      existentes.
+- [ ] O perfil da rota declara os tipos de media aceites na entrada; um tipo não declarado é
+      **recusado** antes de sair, nunca descartado (a garantia do AOS-509).
+- [ ] O tail ganha um segmento de referência a media (digest, tipo, tamanho) que entra no
+      `prompt_hash` pelo digest; a projecção resolve os bytes e confere o digest antes de os enviar.
+- [ ] O segmento é `untrusted`; com o «pedir antes de ler» (AOS-540) o media chega no segundo turno.
+- [ ] O replay reconstrói pelo digest sem voltar a ler os bytes; uma continuação sem os bytes falha
+      com causa própria.
+- [ ] O custo dos tokens de imagem conta no run como os restantes.
+- [ ] Um registo de perfil do titular com a capacidade de imagem, qualificado no banco de ensaio
+      (uma experiência que descreve fotografias), assinado pelo dono.
+- [ ] Em produção: um run cujo modelo descreve uma fotografia semeada, com o digest no
+      `prompt_hash` e o replay verificado.
+
+### Fora de âmbito
+
+- O armazém de artefactos e as partes de saída (fases R1b e R3 do ADR-043).
+- O upload de media por API (fica para o ticket do armazém).
+
 ---
 
 ## Controlo de versões
@@ -5412,3 +5456,4 @@ no nó. O dono escolheu medi-los (opção B).
 | 1.11 | 2026-10-21 | AOS-543 em produção na v0.1.65: a governação da rota em `enforce` (só o modelo); plano de prova com 4 turnos `igual` | Equipa AOS |
 | 1.12 | 2026-10-21 | +AOS-544: o custo do planeador — o aos-orq deriva os dólares de cada chamada com a tabela do nó (decisão do dono, opção B) | Equipa AOS |
 | 1.13 | 2026-10-21 | AOS-544 em produção na v0.1.67: o custo do planeador no desfecho do plano (4969 tokens, 1066 µUSD, medidos) | Equipa AOS |
+| 1.14 | 2026-10-22 | +AOS-546: o modelo do run vê media — a parte de conteúdo genérica de entrada (fase R1a do ADR-043, proposto) | Equipa AOS |
