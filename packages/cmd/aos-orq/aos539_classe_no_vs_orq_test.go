@@ -117,7 +117,7 @@ func aos539ClasseDoNo(t *testing.T, tools []aos539ToolDoManifesto, tl aos539Tool
 // sem a sensibilidade declarada nos dois, as tools de egress externo saem danger nos dois.
 func TestAOS539_NoEOrqDerivamAMesmaClasse(t *testing.T) {
 	tools := aos539LerManifesto(t)
-	quer := map[string]risk.Class{"doc_read": risk.ClassSafe, "ocr_read": risk.ClassGray, "video_read": risk.ClassGray}
+	quer := map[string]risk.Class{"doc_read": risk.ClassSafe, "media_view": risk.ClassSafe, "ocr_read": risk.ClassGray, "video_read": risk.ClassGray}
 
 	declarada := func(x aos539ToolDoManifesto) string { return x.ResourceSensitivity }
 	snap := aos539SnapshotDocumentado(t, tools, func(aos539ToolDoManifesto) string { return "public" })

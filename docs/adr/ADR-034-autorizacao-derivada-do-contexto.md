@@ -277,6 +277,15 @@ dados já não é recusado à partida; corre, e o nó nega a call (o run do nó 
 `contract_unmet_after_denial`), com o gasto dos turnos até aí. Conta-se pelos runs no layout 1.6.0
 com uma call de efeito negada por taint.
 
+**Emenda de 2026-10-22 (AOS-546, ADR-043 §2.2).** O catálogo do nó em produção passa a oferecer a
+`media_view`: lê uma imagem da pasta semeada e devolve uma referência que o turno seguinte do run
+leva ao modelo do run. Declara-se LEITURA LOCAL (`egress: none`, `mutation: none`,
+`reversibility: reversible`), pelo que pela emenda de 2026-10-19 nunca é privilegiada; a imagem só
+chega ao provider do modelo do run, que já recebe o tail inteiro. O executor é código do nó,
+registado só com `AOS_MEDIA_NO_TURNO=on` — como a produção corre; desligado, a `media_view` é a
+única tool oferecida sem executor, e o banner declara-a. Só o resultado dela produz media: uma
+referência no valor de outra tool é ignorada.
+
 ## 3. Alternativas consideradas
 
 - **(A) Dual-LLM / CaMeL completo** — um planeador que só vê trusted + handles e um executor que

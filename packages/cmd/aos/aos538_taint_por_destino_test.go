@@ -67,7 +67,7 @@ func TestAOS538_ManifestoDeProducao_DocReadPassaOCRVideoNegadas(t *testing.T) {
 	for _, quer := range []struct {
 		tool  string
 		passa bool
-	}{{"doc_read", true}, {"ocr_read", false}, {"video_read", false}} {
+	}{{"doc_read", true}, {"media_view", true}, {"ocr_read", false}, {"video_read", false}} {
 		dec, ok := got[quer.tool]
 		if !ok {
 			t.Fatalf("o manifesto de producao ja nao oferece %q — o criterio ficaria vacuo", quer.tool)
@@ -81,7 +81,7 @@ func TestAOS538_ManifestoDeProducao_DocReadPassaOCRVideoNegadas(t *testing.T) {
 	}
 	// O banner nomeia exactamente as tools livres por leitura local.
 	linha := strings.Join(taintGatePostureBanner(true, destinosDoClassificador(priv)), "\n")
-	if !strings.Contains(linha, "livres por leitura local: doc_read.") || !strings.Contains(linha, "AOS-538") {
+	if !strings.Contains(linha, "livres por leitura local: doc_read,media_view.") || !strings.Contains(linha, "AOS-538") {
 		t.Errorf("o banner nao diz a regra nova nem as tools livres: %q", linha)
 	}
 	if strings.Contains(linha, "um no que ja leu um documento nao le outro") {
