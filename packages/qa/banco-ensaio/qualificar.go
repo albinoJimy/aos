@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime/debug"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -99,9 +100,16 @@ const usoDoQualificar = `aos-ensaio qualificar — qualifica uma rota e prepara 
 
 So um "qualificado" do modo real, com a corrida completa, deixa um registo por assinar. O comando
 NAO assina e nao le chave de assinar nenhuma: assina o dono, com o aos-issuer route-profile-sign.
-Saidas: 0 pacote preparado; 7 recusado; 8 inconclusivo; 4 parou a meio; 3 recusada antes de enviar;
-        9 qualificado num ensaio (nada para assinar); 10 so-plano; 11 o no recusaria o registo;
-        5 em CI; 2 argumentos; 1 outra falha (nunca fica pacote).
+Um perfil com a capacidade imagem (o do modelo do run, AOS-547) corre, so depois de uma
+qualificacao positiva e na mesma rota, a medida de imagem (a experiencia ocr com --titular); so as
+duas positivas deixam pacote, que leva tambem <alias>.relatorio-de-media.json. Antes de enviar,
+confere-se que o dia tem as DUAS vagas do perfil e cabem as duas corridas. Nao vale no modo proxy
+nem com --destino-fora-da-lista.
+
+Saidas: 0 pacote preparado; 7 recusado (a qualificacao, ou a medida de imagem); 8 inconclusivo;
+        4 parou a meio; 3 recusada antes de enviar; 9 qualificado num ensaio (nada para assinar);
+        10 so-plano; 11 o no recusaria o registo; 5 em CI; 2 argumentos; 1 outra falha (nunca fica
+        pacote; tambem a medida de imagem que falhou sem veredicto).
 `
 
 const usoDoConferir = `aos-ensaio conferir — confere um pacote ASSINADO como o no o confere no arranque (AOS-522)
@@ -109,7 +117,8 @@ const usoDoConferir = `aos-ensaio conferir — confere um pacote ASSINADO como o
   aos-ensaio conferir --pacote PASTA --ancora BASE64 --board B --regiao R
                       [--allowlist-dir PASTA --ancora-da-allowlist BASE64]
 
-  --pacote PASTA      a pasta com <rotulo>.registo.json, .registo.sig e .relatorio.json, e mais nada
+  --pacote PASTA      a pasta com <rotulo>.registo.json, .registo.sig e .relatorio.json (e, num registo de
+                      uso run com imagem, .relatorio-de-media.json, AOS-547), e mais nada
   --ancora BASE64     a chave PUBLICA dos perfis de rota (aos-issuer route-profile-anchor)
   --board, --regiao   o board e a regiao do no (sem valor por omissao)
   --allowlist-dir     a allowlist externa do no, se ele montar uma; sem ela confere-se a embebida
@@ -221,14 +230,17 @@ type registoPorAssinar struct {
 	Formato string `json:"formato"`
 	// Uso é o uso do registo (AOS-530): vazio nos registos dos candidatos, que saem SEM o membro —
 	// os mesmos bytes de antes —, e `tool` nos do `qualificar-ocr`.
-	Uso                   string          `json:"uso,omitempty"`
-	Board                 string          `json:"board"`
-	Regiao                string          `json:"regiao"`
-	Perfil                json.RawMessage `json:"perfil"`
-	DigestDoPerfil        string          `json:"digest_do_perfil"`
-	DigestDoRelatorio     string          `json:"digest_do_relatorio"`
-	DigestDaImagemDoProxy string          `json:"digest_da_imagem_do_proxy"`
-	Fatia                 int             `json:"fatia_inicial_percentagem"`
+	Uso               string          `json:"uso,omitempty"`
+	Board             string          `json:"board"`
+	Regiao            string          `json:"regiao"`
+	Perfil            json.RawMessage `json:"perfil"`
+	DigestDoPerfil    string          `json:"digest_do_perfil"`
+	DigestDoRelatorio string          `json:"digest_do_relatorio"`
+	// DigestDoRelatorioDeMedia é o da medida de imagem (AOS-547): só num registo de uso run cujo
+	// perfil declare `imagem`; vazio nos outros, que saem SEM o membro.
+	DigestDoRelatorioDeMedia string `json:"digest_do_relatorio_de_media,omitempty"`
+	DigestDaImagemDoProxy    string `json:"digest_da_imagem_do_proxy"`
+	Fatia                    int    `json:"fatia_inicial_percentagem"`
 }
 
 // digestPorConhecer faz de digest do relatório no registo PROVISÓRIO que se confere antes de
@@ -252,7 +264,7 @@ func montarRegisto(r registoPorAssinar) ([]byte, error) {
 //
 // O que fica por conferir é o que só existe depois: a assinatura. É o `conferir` que a vê, por
 // [routeentry.LoadDir].
-func conferirPorAssinar(registo, relatorio []byte, board, regiao string) (routeentry.Entry, error) {
+func conferirPorAssinar(registo, relatorio, media []byte, board, regiao string) (routeentry.Entry, error) {
 	e, err := routeentry.ParseEntry(registo)
 	if err != nil {
 		return routeentry.Entry{}, err
@@ -268,6 +280,15 @@ func conferirPorAssinar(registo, relatorio []byte, board, regiao string) (routee
 	}
 	if err := routeentry.CheckReport(e, relatorio); err != nil {
 		return routeentry.Entry{}, err
+	}
+	// A MEDIDA DE IMAGEM (AOS-547): um registo que a cita só passa com ela, e conferida pelo nó.
+	if e.MediaReportDigest != "" {
+		if media == nil {
+			return routeentry.Entry{}, &routeentry.Refusal{Cause: routeentry.CauseMediaReportMissing}
+		}
+		if err := routeentry.CheckMediaReport(e, media); err != nil {
+			return routeentry.Entry{}, err
+		}
 	}
 	return e, nil
 }
@@ -401,11 +422,23 @@ func qualificar(ctx context.Context, args []string, stdout, stderr io.Writer, am
 		DigestDoPerfil: perfil.Digest(), DigestDoRelatorio: digestPorConhecer,
 		DigestDaImagemDoProxy: routeentry.ProductionProxyImageDigest(),
 	}
+	// O MODELO DO RUN COM `imagem` (AOS-547): o registo cita também a medida de imagem, que esta
+	// corrida faz a seguir à qualificação. Só no modo real ou no falso: o modo proxy não a mede.
+	comImagem := slices.Contains(perfil.Capabilities, modelgateway.CapabilityImage)
+	if comImagem {
+		switch {
+		case modo == ModoProxy:
+			return uso("um perfil com a capacidade imagem qualifica-se no modo real: o modo proxy nao corre a medida de imagem (AOS-547)")
+		case dadas["destino-fora-da-lista"] != "":
+			return uso("--destino-fora-da-lista nao vale com um perfil com a capacidade imagem: a medida de imagem (AOS-547) nao o tem, e seria recusada depois de a qualificacao ter sido paga")
+		}
+		base.DigestDoRelatorioDeMedia = digestPorConhecer
+	}
 	provisorio, err := montarRegisto(base)
 	if err != nil {
 		return recusar(routeentry.CauseBadProfile)
 	}
-	candidato, err := conferirPorAssinar(provisorio, nil, o.board, o.regiao)
+	candidato, err := conferirPorAssinar(provisorio, nil, nil, o.board, o.regiao)
 	if err != nil {
 		return recusar(routeentry.CauseOf(err))
 	}
@@ -454,6 +487,14 @@ func qualificar(ctx context.Context, args []string, stdout, stderr io.Writer, am
 		}
 	}
 	amb.fase = relogio.marcar
+	if comImagem && modo == ModoReal {
+		bateria, berr := CarregarBateriaOCR()
+		if berr != nil {
+			fmt.Fprintf(stderr, "aos-ensaio qualificar: %v\n", berr)
+			return SaidaErro
+		}
+		amb.medidaDeImagemASeguir = PiorCasoDaVisao(bateria)
+	}
 	var feita corridaFeita
 	// O resumo comprido da corrida não se mostra: fica no ficheiro. O progresso (stderr) fica.
 	codigo := executarCom(ctx, corrida, io.Discard, stderr, amb, red, &feita)
@@ -482,8 +523,24 @@ func qualificar(ctx context.Context, args []string, stdout, stderr io.Writer, am
 
 	// SEM VEREDICTO POSITIVO NÃO HÁ NADA PARA ASSINAR.
 	pacote := filepath.Join(o.saida, PastaDoPacote)
-	if veredictoPositivo(codigo, r) {
-		noDisco, causa, perr := prepararPacote(pacote, alias, base, feita, o.board, o.regiao, amb.depoisDeEscreverOPacote)
+	positivo := veredictoPositivo(codigo, r)
+	// A MEDIDA DE IMAGEM (AOS-547), só depois de uma qualificação positiva: a mesma rota, a experiência
+	// `ocr` com o perfil do titular. Sem uma medida também positiva não há nada para assinar.
+	var medida *medidaDeMedia
+	if positivo && comImagem && modo == ModoReal {
+		var codigoDaMedida int
+		codigoDaMedida, medida = correrOCRParaQualificar(ctx, argumentosDaMedidaDeImagem(o, dadas), stderr, amb, red)
+		if amb.entreAMedidaEAPreparacao != nil && medida != nil {
+			amb.entreAMedidaEAPreparacao(medida)
+		}
+		if !medida.positiva(codigoDaMedida) {
+			positivo = false
+			dados.Motivo = "a qualificacao passou, mas a medida de imagem nao: " + motivoDaMedida(codigoDaMedida, medida)
+			codigo = codigoDaMedidaNoQualificar(codigoDaMedida, medida)
+		}
+	}
+	if positivo {
+		noDisco, causa, perr := prepararPacote(pacote, alias, base, feita, medida, o.board, o.regiao, amb.depoisDeEscreverOPacote)
 		switch {
 		case causa != "":
 			dados.Motivo = "o no recusaria o pacote no arranque: causa=" + causa
@@ -496,7 +553,7 @@ func qualificar(ctx context.Context, args []string, stdout, stderr io.Writer, am
 			// O QUE O RESUMO MOSTRA É O QUE FICOU ESCRITO: o registo lido de volta do disco.
 			dados.Preparado, dados.Registo = true, noDisco
 		}
-	} else if codigo == SaidaOK {
+	} else if codigo == SaidaOK && medida == nil {
 		// O código diz `qualificado` e o relatório não: não se escolhe um dos dois.
 		dados.Motivo = "o codigo de saida da corrida e o relatorio nao dizem o mesmo (" + dados.Motivo + ")"
 		codigo = SaidaErro
@@ -523,13 +580,17 @@ func qualificar(ctx context.Context, args []string, stdout, stderr io.Writer, am
 	entrada := filepath.Join(pacote, alias+routeentry.SuffixEntry)
 	citado := filepath.Join(pacote, alias+routeentry.SuffixReport)
 	assinatura := filepath.Join(pacote, alias+routeentry.SuffixSignature)
+	daMedida := ""
+	if medida != nil {
+		daMedida = fmt.Sprintf(" --media-report \"%s\"", filepath.Join(pacote, alias+routeentry.SuffixMediaReport))
+	}
 	daAllowlist := ""
 	if o.allowlistDir != "" && caminhoImprimivel(o.allowlistDir) && caminhoImprimivel(o.ancoraDaAllowlist) {
 		daAllowlist = fmt.Sprintf(" --allowlist-dir \"%s\" --ancora-da-allowlist \"%s\"", o.allowlistDir, o.ancoraDaAllowlist)
 	}
 	fmt.Fprintf(stdout, "pacote por assinar: %s\n", pacote)
 	fmt.Fprintf(stdout, "\nPASSO SEGUINTE — ASSINAR. A chave e tua e este comando nunca a le. Le o resumo acima primeiro:\n")
-	fmt.Fprintf(stdout, "  aos-issuer route-profile-sign --entry \"%s\" --report \"%s\" --key-file <FICHEIRO-DA-SEED-DOS-PERFIS> --out \"%s\"\n", entrada, citado, assinatura)
+	fmt.Fprintf(stdout, "  aos-issuer route-profile-sign --entry \"%s\" --report \"%s\"%s --key-file <FICHEIRO-DA-SEED-DOS-PERFIS> --out \"%s\"\n", entrada, citado, daMedida, assinatura)
 	fmt.Fprintf(stdout, "DEPOIS — CONFERIR o pacote assinado no posto, como o no o confere no arranque, ANTES de o copiar:\n")
 	fmt.Fprintf(stdout, "  aos-ensaio conferir --pacote \"%s\" --ancora <ANCORA-DOS-PERFIS> --board \"%s\" --regiao \"%s\"%s\n", pacote, o.board, o.regiao, daAllowlist)
 	return codigo
@@ -541,12 +602,57 @@ func qualificar(ctx context.Context, args []string, stdout, stderr io.Writer, am
 //
 // São as barreiras 2, 3 e 4 do cabeçalho deste ficheiro. `depoisDeEscrever` é uma costura de
 // teste, chamada entre a escrita e a releitura; em produção é nil.
-func prepararPacote(pacote, rotulo string, base registoPorAssinar, feita corridaFeita, board, regiao string, depoisDeEscrever func(pacote string)) (noDisco routeentry.Entry, causa string, err error) {
+func prepararPacote(pacote, rotulo string, base registoPorAssinar, feita corridaFeita, medida *medidaDeMedia, board, regiao string, depoisDeEscrever func(pacote string)) (noDisco routeentry.Entry, causa string, err error) {
 	rota := feita.relatorio.QualificacaoDoModelo.Rota
+	var daMedida *relatorioEscrito
+	if medida != nil {
+		daMedida = &relatorioEscrito{emJSON: medida.emJSON, digest: medida.digest}
+	}
 	return prepararPacoteDe(pacote, rotulo, base, relatorioEscrito{
 		emJSON: feita.emJSON, digest: feita.relatorio.DigestDoRelatorio,
 		digestDoPerfil: rota.DigestDoPerfil, digestDaImagemDoProxy: rota.DigestDaImagemDoProxy,
-	}, board, regiao, depoisDeEscrever)
+	}, daMedida, board, regiao, depoisDeEscrever)
+}
+
+// argumentosDaMedidaDeImagem é a linha de comandos da experiência `ocr` que mede a imagem do
+// modelo do run (AOS-547): a mesma rota da qualificação — o fornecedor e o modelo dela, as chaves,
+// os preços e o contador —, o perfil do titular, e a mesma pasta de saída.
+//
+// Só corre no modo real: a medida vem depois de uma qualificação POSITIVA, que só o modo real dá.
+func argumentosDaMedidaDeImagem(o opcoesDoQualificar, dadas map[string]string) []string {
+	args := []string{"--motor", NomeMotorVisao, "--perfil", o.perfil, "--titular", "--saida", o.saida, "--silencioso"}
+	for de, para := range map[string]string{"chaves": "chaves", "fornecedor": "visao-fornecedor", "modelo": "visao-modelo", "precos": "precos"} {
+		if v, dada := dadas[de]; dada {
+			args = append(args, "--"+para+"="+v)
+		}
+	}
+	if _, dada := dadas["reconstruir-contador"]; dada {
+		args = append(args, "--reconstruir-contador")
+	}
+	return args
+}
+
+// codigoDaMedidaNoQualificar é o código de saída do `qualificar` quando a medida de imagem não deixa
+// pacote, no vocabulário do `qualificar`: 7 com um veredicto da medida (o modelo não leu as
+// imagens); 4 se ela parou a meio; 1 em todos os outros casos (a qualificação já tinha sido paga, e
+// nenhum dos códigos «antes de enviar» diria a verdade).
+func codigoDaMedidaNoQualificar(codigo int, m *medidaDeMedia) int {
+	switch {
+	case m != nil && m.veredicto != "" && m.veredicto != VeredictoQualificado:
+		return SaidaModeloRecusado
+	case codigo == SaidaParouAMeio:
+		return SaidaParouAMeio
+	default:
+		return SaidaErro
+	}
+}
+
+// motivoDaMedida diz porque a medida de imagem não deixou pacote.
+func motivoDaMedida(codigo int, m *medidaDeMedia) string {
+	if m == nil {
+		return fmt.Sprintf("a corrida da medida nao deixou relatorio (saida %d)", codigo)
+	}
+	return fmt.Sprintf("veredicto %s, modo %s, saida %d", m.veredicto, m.modo, codigo)
 }
 
 // relatorioEscrito é o que [prepararPacoteDe] precisa da corrida que acabou: onde ela escreveu o
@@ -558,7 +664,7 @@ type relatorioEscrito struct {
 }
 
 // prepararPacoteDe são as barreiras 2, 3 e 4 sobre um relatório escrito por esta corrida.
-func prepararPacoteDe(pacote, rotulo string, base registoPorAssinar, feito relatorioEscrito, board, regiao string, depoisDeEscrever func(pacote string)) (noDisco routeentry.Entry, causa string, err error) {
+func prepararPacoteDe(pacote, rotulo string, base registoPorAssinar, feito relatorioEscrito, media *relatorioEscrito, board, regiao string, depoisDeEscrever func(pacote string)) (noDisco routeentry.Entry, causa string, err error) {
 	nada := routeentry.Entry{}
 	relatorio, err := os.ReadFile(feito.emJSON) // #nosec G304 -- o relatorio que este processo acabou de escrever
 	if err != nil {
@@ -573,12 +679,28 @@ func prepararPacoteDe(pacote, rotulo string, base registoPorAssinar, feito relat
 		return nada, "", ErrRelatorioTrocado
 	}
 	base.DigestDoPerfil, base.DigestDoRelatorio, base.DigestDaImagemDoProxy = feito.digestDoPerfil, digest, feito.digestDaImagemDoProxy
+	// A MEDIDA DE IMAGEM (AOS-547) passa pela mesma barreira 2: o relatório no disco é o que a
+	// corrida dela escreveu.
+	var relatorioDeMedia []byte
+	if media != nil {
+		if relatorioDeMedia, err = os.ReadFile(media.emJSON); err != nil { // #nosec G304 -- o relatorio que este processo acabou de escrever
+			return nada, "", errors.New("nao foi possivel reler o relatorio da medida de imagem")
+		}
+		dm, derr := routeentry.VerifyReportDigest(relatorioDeMedia)
+		if derr != nil {
+			return nada, routeentry.CauseReportInvalid, nil
+		}
+		if dm != media.digest {
+			return nada, "", ErrRelatorioTrocado
+		}
+		base.DigestDoRelatorioDeMedia = dm
+	}
 	registo, err := montarRegisto(base)
 	if err != nil {
 		return nada, "", err
 	}
 	// BARREIRA 3: as conferências do nó, antes de haver ficheiro.
-	if _, cerr := conferirPorAssinar(registo, relatorio, board, regiao); cerr != nil {
+	if _, cerr := conferirPorAssinar(registo, relatorio, relatorioDeMedia, board, regiao); cerr != nil {
 		return nada, routeentry.CauseOf(cerr), nil
 	}
 	// A pasta do pacote é criada AQUI, de forma exclusiva: daqui para baixo, apagá-la é apagar só o
@@ -599,6 +721,12 @@ func prepararPacoteDe(pacote, rotulo string, base registoPorAssinar, feito relat
 	if err := os.WriteFile(entrada, registo, 0o600); err != nil {
 		return falhou(errors.New("nao foi possivel escrever o registo de entrada no pacote"))
 	}
+	daMedida := filepath.Join(pacote, rotulo+routeentry.SuffixMediaReport)
+	if media != nil {
+		if err := os.WriteFile(daMedida, relatorioDeMedia, 0o600); err != nil { // #nosec G703 -- pasta de --saida do operador mais um rotulo conferido contra um alfabeto fechado
+			return falhou(errors.New("nao foi possivel escrever o relatorio da medida de imagem no pacote"))
+		}
+	}
 	if depoisDeEscrever != nil {
 		depoisDeEscrever(pacote)
 	}
@@ -608,7 +736,14 @@ func prepararPacoteDe(pacote, rotulo string, base registoPorAssinar, feito relat
 	if err1 != nil || err2 != nil || !bytes.Equal(registoNoDisco, registo) || !bytes.Equal(citadoNoDisco, relatorio) {
 		return falhou(ErrPacoteAlterado)
 	}
-	noDisco, cerr := conferirPorAssinar(registoNoDisco, citadoNoDisco, board, regiao)
+	var medidaNoDisco []byte
+	if media != nil {
+		var err3 error
+		if medidaNoDisco, err3 = os.ReadFile(daMedida); err3 != nil || !bytes.Equal(medidaNoDisco, relatorioDeMedia) { // #nosec G304 -- idem
+			return falhou(ErrPacoteAlterado)
+		}
+	}
+	noDisco, cerr := conferirPorAssinar(registoNoDisco, citadoNoDisco, medidaNoDisco, board, regiao)
 	if cerr != nil {
 		return falhou(ErrPacoteAlterado)
 	}

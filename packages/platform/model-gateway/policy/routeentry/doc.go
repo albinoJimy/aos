@@ -17,9 +17,13 @@
 // (AOS-536) — e cita um relatório com veredicto da experiência dessa media, `ocr` ou `video`
 // ([CheckReport]); quem o impede de ser candidato é o nó ([Entry.ForTool]).
 //
-//	<rotulo>.registo.json     o registo de entrada
-//	<rotulo>.registo.sig      a assinatura (base64), sobre os bytes EXACTOS do registo
-//	<rotulo>.relatorio.json   o relatório de qualificação que o registo cita
+//	<rotulo>.registo.json               o registo de entrada
+//	<rotulo>.registo.sig                a assinatura (base64), sobre os bytes EXACTOS do registo
+//	<rotulo>.relatorio.json             o relatório de qualificação que o registo cita
+//	<rotulo>.relatorio-de-media.json    só num registo de uso run com `imagem` (AOS-547): a medida de
+//	                                    imagem do modelo do run, um relatório `ocr` do mesmo perfil,
+//	                                    citado pelo membro `digest_do_relatorio_de_media`
+//	                                    ([CheckMediaReport])
 //
 // # O que a assinatura cobre, e porque chega
 //
@@ -48,7 +52,7 @@
 //   - SEM VALIDADE NO TEMPO. A data do relatório não é lida, e um registo não expira: um registo
 //     assinado há um ano carrega hoje como carregou então.
 //   - SEM ANTI-RECUO. Não há época nem número de sequência por alias. Um registo ANTIGO, validamente
-//     assinado, volta a carregar se voltar à pasta; e tirar os três ficheiros de um registo repõe a
+//     assinado, volta a carregar se voltar à pasta; e tirar os ficheiros de um registo repõe a
 //     entrada da tabela em código. É assim que se recua — e é também o que faria um atacante com
 //     escrita na pasta. Quem escreve na pasta não consegue CRIAR um registo (falta-lhe a chave),
 //     mas consegue RETIRAR um e REPOR um antigo. A pasta monta-se só de leitura por isso.

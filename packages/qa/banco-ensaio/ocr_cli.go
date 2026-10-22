@@ -44,6 +44,9 @@ opcoes:
   --perfil FICHEIRO      (so motores visao e falso) o perfil da rota do alias da tool, com a capacidade
                          imagem e sem tools: o digest dele, o modelo e a imagem do proxy vao para a rota
                          medida do veredicto, que liga o relatorio a um registo de entrada de uso tool
+  --titular              (com --perfil) o perfil e o do MODELO DO RUN, com tools e imagem: a corrida e a
+                         medida de imagem que um registo de uso run com imagem cita (AOS-547); quem a
+                         corre e o qualificar, ao lado da qualificacao
 
 O relatorio traz o VEREDICTO (AOS-530): qualificado ou recusado contra o limiar de factos, e se vale
 para producao (so um qualificado do motor visao, que e o modo real). A saida NAO depende dele: 0 se a
@@ -59,6 +62,8 @@ type opcoesDoOCR struct {
 	precos, perfil                            string
 	limiar                                    float64
 	silencioso, guardar, soPlano, reconstruir bool
+	// titular: o --perfil é o do MODELO DO RUN (AOS-547), com `tools` e `imagem`.
+	titular bool
 }
 
 // ocrFeito é o que uma corrida `ocr` deixou escrito: o relatório, tal como foi gravado, e o
@@ -71,6 +76,26 @@ type ocrFeito struct {
 
 // ErrPerfilDoOCR — o perfil dado com `--perfil` não é o de uma rota que lê imagens.
 var ErrPerfilDoOCR = errors.New("o perfil da rota medida pela experiencia ocr tem de declarar a capacidade " + modelgateway.CapabilityImage + " e nao pode declarar " + modelgateway.CapabilityTools + " (ADR-042 2.3 e 2.4: o modelo que le a imagem nao pode pedir efeitos)")
+
+// ErrPerfilDoTitular — com `--titular`, o perfil não declara `imagem`.
+var ErrPerfilDoTitular = errors.New("com --titular, o perfil e o do modelo do run e tem de declarar a capacidade " + modelgateway.CapabilityImage + " (AOS-547): e ela que o registo de uso run com a medida de imagem autoriza")
+
+// lerPerfilDoTitular lê e confere o perfil do MODELO DO RUN para a medida de imagem (AOS-547): a
+// leitura fechada do gateway e a capacidade `imagem`; `tools` é o que se espera dele.
+func lerPerfilDoTitular(caminho string) (*modelgateway.RouteProfile, error) {
+	doc, err := os.ReadFile(caminho) // #nosec G304 -- caminho dado pelo operador na linha de comandos
+	if err != nil {
+		return nil, errors.New("nao foi possivel ler o ficheiro de --perfil")
+	}
+	p, err := LerPerfilCandidato(doc)
+	if err != nil {
+		return nil, err
+	}
+	if !slices.Contains(p.Capabilities, modelgateway.CapabilityImage) {
+		return nil, ErrPerfilDoTitular
+	}
+	return p, nil
+}
 
 // lerPerfilDoOCR lê e confere o perfil de `--perfil`: a leitura fechada do gateway, o nome da rota
 // do banco, a capacidade `imagem` e nenhuma `tools`.
@@ -117,6 +142,7 @@ func executarOCRCom(ctx context.Context, args []string, stdout, stderr io.Writer
 	fs.BoolVar(&o.soPlano, "so-plano", false, "")
 	fs.BoolVar(&o.reconstruir, "reconstruir-contador", false, "")
 	fs.StringVar(&o.perfil, "perfil", "", "")
+	fs.BoolVar(&o.titular, "titular", false, "")
 	fs.Float64Var(&o.limiar, "limiar-de-factos", LimiarDeFactosDoOCR, "")
 	if err := fs.Parse(args); err != nil {
 		return SaidaUso
@@ -144,6 +170,10 @@ func executarOCRCom(ctx context.Context, args []string, stdout, stderr io.Writer
 		fmt.Fprintln(stderr, "aos-ensaio ocr: --chaves, --visao-fornecedor, --visao-modelo, --precos, --so-plano e --reconstruir-contador so valem com --motor visao")
 		return SaidaUso
 	}
+	if o.titular && o.perfil == "" {
+		fmt.Fprintln(stderr, "aos-ensaio ocr: --titular so vale com --perfil")
+		return SaidaUso
+	}
 	if o.motor != NomeMotorTesseract && o.imagem != "" {
 		fmt.Fprintln(stderr, "aos-ensaio ocr: --imagem so vale com --motor tesseract")
 		return SaidaUso
@@ -157,7 +187,11 @@ func executarOCRCom(ctx context.Context, args []string, stdout, stderr io.Writer
 			return SaidaUso
 		}
 		var perr error
-		if perfil, perr = lerPerfilDoOCR(o.perfil); perr != nil {
+		ler := lerPerfilDoOCR
+		if o.titular {
+			ler = lerPerfilDoTitular
+		}
+		if perfil, perr = ler(o.perfil); perr != nil {
 			fmt.Fprintf(stderr, "aos-ensaio ocr: --perfil: %v\n", perr)
 			return SaidaUso
 		}

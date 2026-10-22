@@ -29,16 +29,20 @@ const (
 	fieldReportDigest  = "digest_do_relatorio"
 	fieldProxyDigest   = "digest_da_imagem_do_proxy"
 	fieldInitialShare  = "fatia_inicial_percentagem"
-	// fieldUse é o ÚNICO membro opcional (AOS-530, ADR-042 §2.3): sem ele o registo é de uso
+	// fieldUse é um membro opcional (AOS-530, ADR-042 §2.3): sem ele o registo é de uso
 	// [UseRun], e os bytes, o digest e a assinatura de um registo de antes não mudam.
 	fieldUse = "uso"
+	// fieldMediaReport é o outro membro opcional (AOS-547, ADR-043 §2.2): o digest do relatório da
+	// MEDIDA DE IMAGEM que um registo de uso [UseRun] com a capacidade `imagem` tem de citar, ao lado
+	// do relatório de qualificação. Ausente nos outros registos, que ficam com os bytes de sempre.
+	fieldMediaReport = "digest_do_relatorio_de_media"
 )
 
 // entryFields são os membros OBRIGATÓRIOS de um registo de entrada.
 var entryFields = []string{fieldFormat, fieldBoard, fieldRegion, fieldProfile, fieldProfileDigest, fieldReportDigest, fieldProxyDigest, fieldInitialShare}
 
 // allEntryFields são todos os membros que um registo pode ter: os obrigatórios e [fieldUse].
-var allEntryFields = append(append([]string(nil), entryFields...), fieldUse)
+var allEntryFields = append(append([]string(nil), entryFields...), fieldUse, fieldMediaReport)
 
 // Os usos de um registo de entrada (AOS-530, ADR-042 §2.3 — emenda ao ADR-041 §2.1). Vocabulário
 // FECHADO: outro valor recusa ([CauseBadUse]).
@@ -83,6 +87,9 @@ type Entry struct {
 	// (o de vídeo, AOS-536). Vazio num registo de uso [UseRun]. Não é um membro do registo: lê-se das
 	// capacidades do perfil, que estão debaixo da assinatura.
 	Media string
+	// MediaReportDigest é o digest do relatório da medida de imagem que um registo de uso [UseRun]
+	// com `imagem` cita (AOS-547). Vazio em todos os outros.
+	MediaReportDigest string
 }
 
 // ForTool diz se o registo é de uso [UseTool]: um perfil que só uma tool chama, e que nunca é
@@ -220,10 +227,24 @@ func ParseEntry(raw []byte) (Entry, error) {
 		}
 		e.Media = media
 	}
-	// O PERFIL DE UM REGISTO DE USO RUN NÃO DECLARA MEDIA (AOS-546): a capacidade `imagem` (ou
-	// `video`) faria o gateway deixar passar a media do tail para o modelo do run, e o relatório que
-	// o registo cita só mede o protocolo de tools. A medida de media do titular é o AOS-547.
-	if !e.ForTool() && (slices.Contains(profile.Capabilities, modelgateway.CapabilityImage) || slices.Contains(profile.Capabilities, modelgateway.CapabilityVideo)) {
+	// O PERFIL DE UM REGISTO DE USO RUN SÓ DECLARA `imagem` COM A MEDIDA (AOS-546/AOS-547): a
+	// capacidade faz o gateway deixar passar a media do tail para o modelo do run, e o relatório de
+	// qualificação só mede o protocolo de tools. Com `imagem`, o registo cita também o relatório da
+	// medida de imagem ([fieldMediaReport]), que [CheckMediaReport] confere. `video` continua sem
+	// medida para o modelo do run, e recusa-se. O membro noutro registo recusa-se: diria uma medida
+	// que ninguém confere.
+	imagem := slices.Contains(profile.Capabilities, modelgateway.CapabilityImage)
+	if rawMedia, has := members[fieldMediaReport]; has {
+		d, isText := textOf(rawMedia)
+		if !isText || !validDigest(d) {
+			return Entry{}, refuse(CauseEntryUnreadable, "")
+		}
+		if e.ForTool() || !imagem {
+			return Entry{}, refuse(CauseMediaReportOutOfPlace, "")
+		}
+		e.MediaReportDigest = d
+	}
+	if !e.ForTool() && (slices.Contains(profile.Capabilities, modelgateway.CapabilityVideo) || (imagem && e.MediaReportDigest == "")) {
 		return Entry{}, refuse(CauseRunProfileMedia, "")
 	}
 	e.Profile = profile

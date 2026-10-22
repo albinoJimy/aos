@@ -67,7 +67,7 @@ uso:
                           → escreve o RASCUNHO e os bytes a assinar com a chave FIDO2 (AOS-446 fase 1)
   aos-issuer mandate-attach --mandate <ficheiro> --sig <ficheiro.sig> --signer "sk-ssh-ed25519@openssh.com AAAA…" [--out <ficheiro>]
                           → junta a assinatura do 'ssh-keygen -Y sign' e emite o mandato FIDO2 (AOS-446 fase 1)
-  aos-issuer route-profile-sign --entry <registo.json> --report <relatorio.json> --key-file <ficheiro> [--out <registo.sig>]
+  aos-issuer route-profile-sign --entry <registo.json> --report <relatorio.json> [--media-report <relatorio-de-media.json>] --key-file <ficheiro> [--out <registo.sig>]
                           → confere o registo de entrada e o relatorio que cita como o no os confere, e so entao assina (AOS-519)
   aos-issuer route-profile-anchor --key-file <ficheiro>
                           → imprime a chave publica (base64) da chave dos perfis de rota = o AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR do no (AOS-519)`

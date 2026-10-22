@@ -603,8 +603,10 @@ aos-issuer route-profile-sign --entry "$saida\pacote\<alias>.registo.json" --rep
    que lhe deste são os do servidor: isso confirma-se no `.env` de lá.
 2. **Drenar a rota** — obrigatório, e o nó não o faz por ti: `deploy/server/README.md`, «Perfis de
    rota assinados», passo 5.
-3. **Copiar** os três ficheiros de `pacote\` para a pasta de perfis do servidor. Só esses três: um
-   ficheiro a mais (o resumo, por exemplo) faz o nó recusar com `ficheiro_nao_reconhecido`.
+3. **Copiar** os ficheiros de `pacote\` para a pasta de perfis do servidor: os três de sempre, e o
+   quarto (`<alias>.relatorio-de-media.json`) num perfil com `imagem` (AOS-547). Só esses: um
+   ficheiro a mais (o resumo, por exemplo) faz o nó recusar com `ficheiro_nao_reconhecido`, e a
+   medida deixada para trás com `relatorio_de_media_em_falta`.
 4. **Recriar** o nó: `docker compose -f docker-compose.prod.yml up -d --force-recreate aos`.
 5. **Ler o banner**: `docker logs aos-aos-1 2>&1 | grep 'AOS-519'` — uma linha `perfil de rota
    ASSINADO carregado` com o alias, `SUBSTITUI` ou `ACRESCENTA-SE`, e o digest do registo, que tem
@@ -617,6 +619,30 @@ aos-issuer route-profile-sign --entry "$saida\pacote\<alias>.registo.json" --rep
 está na página. O `conferir` vê os ficheiros, não o servidor. As duas variáveis e a montagem da
 pasta estão no compose de produção, desligadas; ligá-las no servidor é do dono
 (`deploy/server/README.md`, «Ligar a fase A3 em produção»). Um registo não expira e não há anti-recuo.
+
+## O modelo do run a ver imagens (AOS-547)
+
+O modelo do run (o titular) só recebe imagens (ADR-043 §2.2, AOS-546) numa rota cujo perfil declare
+`imagem` — e um registo de uso `run` com `imagem` só é aceite pelo nó se citar, ao lado do relatório
+de qualificação, a **medida de imagem** do mesmo perfil: um relatório da experiência `ocr`
+qualificado do modo real. Sem ela o nó recusa-o (`perfil_de_run_com_media_sem_medida`).
+
+1. O perfil do titular com `"capabilities":["tools","imagem"]` (o resto igual ao de hoje).
+2. Um só comando, que corre as duas experiências na mesma execução e na mesma rota — primeiro a
+   qualificação, e só se ela qualificar, a medida de imagem (a bateria de OCR, com o perfil do
+   titular): `aos-ensaio qualificar real --chaves F --fornecedor openrouter --modelo M --perfil
+   titular.json --fatia N --board B --regiao R --saida PASTA`. É uma corrida **paga** a dobrar:
+   só com autorização do dono. O modo `proxy` recusa um perfil com `imagem`.
+3. Com as duas positivas, `pacote/` leva o registo, o relatório e `<alias>.relatorio-de-media.json`.
+   Sem a medida positiva, não fica pacote (e o motivo diz «a medida de imagem nao»).
+4. O dono assina com `--media-report` (a linha sai pronta no fim):
+   `aos-issuer route-profile-sign --entry ... --report ... --media-report ... --key-file ... --out ...`.
+   Sem ela, um registo que cita a medida não se assina.
+5. `aos-ensaio conferir` como sempre: lê os quatro ficheiros.
+
+A medida isolada (sem pacote) corre-se com `aos-ensaio ocr --motor visao ... --perfil titular.json
+--titular`. Recusas novas: `relatorio_de_media_fora_de_lugar` (o membro num registo que não é de uso
+run com `imagem`) e `relatorio_de_media_em_falta` (o ficheiro não está na pasta).
 
 ## Medir um motor de OCR (AOS-529)
 

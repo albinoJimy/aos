@@ -175,7 +175,7 @@ func qualificarMedia(ctx context.Context, q qualificacaoDeMedia, args []string, 
 	if err != nil {
 		return recusar(routeentry.CauseBadProfile)
 	}
-	registo, err := conferirPorAssinar(provisorio, nil, o.board, o.regiao)
+	registo, err := conferirPorAssinar(provisorio, nil, nil, o.board, o.regiao)
 	if err != nil {
 		return recusar(routeentry.CauseOf(err))
 	}
@@ -244,7 +244,7 @@ func qualificarMedia(ctx context.Context, q qualificacaoDeMedia, args []string, 
 		noDisco, causa, perr = prepararPacoteDe(pacote, alias, base, relatorioEscrito{
 			emJSON: m.emJSON, digest: m.digest,
 			digestDoPerfil: m.rota.DigestDoPerfil, digestDaImagemDoProxy: m.rota.DigestDaImagemDoProxy,
-		}, o.board, o.regiao, amb.depoisDeEscreverOPacote)
+		}, nil, o.board, o.regiao, amb.depoisDeEscreverOPacote)
 		switch {
 		case causa != "":
 			motivo, codigo = "o no recusaria o pacote no arranque: causa="+causa, SaidaPacoteRecusado
