@@ -65,6 +65,11 @@ const (
 	MutationNone
 	// MutationMutates declara que a ferramenta altera estado.
 	MutationMutates
+	// MutationRunArtifact declara que a ferramenta só ESCREVE no armazém de artefactos do PRÓPRIO
+	// run (AOS-549, emenda de 2026-10-22 ao ADR-034): muta ([Mutation.Mutates] é true — um
+	// verificador não a pode pinar, e conta como efeito), mas a escrita é local, append-only e
+	// apagável, pelo que não torna o nó irreversível ([Mutation.Irreversible] é false).
+	MutationRunArtifact
 )
 
 // Mutates diz se o eixo conta como mutador. FAIL-CLOSED: tudo o que não seja
@@ -72,14 +77,20 @@ const (
 // muta. É a mesma forma de [risk.Reversibility.IsIrreversible].
 func (m Mutation) Mutates() bool { return m != MutationNone }
 
+// Irreversible diz se a mutação conta como IRREVERSÍVEL para o risco do nó: toda a que muta, menos a
+// escrita local do run ([MutationRunArtifact], AOS-549). FAIL-CLOSED como [Mutation.Mutates].
+func (m Mutation) Irreversible() bool { return m.Mutates() && m != MutationRunArtifact }
+
 // String devolve o nome do eixo, o mesmo vocabulário do ficheiro do snapshot pinado
-// (`none`/`mutates`/`unknown`). Um valor fora do enum diz-se `unknown`.
+// (`none`/`mutates`/`run_artifact`/`unknown`). Um valor fora do enum diz-se `unknown`.
 func (m Mutation) String() string {
 	switch m {
 	case MutationNone:
 		return "none"
 	case MutationMutates:
 		return "mutates"
+	case MutationRunArtifact:
+		return "run_artifact"
 	default:
 		return "unknown"
 	}

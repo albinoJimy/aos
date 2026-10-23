@@ -59,7 +59,7 @@ papel de um ingress/malha em produção. Terminar TLS no próprio nó deixaria o
 | **Canal de controlo** (steer/pause) | `AOS_OPERATORS=ops:demo=<hex>` | `1 operador(es) registado(s) via AOS_OPERATORS` |
 | **Four-eyes** (approve) | `AOS_APPROVERS_FILE` → `secrets/approvers.json` (2 pubkeys distintas) | `four-eyes gate (AOS-162) composto: 2 aprovador(es)` |
 | **Ratificadores** (promoção) | `AOS_RATIFIERS=release:demo=<hex>` | `promotion controller ... ratificador(es) pinado(s)` |
-| **PDP / mediação de política** | `AOS_POLICY_BUNDLE_DIR` (bundle assinado do repo) + `AOS_POLICY_TRUST_ANCHOR` (hex, forçado out-of-band) | `PDP com BUNDLE CARREGADO ... versao "1.0.0"` |
+| **PDP / mediação de política** | `AOS_POLICY_BUNDLE_DIR` (bundle assinado do repo) + `AOS_POLICY_TRUST_ANCHOR` (hex, forçado out-of-band) | `PDP com BUNDLE CARREGADO ... versao "1.1.0"` |
 | **Substrato durável** (Event Store + WORM) | `AOS_EVENTSTORE_PATH` + `AOS_WORM_PATH` no volume `aos-data` | `substrato: Event Store durável` / hash-chain WORM verificada |
 | **Execução durável** | `AOS_DURABLE_EXECUTION=1` | `execucao duravel (AOS-180): LIGADA` |
 | **Soberania de leitura** (REGRA) | `AOS_BOARD_REGIONS=board:demo=eu-west` | read-path soberano com 1 board |

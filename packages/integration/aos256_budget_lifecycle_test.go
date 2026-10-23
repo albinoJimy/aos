@@ -106,7 +106,7 @@ func newBudgetHarnessWith(t *testing.T, runID string, maxTokens int64, extra []a
 	t.Helper()
 	ctx := context.Background()
 
-	anchor, err := base64.StdEncoding.DecodeString("tNHbo3n7mNWtl5Gt+GdRSkdUyrBjCdA+8TuoSPGReoY=")
+	anchor, err := base64.StdEncoding.DecodeString("A9O2AI0anPz7GmahpdJnvNM/588SeBQPk0jJHwx86+c=")
 	if err != nil {
 		t.Fatalf("anchor: %v", err)
 	}

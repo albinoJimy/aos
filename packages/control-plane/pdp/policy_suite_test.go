@@ -87,6 +87,23 @@ func ruleCoverageTable() []ruleCase {
 			in:         mut(fsRead(), func(i *Input) { i.Principal.Authority = []string{"cap:http.post"} }),
 			wantEffect: Deny,
 		},
+		// --- allow_artifact_write (AOS-549): a escrita local do run, também untrusted -----
+		{
+			ruleID: "allow_artifact_write",
+			name:   "artifact_write_allow_untrusted",
+			in: mut(fsRead(), func(i *Input) {
+				i.Capability = "cap:artifact.write"
+				i.Principal.Authority = []string{"cap:artifact.write"}
+				i.Context.Taint = "untrusted"
+			}),
+			wantEffect: Permit,
+		},
+		{
+			ruleID:     "allow_artifact_write",
+			name:       "artifact_write_deny_sem_authority",
+			in:         mut(fsRead(), func(i *Input) { i.Capability = "cap:artifact.write"; i.Principal.Authority = []string{"cap:fs.read"} }),
+			wantEffect: Deny,
+		},
 	}
 }
 

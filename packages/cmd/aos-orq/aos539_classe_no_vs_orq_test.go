@@ -113,11 +113,13 @@ func aos539ClasseDoNo(t *testing.T, tools []aos539ToolDoManifesto, tl aos539Tool
 }
 
 // TestAOS539_NoEOrqDerivamAMesmaClasse — com o manifesto e o snapshot de produção, cada tool tem a
-// mesma classe nos dois lados (doc_read safe; ocr_read e video_read gray). E o controlo fail-closed:
+// mesma classe nos dois lados (doc_read safe; ocr_read, video_read e artifact_write gray). E o controlo fail-closed:
 // sem a sensibilidade declarada nos dois, as tools de egress externo saem danger nos dois.
 func TestAOS539_NoEOrqDerivamAMesmaClasse(t *testing.T) {
 	tools := aos539LerManifesto(t)
-	quer := map[string]risk.Class{"doc_read": risk.ClassSafe, "media_view": risk.ClassSafe, "ocr_read": risk.ClassGray, "video_read": risk.ClassGray}
+	quer := map[string]risk.Class{"doc_read": risk.ClassSafe, "media_view": risk.ClassSafe, "ocr_read": risk.ClassGray, "video_read": risk.ClassGray,
+		// AOS-549: a escrita local do run muta (reversivel, sem rede) ⇒ gray nos dois lados.
+		"artifact_write": risk.ClassGray}
 
 	declarada := func(x aos539ToolDoManifesto) string { return x.ResourceSensitivity }
 	snap := aos539SnapshotDocumentado(t, tools, func(aos539ToolDoManifesto) string { return "public" })
@@ -126,7 +128,8 @@ func TestAOS539_NoEOrqDerivamAMesmaClasse(t *testing.T) {
 		if !ok {
 			t.Fatalf("tool %q nova no manifesto de producao: decide aqui a classe dela", tl.Name)
 		}
-		if tl.ResourceSensitivity != "public" {
+		// Numa tool que escreve (AOS-549) a sensibilidade do recurso não se aplica nos dois lados.
+		if tl.Mutation == "none" && tl.ResourceSensitivity != "public" {
 			t.Errorf("%s: o manifesto declara resource_sensitivity %q e o snapshot de producao public — divergem", tl.Name, tl.ResourceSensitivity)
 		}
 		doOrq, doNo := aos539ClasseDoOrq(snap, tl.Name), aos539ClasseDoNo(t, tools, tl, declarada)

@@ -111,12 +111,19 @@ var (
 		"unknown": planvalidate.MutationUnknown,
 		"none":    planvalidate.MutationNone,
 		"mutates": planvalidate.MutationMutates,
+		// AOS-549: a escrita local do run (ver [planvalidate.MutationRunArtifact]).
+		"run_artifact": planvalidate.MutationRunArtifact,
 	}
 )
 
 // ErrMutacaoEmFalta — uma capability do snapshot pinado não declara `mutation` (AOS-409). O
 // eixo é obrigatório: não há default no ficheiro, nem fail-closed — ver o cabeçalho.
-var ErrMutacaoEmFalta = errors.New("aos-orq: capability sem o campo obrigatorio `mutation` (none|mutates|unknown) — AOS-409")
+var ErrMutacaoEmFalta = errors.New("aos-orq: capability sem o campo obrigatorio `mutation` (none|mutates|run_artifact|unknown) — AOS-409")
+
+// ErrEscritaLocalForaDaForma — uma capability do snapshot declara `mutation: run_artifact` fora da
+// forma fechada da escrita local do run (AOS-549): só a tool `artifact_write`, sem egress e
+// reversível — a mesma forma que o registo do nó exige. Noutra tool baixaria o risco do nó.
+var ErrEscritaLocalForaDaForma = errors.New("aos-orq: `mutation: run_artifact` so na tool artifact_write, com egress none e reversibility reversible — AOS-549")
 
 // carregarSnapshot lê e valida o snapshot pinado. Fail-closed em tudo: ficheiro
 // ilegível, JSON com campos desconhecidos, eixo de risco por nome desconhecido, uma
@@ -163,6 +170,9 @@ func carregarSnapshot(path string) (planvalidate.Snapshot, error) {
 		mut, err := resolverEixo("mutation", c.Mutation, mutacoes, planvalidate.MutationUnknown)
 		if err != nil {
 			return vazio, fmt.Errorf("capability #%d (%s): %w", i, c.Name, err)
+		}
+		if mut == planvalidate.MutationRunArtifact && (c.Name != "artifact_write" || eg != risk.EgressNone || rev != risk.Reversible) {
+			return vazio, fmt.Errorf("snapshot de capabilities %q: capability #%d (%s): %w", path, i, c.Name, ErrEscritaLocalForaDaForma)
 		}
 		snap.Tools = append(snap.Tools, planvalidate.Capability{
 			Name: c.Name, Version: c.Version, Digest: c.Digest,
@@ -311,7 +321,8 @@ func compararSnapshotComCatalogo(snap planvalidate.Snapshot, cat []toolDoNo) err
 		}
 		if mut, ok := mutacoes[mutDoNo]; !ok {
 			divergencias = append(divergencias, fmt.Sprintf("tool %q: o nó declara mutation %q, que este aos-orq não reconhece", c.Name, t.Mutation))
-		} else if !c.Mutation.Mutates() && mut.Mutates() {
+		} else if (!c.Mutation.Mutates() && mut.Mutates()) || (!c.Mutation.Irreversible() && mut.Irreversible()) {
+			// AOS-549: também `run_artifact` (muta, não irreversível) contra um `mutates` do nó.
 			divergencias = append(divergencias, fmt.Sprintf("tool %q: o snapshot declara mutation %q e o nó %q — o snapshot não pode declarar menos risco do que o nó (mutação, AOS-409)", c.Name, c.Mutation.String(), mutDoNo))
 		}
 	}

@@ -61,6 +61,17 @@ BASELINE = Path(
 # `context.taint!="untrusted"` e `context.taint != "untrusted"` contem como iguais.
 TAINT_CLAUSE_NOSPACE = 'context.taint!="untrusted"'
 
+# A EXCEPÇÃO DA ESCRITA LOCAL DO RUN (AOS-549; emenda de 2026-10-22 ao ADR-034, decisão do dono).
+# Gravar no armazém de artefactos do PRÓPRIO run é permitido também com o contexto untrusted, e a
+# regra Cedar dessa capability não pode ter a cláusula. Um permit SEM a cláusula passa só se:
+#   - trouxer, na política ASSINADA, a anotação `@taint_exempt("local_run_write")` (visível a quem
+#     assina, e não numa baseline); e
+#   - a sua acção for EXACTAMENTE uma das capabilities desta lista FECHADA — a de escrita local do
+#     run, que o registo do nó só aceita na tool de código que grava no armazém.
+# Qualquer outro valor da anotação, ou a anotação noutra capability, é violação.
+LOCAL_RUN_WRITE_CAPS = {"cap:artifact.write"}
+TAINT_EXEMPT_LOCAL_RUN_WRITE = "local_run_write"
+
 
 def strip_cedar_comments(text: str) -> str:
     """
@@ -144,12 +155,45 @@ def parse_permits(text: str):
     permits = []
     for m in re.finditer(r"\bpermit\s*\(", text):
         pre = text[: m.start()]
-        idm = re.search(r'@id\(\s*"([^"]+)"\s*\)\s*$', pre)
-        pid = idm.group(1) if idm else None
+        # As ANOTAÇÕES imediatamente antes do permit (`@id`, e desde o AOS-549 `@taint_exempt`),
+        # por qualquer ordem.
+        anns = {}
+        bloco = re.search(r'((?:@\w+\(\s*"[^"]*"\s*\)\s*)+)$', pre)
+        if bloco:
+            for nome, valor in re.findall(r'@(\w+)\(\s*"([^"]*)"\s*\)', bloco.group(1)):
+                anns[nome] = valor
+        pid = anns.get("id")
         i = m.end()
         end = _skip_to_top_level_semicolon(text, i)
-        permits.append((pid, text[i:end]))
+        permits.append((pid, text[i:end], anns))
     return permits
+
+
+def acao_do_permit(body: str):
+    """A capability da CABEÇA do permit, ou None.
+
+    Só a cabeça conta (o texto até ao primeiro `)` de topo), e só na forma exacta
+    `principal…, action == Action::"<cap>", resource…`: um `action == …` no `when`/`unless`
+    não fixa a acção do permit — uma cabeça `action` livre com
+    `when { action == Action::"cap:artifact.write" || … }` deixaria passar outra capability
+    (revisão do AOS-549). Um corpo com `unless` ou com `||` também não ganha a excepção: a regra
+    da escrita local do run tem de ser um permit simples, que se lê de uma vez."""
+    depth, fim = 0, None
+    for i, ch in enumerate(body):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0:
+                fim = i
+                break
+            depth -= 1
+    if fim is None:
+        return None
+    cabeca, resto = body[:fim], body[fim + 1 :]
+    m = re.fullmatch(r'\s*principal\b[^,]*,\s*action\s*==\s*Action::"([^"]+)"\s*,\s*resource\b[^,]*', cabeca)
+    if not m or re.search(r"\bunless\b", resto) or "||" in resto:
+        return None
+    return m.group(1)
 
 
 def _when_body(body: str):
@@ -308,9 +352,22 @@ def main() -> int:
 
     violations = []  # (permit_id, descrição)
 
-    for pid, body in permits:
+    for pid, body, anns in permits:
         if permit_cumpre_taint(body):
             continue  # cumpre — a cláusula é conjunct AND de topo do `when {}`
+        if "taint_exempt" in anns:
+            acao = acao_do_permit(body)
+            if anns["taint_exempt"] == TAINT_EXEMPT_LOCAL_RUN_WRITE and acao in LOCAL_RUN_WRITE_CAPS and pid is not None:
+                continue  # a excepção da escrita local do run (AOS-549), anotada na política assinada
+            violations.append(
+                (
+                    pid or "<anonimo>",
+                    f'{POLICY_REL}: @taint_exempt("{anns["taint_exempt"]}") em `{acao}` — a excepção só vale '
+                    f'como @taint_exempt("{TAINT_EXEMPT_LOCAL_RUN_WRITE}"), com @id, numa das capabilities de '
+                    f"escrita local do run ({', '.join(sorted(LOCAL_RUN_WRITE_CAPS))}) — AOS-549",
+                )
+            )
+            continue
         if pid is None:
             # Permit ANÓNIMO sem a cláusula: não é rastreável nem baselinável (a
             # baseline indexa por @id). Recusa-se sempre — não se pode auditar o
@@ -364,7 +421,7 @@ def main() -> int:
 
     if exit_code == 0:
         compliant = sum(
-            1 for _, b in permits if TAINT_CLAUSE_NOSPACE in re.sub(r"\s+", "", b)
+            1 for _, b, _ in permits if TAINT_CLAUSE_NOSPACE in re.sub(r"\s+", "", b)
         )
         print(
             f"Taint-lint da política OK: {len(permits)} permit(s) em {POLICY_REL}, "

@@ -51,6 +51,10 @@ import (
 // artifactWriteToolName é o nome da tool. É código do nó: o efeito não é configuração.
 const artifactWriteToolName = "artifact_write"
 
+// artifactWriteCapability é a capability da tool (AOS-549): é local no risco (só ela, exacta), e a
+// política assinada tem a regra dela.
+const artifactWriteCapability = referencemonitor.ArtifactWriteCapability
+
 // EventTypeArtifactCreated é o facto durável de um artefacto gravado. Constante junto do emissor
 // (disciplina do event-catalog, tecnica/13 §3.3).
 const EventTypeArtifactCreated = "artifact.created"
@@ -543,6 +547,22 @@ func valorSeguro(v string) bool {
 		i += 4 + j
 	}
 	return true
+}
+
+// semArtefactos tira a `artifact_write` da lista das tools oferecidas sem executor: com o armazém
+// ligado, o executor é código do nó, registado no RM pelo Bootstrap. Desligado, continua órfã — e é
+// declarada.
+func semArtefactos(semExecutor []string, ligado bool) []string {
+	if !ligado {
+		return semExecutor
+	}
+	var out []string
+	for _, n := range semExecutor {
+		if n != artifactWriteToolName {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // artifactBanner é a linha de arranque. Sem armazém não sai linha nenhuma.

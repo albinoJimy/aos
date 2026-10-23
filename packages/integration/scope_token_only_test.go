@@ -44,7 +44,7 @@ func TestScopeTokenOnly_SemDirectorioExterno_ToolExecuta(t *testing.T) {
 	)
 
 	// PDP REAL: bundle de referência ASSINADO, trust anchor forçado out-of-band.
-	anchor, err := base64.StdEncoding.DecodeString("tNHbo3n7mNWtl5Gt+GdRSkdUyrBjCdA+8TuoSPGReoY=")
+	anchor, err := base64.StdEncoding.DecodeString("A9O2AI0anPz7GmahpdJnvNM/588SeBQPk0jJHwx86+c=")
 	if err != nil {
 		t.Fatalf("anchor: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestScopeTokenOnly_CapForaDoTokenNegada(t *testing.T) {
 		capRead  = "cap:fs.read"
 	)
 
-	anchor, err := base64.StdEncoding.DecodeString("tNHbo3n7mNWtl5Gt+GdRSkdUyrBjCdA+8TuoSPGReoY=")
+	anchor, err := base64.StdEncoding.DecodeString("A9O2AI0anPz7GmahpdJnvNM/588SeBQPk0jJHwx86+c=")
 	if err != nil {
 		t.Fatalf("anchor: %v", err)
 	}

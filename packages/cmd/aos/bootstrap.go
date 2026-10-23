@@ -2673,7 +2673,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// AOS-344: recebe `cfg.ProductionMode` porque a escolha do driver é uma decisão de POSTURA —
 	// em produção o driver de referência in-process deixa de ser eleito
 	// ([ErrProductionNeedsSandboxDriver]).
-	if err := registerSandboxLaunchers(sec, es, sandboxBindings, semMediaView(sandboxSemExecutor, cfg.MediaNoTurno != nil), cfg.ProductionMode, log); err != nil {
+	if err := registerSandboxLaunchers(sec, es, sandboxBindings, semArtefactos(semMediaView(sandboxSemExecutor, cfg.MediaNoTurno != nil), armazem != nil), cfg.ProductionMode, log); err != nil {
 		return nil, err
 	}
 	// (7-ter) A TOOL `ocr_read` (AOS-530, ADR-042 §2.1) — uma CostingToolFunc no RM do nó, cujo

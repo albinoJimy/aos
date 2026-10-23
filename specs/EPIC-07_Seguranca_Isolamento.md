@@ -1637,7 +1637,7 @@ e entregue por um download soberano. O desenho está em
 | Estimativa | M |
 | Dependências | AOS-548. **Cerimónias do dono:** assinatura do bundle de política 1.1.0, mandato re-assinado, autonomia do domínio `artifact`, `authority.json` |
 | Responsável sugerido | Engenheiro de Plataforma |
-| Documentos de referência | `docs/reports/desenho-r1b-armazem-de-artefactos-2026-10-22.md` (§3, §4); ADR-034 (taint por destino); ADR-022 (o eixo de mutação do plano) |
+| Documentos de referência | `docs/reports/desenho-r1b-armazem-de-artefactos-2026-10-22.md` (§3, §4); ADR-034 (taint por destino; o eixo de mutação do plano) |
 
 ### Contexto
 
@@ -1648,20 +1648,52 @@ negada pela política (default-deny) e irreversível no planeador.
 
 ### Critérios de Aceitação
 
-- [ ] O registo de tools aceita `mutation: "run_artifact"` só com `cap:artifact.write`,
+- [x] O registo de tools aceita `mutation: "run_artifact"` só com `cap:artifact.write`,
       `egress: none`, `reversible` e uma tool de código do nó; noutra forma o nó não arranca.
-- [ ] O gate de taint não a trata como privilegiada (razão `local_run_write`); o risco classifica
-      `cap:artifact.*` como local.
-- [ ] A política 1.1.0 tem `allow_artifact_write` com a cláusula de taint e a excepção da escrita
+- [x] O gate de taint não a trata como privilegiada (razão `local_run_write`); o risco classifica
+      `cap:artifact.*` como local — **estreitado na revisão**: só `cap:artifact.write`, exacta.
+- [x] A política 1.1.0 tem `allow_artifact_write` com a cláusula de taint e a excepção da escrita
       local do run, cujo destino vem do registo trusted; golden allow/deny e cobertura por regra.
-- [ ] O planeador lê `run_artifact` como efeito local reversível: não dá cartão humano por si.
-- [ ] Emendas ao ADR-034 e ao ADR-022.
+- [x] O planeador lê `run_artifact` como efeito local reversível — **com desvio, ver as notas**:
+      deriva `gray` (não `danger`), a mesma classe do nó, e por isso não dispensa a revisão do
+      plano como um nó `safe` dispensaria.
+- [x] Emenda ao ADR-034 — uma só, ver as notas.
 - [ ] Em produção, depois das cerimónias do dono: um plano vê a planta e grava `comodos.json` e
       `planta.svg`, e o dono descarrega os dois.
 
 ### Fora de âmbito
 
 - Qualquer escrita fora do armazém do run (continua a ser efeito, privilegiada).
+
+### Notas de entrega
+
+- **A política.** A anotação `@taint_exempt("local_run_write")` é a forma da excepção: a regra
+  `allow_artifact_write` não tem a cláusula de taint e diz porquê na própria política assinada. O
+  gate `policy-taint` só a aceita numa lista fechada (`LOCAL_RUN_WRITE_CAPS`); os self-tests X7 e
+  X7b provam que não se estende. A primeira assinatura falhou por a chave local não ser a que
+  assinara o 1.0.0; o dono **rodou a chave da política** (âncora nova `03d3b600…`), e o hex do
+  `AOS_POLICY_TRUST_ANCHOR` em produção tem de mudar antes do deploy (`deploy/server/README.md`).
+- **Desvio no planeador: `gray`, não `safe`.** O desenho (§3) põe o nó em `gray` (corre a L4 pela
+  autonomia do domínio `artifact`). O guarda do AOS-539 exige que o planeador derive a mesma
+  classe, e revelou que ele derivava `safe`: aplicava a sensibilidade declarada do recurso a uma
+  tool que escreve, coisa que o RM do nó não faz. O planeador passou a aplicar a regra do nó
+  (`deriveNodeAction`), e deriva `gray`. No governador da autonomia do plano, `gray` vai a revisão
+  humana — tal como um plano com `ocr_read`. Pôr os dois lados em `safe` seria baixar a classe do
+  nó contra o desenho; divergir seria desfazer o AOS-539.
+- **Uma só emenda.** O critério pedia também uma emenda ao ADR do grafo do plano, mas o eixo de
+  mutação do plano (AOS-409) não está escrito nesse ADR — só o ADR-034 o refere. A emenda ficou toda no ADR-034, e as citações no código apontam para ele.
+- **Revisão adversarial independente.** Três achados ALTO, corrigidos: o `policy-taint` lia a acção em
+  qualquer ponto do permit (uma cabeça livre com a capability só no `when` ganhava a excepção —
+  agora só a cabeça conta, e um `unless` ou `||` recusa; self-tests X7c/X7d); o snapshot do aos-orq
+  aceitava `run_artifact` em qualquer tool e não o via divergir de um `mutates` no nó (agora forma
+  fechada e comparação também por irreversibilidade); a guarda do registo não tinha teste negativo
+  (`TestAOS549_RegistoSoAceitaAFormaFechada`). Médios: o prefixo `cap:artifact.` ficou na
+  capability exacta, o kernel fixa-a em `IsLocalRunWrite`, e o registo recusa `cap:artifact.write`
+  noutra tool.
+- **Ordem de deploy.** Um aos-orq anterior recusa um nó que sirva `run_artifact`: saem juntos.
+- **Prova pelo nó composto.** `TestAOS549_No_EscreveDepoisDeLerPeloRMInteiro`: com o gate de taint
+  armado, `doc_read` deixa o contexto untrusted e a `artifact_write` seguinte passa pelo RM inteiro
+  (política 1.1.0, razão `local_run_write`), grava o ficheiro cifrado e emite `artifact.created`.
 
 ---
 

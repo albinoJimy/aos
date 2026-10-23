@@ -449,7 +449,10 @@ func toolsDeEfeitoForaDoGate(p referencemonitor.PrivilegedAuthorizer) ([]string,
 			return nil, err
 		}
 		efeito := strings.ToLower(strings.TrimSpace(s.Egress)) != "none" || rev != "reversible" || mut != "none"
-		if !efeito {
+		// AOS-549: a escrita local do run é um efeito que o dono decidiu deixar passar com o contexto
+		// untrusted (só grava no armazém do próprio run). Não é «uma tool de efeito fora do gate»: o
+		// anúncio do primeiro turno confiável (AOS-542) mantém-se com ela.
+		if !efeito || mut == referencemonitor.MutationRunArtifact {
 			continue
 		}
 		call := &referencemonitor.Call{ToolID: nome, Capability: strings.TrimSpace(s.Capability),
@@ -615,7 +618,7 @@ func validateReversibility(s string) (string, error) {
 
 // ErrBadMutation — `mutation` no registry fora do vocabulário, ou a contradizer o binding de
 // sandbox (AOS-409).
-var ErrBadMutation = errors.New("aos: mutation invalida no registry de tools (esperado \"none\", \"mutates\" ou ausente; \"none\" e incompativel com sandbox.write_arg e com um verbo de escrita na capability ou no comando de sandbox)")
+var ErrBadMutation = errors.New("aos: mutation invalida no registry de tools (esperado \"none\", \"mutates\", \"run_artifact\" ou ausente; \"none\" e incompativel com sandbox.write_arg e com um verbo de escrita na capability ou no comando de sandbox; \"run_artifact\" e a capability cap:artifact.write so na tool artifact_write)")
 
 // validateMutation valida o eixo de MUTAÇÃO DECLARADO de uma tool (AOS-409) e devolve-o
 // normalizado: "none" ou "mutates" — o AUSENTE vale "mutates".
@@ -632,10 +635,25 @@ var ErrBadMutation = errors.New("aos: mutation invalida no registry de tools (es
 // `command` fixo pode escrever sem argumento — e por isso não há a regra inversa.
 func validateMutation(s modelToolSpec) (string, error) {
 	v := strings.ToLower(strings.TrimSpace(s.Mutation))
+	// AOS-549 (revisão): a capability da escrita local do run é só da tool que grava no armazém. A
+	// regra Cedar dela não tem a cláusula de taint; noutra tool, com o gate inerte, ficaria livre.
+	if strings.ToLower(strings.TrimSpace(s.Capability)) == artifactWriteCapability && strings.TrimSpace(s.Name) != artifactWriteToolName {
+		return "", fmt.Errorf("%w: a capability %s e so da tool %s", ErrBadMutation, artifactWriteCapability, artifactWriteToolName)
+	}
 	switch v {
 	case "":
 		return "mutates", nil
 	case "mutates":
+		return v, nil
+	case referencemonitor.MutationRunArtifact:
+		// AOS-549: a escrita local do run. Só na tool de código do nó que grava no armazém, com a
+		// capability dela, sem egress, reversível, sem sandbox nem modelo: o eixo diz «escreve só
+		// no armazém do próprio run», e só essa tool o pode afirmar.
+		if strings.TrimSpace(s.Name) != artifactWriteToolName || strings.TrimSpace(s.Capability) != artifactWriteCapability ||
+			strings.ToLower(strings.TrimSpace(s.Egress)) != "none" || strings.ToLower(strings.TrimSpace(s.Reversibility)) != "reversible" ||
+			s.Sandbox != nil || s.Modelo != nil {
+			return "", fmt.Errorf("%w: \"%s\" so na tool %s, com capability %s, egress none, reversibility reversible e sem sandbox nem modelo", ErrBadMutation, referencemonitor.MutationRunArtifact, artifactWriteToolName, artifactWriteCapability)
+		}
 		return v, nil
 	case "none":
 		if s.Sandbox != nil && strings.TrimSpace(s.Sandbox.WriteArg) != "" {

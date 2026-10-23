@@ -77,5 +77,25 @@
     "resource_region": "eu-west",
     "resource_sensitivity": "public",
     "egress": "none"
+  },
+  {
+    "name": "artifact_write",
+    "description": "Grava um ficheiro de texto no armazem do run (JSON, Markdown, CSV, texto ou SVG sem script nem ligacoes externas), para quem pediu o trabalho o descarregar. Usa isto para entregar um resultado como ficheiro, por exemplo a lista dos comodos em JSON ou uma planta em SVG.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "nome do ficheiro (letras, digitos, . _ -), por exemplo comodos.json" },
+        "media_type": { "type": "string", "enum": ["application/json", "text/markdown", "text/csv", "text/plain", "image/svg+xml"] },
+        "content": { "type": "string", "description": "o conteudo do ficheiro, ate 1 MiB" }
+      },
+      "required": ["name", "media_type", "content"]
+    },
+    "capability": "cap:artifact.write",
+    "reversibility": "reversible",
+    "mutation": "run_artifact",
+    "resource_type": "file",
+    "resource_value": "artifact://{name}",
+    "resource_region": "eu-west",
+    "egress": "none"
   }
 ]
