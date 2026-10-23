@@ -574,6 +574,10 @@ services:
       # AOS-548: o armazém de artefactos do run (vazio ⇒ desligado). Ver .env.example.
       AOS_ARTIFACT_DIR: "${AOS_ARTIFACT_DIR:-}"
       AOS_ARTIFACT_MAX_BYTES: "${AOS_ARTIFACT_MAX_BYTES:-}"
+      # AOS-550: entradas por handle (off por omissao). `on` exige AOS_ARTIFACT_DIR; a
+      # artifact_write devolve o handle do artefacto e aceita um handle como content, resolvido a
+      # JUSANTE da decisao do RM. Ver .env.example.
+      AOS_HANDLE_NOS_ARGUMENTOS: "${AOS_HANDLE_NOS_ARGUMENTOS:-}"
       # O GATE DE TAINT ESCALA EM VEZ DE NEGAR (AOS-541). Vazio ou `off` ⇒ o de sempre (nega).
       # `on` ⇒ a tool call privilegiada com o contexto untrusted pára o run à espera da
       # aprovação de uma pessoa; aprovada, corre; expirada ou recusada, a retoma faz o run falhar. Exige

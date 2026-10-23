@@ -1025,6 +1025,13 @@ func nodeConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 
+	// AS ENTRADAS POR HANDLE (AOS-550, ADR-043 §2.6). Vocabulário fechado (`off`/`on`): um valor
+	// desconhecido aborta o arranque. Vazia ⇒ `off`. A exigência do armazém e do Event Store é
+	// do [Bootstrap].
+	if cfg.HandleNosArgumentos, err = parseHandleNosArgumentosFromEnv(); err != nil {
+		return Config{}, err
+	}
+
 	// O GATE DE TAINT ESCALA EM VEZ DE NEGAR (AOS-541). Vocabulário fechado (`off`/`on`): um valor
 	// desconhecido aborta o arranque. Vazia ⇒ `off`. A exigência de aprovadores é do [Bootstrap].
 	taintEscala, err := parseTaintEscalaFromEnv()

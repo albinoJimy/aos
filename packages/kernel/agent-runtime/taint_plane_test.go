@@ -3,6 +3,7 @@ package agentruntime
 import (
 	"bytes"
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -24,8 +25,11 @@ func TestSeparatePlanesQuarantinesUntrusted(t *testing.T) {
 		TrustedSegment(TailMemory, []byte("memória confiável")),
 		UntrustedSegment(TailToolResult, []byte("outro conteúdo externo")),
 	}
-	q := NewQuarantine()
-	view := SeparatePlanes(segs, q)
+	q := quarentenaDeTeste(t)
+	view, err := SeparatePlanes(context.Background(), segs, q)
+	if err != nil {
+		t.Fatalf("SeparatePlanes: %v", err)
+	}
 
 	// O planeador só vê os 2 segmentos trusted.
 	if len(view.Trusted) != 2 {
@@ -60,12 +64,15 @@ func TestSeparatePlanesQuarantinesUntrusted(t *testing.T) {
 // resolve o handle→conteúdo untrusted, que continua untrusted (a quarentena não
 // promove).
 func TestQuarantineResolveForDataPlane(t *testing.T) {
-	q := NewQuarantine()
-	h := q.Put(taint.FromOrigin(taint.OriginWeb, []byte("dados externos")))
+	q := quarentenaDeTeste(t)
+	h, err := q.Seal(context.Background(), taint.FromOrigin(taint.OriginWeb, []byte("dados externos")), HandleFacts{})
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
 
-	got, ok := q.Resolve(h)
-	if !ok {
-		t.Fatalf("Resolve(%v) devia encontrar o valor", h)
+	got, err := q.Resolve(context.Background(), h)
+	if err != nil {
+		t.Fatalf("Resolve(%v) devia encontrar o valor: %v", h, err)
 	}
 	if !got.IsUntrusted() {
 		t.Errorf("valor resolvido devia continuar untrusted")
@@ -75,20 +82,26 @@ func TestQuarantineResolveForDataPlane(t *testing.T) {
 	}
 
 	// Handle nulo e desconhecido não resolvem.
-	if _, ok := q.Resolve(Handle{}); ok {
-		t.Errorf("handle nulo não devia resolver")
+	if _, err := q.Resolve(context.Background(), Handle{}); !errors.Is(err, ErrHandleUnknown) {
+		t.Errorf("handle nulo devia dar ErrHandleUnknown, deu %v", err)
 	}
-	if _, ok := q.Resolve(Handle{id: "h999"}); ok {
-		t.Errorf("handle desconhecido não devia resolver")
+	if _, err := q.Resolve(context.Background(), Handle{id: "h999"}); !errors.Is(err, ErrHandleUnknown) {
+		t.Errorf("handle desconhecido devia dar ErrHandleUnknown, deu %v", err)
 	}
 }
 
 // TestQuarantineDeterministicHandles prova que os ids de handle são deterministas
 // e sequenciais (sem relógio/rand — runs reproduzíveis).
 func TestQuarantineDeterministicHandles(t *testing.T) {
-	q := NewQuarantine()
-	h1 := q.Put(taint.FromOrigin(taint.OriginToolResult, []byte("a")))
-	h2 := q.Put(taint.FromOrigin(taint.OriginToolResult, []byte("b")))
+	q := quarentenaDeTeste(t)
+	h1, err := q.Seal(context.Background(), taint.FromOrigin(taint.OriginToolResult, []byte("a")), HandleFacts{})
+	if err != nil {
+		t.Fatalf("Seal(a): %v", err)
+	}
+	h2, err := q.Seal(context.Background(), taint.FromOrigin(taint.OriginToolResult, []byte("b")), HandleFacts{})
+	if err != nil {
+		t.Fatalf("Seal(b): %v", err)
+	}
 	if h1.String() != "h1" || h2.String() != "h2" {
 		t.Fatalf("handles não determinismos: %q, %q", h1.String(), h2.String())
 	}
@@ -108,17 +121,20 @@ func TestSeparatePlanesPreservesProvenance(t *testing.T) {
 		UntrustedSegmentFrom(TailToolResult, taint.OriginMCPSchema, []byte("schema mcp")),
 		UntrustedSegment(TailToolResult, []byte("tool result sem origem explícita")),
 	}
-	q := NewQuarantine()
-	view := SeparatePlanes(segs, q)
+	q := quarentenaDeTeste(t)
+	view, err := SeparatePlanes(context.Background(), segs, q)
+	if err != nil {
+		t.Fatalf("SeparatePlanes: %v", err)
+	}
 
 	if len(view.Handles) != 3 {
 		t.Fatalf("esperava 3 handles untrusted, obtive %d", len(view.Handles))
 	}
 	want := []taint.Origin{taint.OriginWeb, taint.OriginMCPSchema, taint.OriginToolResult}
 	for i, h := range view.Handles {
-		v, ok := q.Resolve(h)
-		if !ok {
-			t.Fatalf("handle %d não resolve", i)
+		v, err := q.Resolve(context.Background(), h)
+		if err != nil {
+			t.Fatalf("handle %d não resolve: %v", i, err)
 		}
 		if !v.IsUntrusted() {
 			t.Fatalf("valor em quarentena (handle %d) devia continuar untrusted", i)
@@ -140,14 +156,17 @@ func TestSeparatePlanesQuarantineNeverPromotes(t *testing.T) {
 		Origin:  taint.OriginSystem, // origem (incoerente) que classificaria trusted
 		Content: []byte("payload"),
 	}}
-	q := NewQuarantine()
-	view := SeparatePlanes(segs, q)
+	q := quarentenaDeTeste(t)
+	view, err := SeparatePlanes(context.Background(), segs, q)
+	if err != nil {
+		t.Fatalf("SeparatePlanes: %v", err)
+	}
 	if len(view.Handles) != 1 {
 		t.Fatalf("esperava 1 handle, obtive %d", len(view.Handles))
 	}
-	v, ok := q.Resolve(view.Handles[0])
-	if !ok {
-		t.Fatalf("handle não resolve")
+	v, err := q.Resolve(context.Background(), view.Handles[0])
+	if err != nil {
+		t.Fatalf("handle não resolve: %v", err)
 	}
 	if !v.IsUntrusted() {
 		t.Fatalf("quarentena NÃO devia promover a trusted")

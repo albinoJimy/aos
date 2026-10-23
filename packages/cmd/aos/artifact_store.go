@@ -129,6 +129,10 @@ type armazemDeArtefactos struct {
 	cifra  cifradorDeArtefactos
 	// registar escreve o evento de proveniência (ligado no Bootstrap; nil ⇒ a tool recusa).
 	registar func(ctx context.Context, runID string, p artefactoCriado) error
+	// handles é o plano de entradas por handle (AOS-550; ligado no Bootstrap com
+	// AOS_HANDLE_NOS_ARGUMENTOS=on). nil ⇒ desligado: nenhuma referência é reconhecida e o
+	// resultado da tool é o de sempre, byte a byte. Ver handles.go.
+	handles *planoDeHandles
 
 	mu    sync.Mutex // serializa as gravações (tectos por run e do volume)
 	usado atomic.Int64
@@ -380,7 +384,21 @@ func (a *armazemDeArtefactos) executar(ctx context.Context, input []byte) ([]byt
 	if !tiposDeArtefacto[in.MediaType] {
 		return a.recusar(artCausaTipo)
 	}
+	// AOS-550 — A RESOLUÇÃO DO HANDLE, A JUSANTE DA DECISÃO DO RM. Este executor corre SÓ em
+	// `permit`: o Reference Monitor já decidiu sobre a Call cujo `content` é a REFERÊNCIA, e é
+	// essa referência que está no tail, no `prompt_hash`, no hash do span e no selo de
+	// mediação. A troca pelos bytes acontece aqui, e os bytes não voltam para cima. Desligado
+	// (plano nil) nada é reconhecido e o caminho é o de sempre. Ver handles.go.
 	conteudo := []byte(in.Content)
+	if a.handles != nil {
+		claro, usou, causa := a.handles.resolverArgumento(ctx, in.Subject, in.RunID, in.Content)
+		if causa != "" {
+			return a.recusar(causa)
+		}
+		if usou {
+			conteudo = claro
+		}
+	}
 	if len(conteudo) == 0 || len(conteudo) > artifactMaxBytes {
 		return a.recusar(artCausaGrande)
 	}
@@ -398,6 +416,18 @@ func (a *armazemDeArtefactos) executar(ctx context.Context, input []byte) ([]byt
 		Tool: artifactWriteToolName, StepID: in.StepID, SealedSubject: in.Subject}); err != nil {
 		return a.recusar(artCausaRegisto)
 	}
+	// AOS-550 — O HANDLE DO ARTEFACTO que acabou de ser gravado. Deriva-se do stream (o evento
+	// de proveniência já está lá, gravado acima), que é a MESMA derivação que uma retoma ou um
+	// replay fazem: um só caminho, logo sem divergência possível. Desligado ⇒ campo omitido e
+	// resultado byte-idêntico ao de antes.
+	var handle string
+	if a.handles != nil {
+		ref, causa := a.handles.handleDoArtefacto(ctx, in.Subject, in.RunID, digest)
+		if causa != "" {
+			return a.recusar(causa)
+		}
+		handle = ref
+	}
 	a.gravados.Add(1)
 	return json.Marshal(struct {
 		Schema    string `json:"schema"`
@@ -405,7 +435,8 @@ func (a *armazemDeArtefactos) executar(ctx context.Context, input []byte) ([]byt
 		MediaType string `json:"media_type"`
 		Bytes     int    `json:"bytes"`
 		Name      string `json:"name"`
-	}{ArtifactRefSchema, digest, in.MediaType, len(conteudo), in.Name})
+		Handle    string `json:"handle,omitempty"`
+	}{ArtifactRefSchema, digest, in.MediaType, len(conteudo), in.Name, handle})
 }
 
 // recusar conta a recusa e devolve o erro da tool com a causa.

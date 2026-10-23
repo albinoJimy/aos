@@ -495,6 +495,12 @@ type Config struct {
 	// MediaNoTurno é a `media_view` composta com `AOS_MEDIA_NO_TURNO=on` (AOS-546, ADR-043 §2.2):
 	// os runs novos ficam no layout 1.7.0 e a tool é registada no RM. nil ⇒ desligada.
 	MediaNoTurno *ligacaoMedia
+	// HandleNosArgumentos liga as entradas por handle (AOS-550, ADR-043 §2.6,
+	// `AOS_HANDLE_NOS_ARGUMENTOS=on`): a `artifact_write` devolve o handle do artefacto e aceita
+	// um handle como `content`, resolvido A JUSANTE da decisão do RM. Exige [Config.ArtifactDir]
+	// e o Event Store; sem um deles o Bootstrap recusa. false ⇒ o nó de sempre, byte a byte. Ver
+	// handles.go.
+	HandleNosArgumentos bool
 	// TaintEscala troca a NEGAÇÃO do gate de taint por ESCALADA para aprovação humana de quatro
 	// olhos (AOS-541, `AOS_TAINT_ESCALA=on`). Exige aprovadores ([Config.Approvers]); sem eles o
 	// Bootstrap recusa com [ErrTaintEscalaSemAprovadores]. false ⇒ o gate nega, como sempre. Ver
@@ -2697,12 +2703,23 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	}
 	// (7-sexies) A TOOL `artifact_write` (AOS-548): grava no armazém do run, cifrado pelo MESMO
 	// cifrador por titular das capturas, e sela a proveniência no stream do run.
+	// (7-septies) ENTRADAS POR HANDLE (AOS-550, ADR-043 §2.6). Compõe-se ANTES do registo da
+	// tool — e fora do `if`, para que `on` sem armazém recuse o arranque em vez de passar em
+	// silêncio. Desligado ⇒ nil, e a tool é a de sempre.
+	handlesLigados, herr := comporPlanoDeHandles(cfg.HandleNosArgumentos, armazem, es)
+	if herr != nil {
+		return nil, herr
+	}
 	if armazem != nil {
 		armazem.registar = registoDeArtefacto(es)
+		armazem.handles = handlesLigados
 		if err := sec.Register(artifactWriteToolName, armazem.executar); err != nil {
 			return nil, fmt.Errorf("aos: registar a tool %s: %w", artifactWriteToolName, err)
 		}
 		for _, l := range artifactBanner(armazem) {
+			log("%s", l)
+		}
+		for _, l := range handlesBanner(handlesLigados) {
 			log("%s", l)
 		}
 	}
