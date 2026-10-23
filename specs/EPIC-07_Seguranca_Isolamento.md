@@ -1608,18 +1608,19 @@ e entregue por um download soberano. O desenho está em
 
 ### Critérios de Aceitação
 
-- [ ] `AOS_ARTIFACT_DIR` (vazio ⇒ desligado, o nó de sempre): um ficheiro cifrado por artefacto,
+- [x] `AOS_ARTIFACT_DIR` (vazio ⇒ desligado, o nó de sempre): um ficheiro cifrado por artefacto,
       pelo cifrador do titular do nó; ligado sem cifrador ⇒ o nó não arranca.
-- [ ] A tool `artifact_write` (código do nó) grava texto num vocabulário fechado de tipos
+- [x] A tool `artifact_write` (código do nó) grava texto num vocabulário fechado de tipos
       (JSON validado, Markdown, CSV, texto, SVG sem script, `foreignObject`, `on*`, ligações
       externas nem DOCTYPE), com tectos por artefacto, por run e do volume, e devolve uma referência
       pequena; run, passo e titular vêm do rewriter, nunca do modelo.
-- [ ] Um evento `artifact.created` sela a proveniência no stream do run (família `artifact.*`) e
+- [x] Um evento `artifact.created` sela a proveniência no stream do run (família `artifact.*`) e
       entra na retenção e na DSAR pelo titular.
-- [ ] `GET /runs/{id}/artifacts` e `GET /runs/{id}/artifacts/{digest}` pelas portas da leitura de
+- [x] `GET /runs/{id}/artifacts` e `GET /runs/{id}/artifacts/{digest}` pelas portas da leitura de
       conteúdo (soberania, posse do stream, selo da leitura): só um digest que o evento do próprio
       run declara; `attachment`, `nosniff`, CSP `sandbox`; apagado ⇒ 410.
-- [ ] Em produção (com o AOS-549): o dono descarrega um artefacto gravado por um run.
+- [x] Em produção (com o AOS-549): o dono descarrega um artefacto gravado por um run — v0.1.69,
+      `plan-e2e-art1-1792753267`, o dono descarregou os dois com o seu ID-token (HTTP 200).
 
 ### Fora de âmbito
 
@@ -1658,8 +1659,8 @@ negada pela política (default-deny) e irreversível no planeador.
       deriva `gray` (não `danger`), a mesma classe do nó, e por isso não dispensa a revisão do
       plano como um nó `safe` dispensaria.
 - [x] Emenda ao ADR-034 — uma só, ver as notas.
-- [ ] Em produção, depois das cerimónias do dono: um plano vê a planta e grava `comodos.json` e
-      `planta.svg`, e o dono descarrega os dois.
+- [x] Em produção, depois das cerimónias do dono: um plano vê a planta e grava `comodos.json` e
+      `planta.svg`, e o dono descarrega os dois — v0.1.69, `plan-e2e-art1-1792753267` (ver as notas).
 
 ### Fora de âmbito
 
@@ -1677,9 +1678,13 @@ negada pela política (default-deny) e irreversível no planeador.
   autonomia do domínio `artifact`). O guarda do AOS-539 exige que o planeador derive a mesma
   classe, e revelou que ele derivava `safe`: aplicava a sensibilidade declarada do recurso a uma
   tool que escreve, coisa que o RM do nó não faz. O planeador passou a aplicar a regra do nó
-  (`deriveNodeAction`), e deriva `gray`. No governador da autonomia do plano, `gray` vai a revisão
-  humana — tal como um plano com `ocr_read`. Pôr os dois lados em `safe` seria baixar a classe do
-  nó contra o desenho; divergir seria desfazer o AOS-539.
+  (`deriveNodeAction`), e deriva `gray`. Pôr os dois lados em `safe` seria baixar a classe do nó
+  contra o desenho; divergir seria desfazer o AOS-539.
+  **Correcção de 2026-10-23, medida em produção:** escrevi aqui que um plano `gray` ia a revisão
+  humana, lido do governador do planeador. Não é o portão que produção compõe: o gate de plano do
+  aos-orq (AOS-408) corre a **L4**, onde só `danger` pede decisão humana, e a prova abaixo foi
+  «APROVADO sem humano (nivel L4, sem nos de risco)» — como os planos com `ocr_read` (série
+  `ocr1`–`ocr20`). Um plano que só grava no armazém do run corre sem perguntar ao dono.
 - **Uma só emenda.** O critério pedia também uma emenda ao ADR do grafo do plano, mas o eixo de
   mutação do plano (AOS-409) não está escrito nesse ADR — só o ADR-034 o refere. A emenda ficou toda no ADR-034, e as citações no código apontam para ele.
 - **Revisão adversarial independente.** Três achados ALTO, corrigidos: o `policy-taint` lia a acção em
@@ -1691,6 +1696,21 @@ negada pela política (default-deny) e irreversível no planeador.
   capability exacta, o kernel fixa-a em `IsLocalRunWrite`, e o registo recusa `cap:artifact.write`
   noutra tool.
 - **Ordem de deploy.** Um aos-orq anterior recusa um nó que sirva `run_artifact`: saem juntos.
+- **Prova em produção (v0.1.69, 2026-10-23), `plan-e2e-art1-1792753267`.** Um nó (`planta_comodos`,
+  tools `media_view` e `artifact_write`), código 0 em 19 s. A `media_view` foi `permit`, contexto
+  `trusted`, `local_read`, `safe`; as duas `artifact_write` foram `permit` com o contexto
+  **`untrusted`**, razão **`local_run_write`**, classe `gray`, e correram pela autonomia L4 do
+  domínio `artifact`. Dois `artifact.created`: `comodos.json` (107 bytes, os cinco cômodos) e
+  `planta.svg` (1155 bytes, cinco rectângulos com os nomes, sem script). O dono descarregou os dois
+  com o seu ID-token (`GET /runs/{id}/artifacts/{digest}`, HTTP 200).
+- **Cerimónias de produção.** Âncora da política nova no `.env`; `AOS_ARTIFACT_DIR`; `authority.json`
+  rev 2; snapshot do orq com a `artifact_write`; mandato `dtILhCfX…` (com `cap:artifact.write` e os
+  `requesters`, re-assinado pelo dono); e a subida de `class:agent-worker:artifact` a L4, que o nó
+  **recusou** só com o ficheiro (AOS-377: duas provas de operadores distintos) — o dono criou um
+  segundo operador (`ops:prod-b`) e os dois assinaram (`AOS_AUTONOMY_SETTERS`, `AOS_AUTONOMY_PROOFS`).
+- **Lição do deploy.** O snapshot do orq trocado antes do deploy trazia `run_artifact`, que o
+  aos-orq antigo não conhece: a drenagem recusou-o e ficou parada ~48 min até ao deploy (fail-closed,
+  nada perdido). Um snapshot com um valor novo troca-se na janela do deploy.
 - **Prova pelo nó composto.** `TestAOS549_No_EscreveDepoisDeLerPeloRMInteiro`: com o gate de taint
   armado, `doc_read` deixa o contexto untrusted e a `artifact_write` seguinte passa pelo RM inteiro
   (política 1.1.0, razão `local_run_write`), grava o ficheiro cifrado e emite `artifact.created`.
@@ -1719,3 +1739,4 @@ negada pela política (default-deny) e irreversível no planeador.
 | 1.15 | 2026-10-21 | +AOS-542: a regra P4 do plano relaxa-se quando o nó anuncia que só deixa pedir no primeiro turno (emenda de 2026-10-21 ao ADR-034, decisão do dono) | Equipa AOS |
 | 1.16 | 2026-10-21 | AOS-542 em produção na v0.1.64 (com o Go 1.26.10): série `p3a1`–`p3a5`, 5 de 5, a OCR no nó consumidor no primeiro turno, 0 pedidos tardios | Equipa AOS |
 | 1.17 | 2026-10-22 | +AOS-548 (armazém de artefactos) e +AOS-549 (a escrita local do run), fase R1b do ADR-043 | Equipa AOS |
+| 1.18 | 2026-10-23 | AOS-548 e AOS-549 em produção na v0.1.69; prova `plan-e2e-art1-1792753267`: o run viu a planta e gravou `comodos.json` e `planta.svg` com o contexto untrusted (`local_run_write`), e o dono descarregou os dois; correcção sobre o portão de plano (L4: `gray` corre sem humano) | Equipa AOS |
