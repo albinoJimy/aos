@@ -111,6 +111,41 @@ A troca handle→bytes **é** uma reescrita do efeito. A jusante do RM, repunha-
 Com a resolução no `CallRewriter`, a autoridade por argumento calcula-se **na mesma `Call` que o RM
 vê** — e isso é o que mantém a paridade das duas vias (§4.4).
 
+### 3.3 Os metadados são de esquema e deterministas
+
+A v2 escreveu «sem validade» a pensar num relógio. A primeira passagem do AOS-550 mostrou que a
+palavra era ambígua e que o critério, como estava escrito, proibia algo legítimo. Precisa-se:
+
+- **permitido** — um facto de **forma**, calculado dos bytes: `media_type`, `bytes`, e um
+  `well_formed` que diz que os bytes parseiam para o tipo declarado (JSON válido, SVG que passou as
+  regras). Diz que a **forma** está certa, nunca o que o conteúdo diz, e é função pura dos bytes;
+- **proibido** — qualquer facto que dependa de um relógio ou de estado de fora da sequência: uma
+  expiração, um instante, uma contagem global. O prompt re-materializa-se no replay e o
+  `prompt_hash` compara-se com o gravado (`replay/engine.go:599-600`): um valor de parede diverge em
+  todos os turnos.
+
+### 3.4 O tecto do corpo de um `tool_result`
+
+Medido na primeira passagem do AOS-550 e coerente com as três varreduras: **não existe tecto
+nenhum**. Há `MaxToolCallArgBytes` 4 KiB e `MaxToolCallLabelBytes` 256 B (`layout.go`),
+`maxObjetivoBytes` 16 KiB (`plan_ingress.go:111`), e `tailResultado` faz
+`content = append(content, r.Value...)` sem limite (`prompt.go:495-502`) — o `dec.Output` entra
+inteiro, e também inteiro na captura do turno.
+
+**256 KiB**, terceiro degrau de uma escada de potências de quatro: 4 KiB (argumentos) → 16 KiB
+(objectivo) → **256 KiB (resultado)** → 1 MiB (artefacto). Deixa 4× de margem para o envelope da
+cifra e para a expansão de um corpo que viaje como string JSON dentro dos argumentos de uma tool.
+
+**Onde se impõe, e porquê não no tail.** O tecto rege o **caminho por handle** — à selagem e à
+resolução —, com recusa nomeada. **Não** se impõe ao corpo que vai para o tail, porque o critério
+«desligado por omissão, byte a byte» proíbe-o: aplicá-lo ao tail mudaria o prompt de qualquer run
+cuja tool devolva hoje mais de 256 KiB.
+
+A tensão dissolve-se no AOS-551 e **não** precisa de decisão própria: em 1.8.0 o `tool_result` passa
+a viajar por handle, logo o corpo do tail é rótulo e digest e o conteúdo vai para a quarentena, onde
+o tecto vive. **Resíduo declarado:** em 1.7.0 e abaixo o corpo do tail continua sem tecto, para
+sempre. É comportamento preservado, não defeito desta fase.
+
 ## 4. A autoridade
 
 ### 4.1 Conta a media, não só os handles
@@ -209,7 +244,7 @@ do `aos-orq` intactos.
 
 | Ticket | Conteúdo | Epic | Depende de |
 |---|---|---|---|
-| **AOS-550** | O handle: espaço próprio com tectos e vocabulário próprios (§3.1), token cunhado pelo nó e não adivinhável, metadados de nível-esquema **sem validade** (um relógio divergiria o `prompt_hash` no replay), selagem com dados associados do run, **resolução no `CallRewriter`** (§3.2), fail-closed no token que não resolve, vocabulário de erro das tools fechado, o tecto do corpo de um `tool_result`, métricas do armazém | EPIC-07 | R1b |
+| **AOS-550** | O handle: espaço próprio com tectos e vocabulário próprios (§3.1), token cunhado pelo nó e não adivinhável, metadados de nível-esquema **deterministas** (§3.3), selagem com dados associados do run, **resolução no `CallRewriter`** (§3.2), fail-closed no token que não resolve, vocabulário de erro das tools fechado, o tecto do corpo de um `tool_result` (§3.4), métricas do armazém | EPIC-07 | R1b |
 | **AOS-552** | O taint e a linhagem do artefacto: a linhagem é **proveniência registada, não desclassificação** (§4.2); `artefactoCriado` ganha os digests das entradas; e nasce o guard-test «o artefacto é sempre untrusted» que o ADR-043 §8 exige **para a R1b** e que não existe — é dívida de uma fase declarada fechada em produção | EPIC-07 | AOS-550 |
 | **AOS-551** | A separação ligada: layout **1.8.0** derivado da 1.7.0, `plan_input` e `tool_result` por handle, `SeparatePlanes` com chamador de produção, **a autoridade de §4.1 a contar a media**, **a política de fluxo de dados em Cedar assinado** (§4.2), autoridade por call no replay, âncora nova da designação de origem, paridade nas duas vias. **Fecha o DEF-806**, e nasce com um ADR próprio | EPIC-02 | AOS-550, AOS-552; **cerimónia do dono** (§6) |
 | **AOS-553** | A travessia da aresta do plano pela declaração selada, com as defesas do *confused deputy* | EPIC-19 | AOS-551, AOS-552 |

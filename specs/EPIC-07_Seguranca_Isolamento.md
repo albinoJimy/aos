@@ -1766,8 +1766,9 @@ AOS-551, e **não pode ligar sem ele** nem ele sem ela (`docs/reports/desenho-r2
 - [ ] O `Handle` carrega metadados que **o nó cunha**: tipo de media, tamanho, e um nome **do nó**
       (tool + índice, no molde do `ToolStepID`) — **nunca o nome do produtor**, que vem do modelo
       (`artifact_store.go:331-335`) com um alfabeto que sobrevive à sanitização de rótulos byte a byte
-      (`prompt.go:677-686`). **Sem campo de validade:** um relógio divergiria o `prompt_hash` no
-      replay.
+      (`prompt.go:677-686`). Os factos são **deterministas**: permite-se um `well_formed` calculado
+      dos bytes (a forma parseia para o tipo declarado), e proíbe-se qualquer facto que dependa de um
+      relógio ou de estado de fora da sequência — divergiria o `prompt_hash` no replay.
 - [ ] Nunca conteúdo e nunca resumo. Os bytes não aparecem no tail, no `prompt_hash`, nos spans, nos
       selos nem nos erros.
 - [ ] **A resolução corre no `CallRewriter`** (`loop.go:1227-1244`), antes da mediação, para que a
@@ -1789,7 +1790,12 @@ AOS-551, e **não pode ligar sem ele** nem ele sem ela (`docs/reports/desenho-r2
       com contexto untrusted é **untrusted**, com guard-test.
 - [ ] **Nasce o tecto do corpo de um `tool_result`**, que hoje não existe: `loop.go:1296`
       (`Result: Untrusted(dec.Output)`), `Decision.Output` sem limite (`decision.go:145-146`),
-      `inlineWindow.Append` sem corte (`ports.go:100`). O ticket **declara** que o caso genuinamente
+      `inlineWindow.Append` sem corte (`ports.go:100`). **256 KiB**, terceiro degrau da escada de
+      potências de quatro (4 KiB argumentos → 16 KiB objectivo → 256 KiB resultado → 1 MiB
+      artefacto), imposto **só no caminho por handle** (à selagem e à resolução) com recusa nomeada —
+      **não** no corpo do tail, que o critério «byte a byte» protege. Em 1.8.0 o tecto passa a reger o
+      tail por consequência, porque é aí que o `tool_result` viaja por handle (AOS-551); em 1.7.0 e
+      abaixo fica sem tecto, resíduo declarado. O ticket **declara** que o caso genuinamente
       ilimitado são as **tools de sandbox** — a `ocr_read` e a `video_read` têm `max_tokens = 4096` e
       recusam resposta cortada (`ocr_tool.go:89-90`, `tool_de_modelo.go:280-286`), e a `media_view` e
       a `artifact_write` devolvem JSON pequeno de forma fixa.
@@ -1798,7 +1804,11 @@ AOS-551, e **não pode ligar sem ele** nem ele sem ela (`docs/reports/desenho-r2
       `tool_error=` + a mensagem no corpo (`prompt.go:470-504`): uma tool cuja mensagem cite a entrada
       ofensiva repõe o canal inline no único segmento que a R2 converte.
 - [ ] Os contadores do armazém (`gravados`, `recusados`, `servidos`, `artifact_store.go:136`) passam
-      a ser publicados em `/metrics`.
+      a ser publicados em `/metrics`, com vocabulário fechado e sempre presentes quando o armazém está
+      composto (o zero é um zero verdadeiro). **Medido na primeira passagem e declarado como lacuna:**
+      `servidos` só se move na rota HTTP (`artifact_api.go:122`) e `recusados` conta recusas da
+      **tool**, não da rota — um 404 ou 410 da leitura soberana não aparece em contador nenhum. A
+      paridade entre os dois planos fica para ticket próprio.
 - [ ] Desligado por omissão: o nó de sempre não muda de comportamento, byte a byte.
 
 ### Fora de âmbito
