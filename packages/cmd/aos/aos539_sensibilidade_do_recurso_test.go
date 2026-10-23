@@ -50,8 +50,11 @@ func TestAOS539_ManifestoDeProducao_ClasseDeRiscoEEscaladaEmL4(t *testing.T) {
 		"doc_read": {risk.ClassGray, risk.ClassSafe},
 		// AOS-546: a media_view e uma leitura local e publica, como a doc_read.
 		"media_view": {risk.ClassGray, risk.ClassSafe},
-		"ocr_read":   {risk.ClassGray, risk.ClassGray},
-		"video_read": {risk.ClassGray, risk.ClassGray},
+		// AOS-549: a escrita local do run é local e reversível, mas não declara sensibilidade (só as
+		// leituras a declaram): gray, que em L4 corre sem humano.
+		"artifact_write": {risk.ClassGray, risk.ClassGray},
+		"ocr_read":       {risk.ClassGray, risk.ClassGray},
+		"video_read":     {risk.ClassGray, risk.ClassGray},
 	}
 	for _, s := range specs {
 		q, ok := quer[s.Name]

@@ -118,6 +118,24 @@ func TestDecide_GoldenTruthTable(t *testing.T) {
 			reasonHas:  "default-deny",
 		},
 		{
+			// AOS-549: a escrita local do run é permitida também com o contexto untrusted.
+			name: "artifact_write_untrusted_permitido",
+			in: mut(fsRead(), func(i *Input) {
+				i.Capability = "cap:artifact.write"
+				i.Principal.Authority = []string{"cap:artifact.write"}
+				i.Context.Taint = "untrusted"
+			}),
+			wantEffect: Permit,
+			wantOblig:  []Obligation{obAudit},
+			reasonHas:  "allow_artifact_write",
+		},
+		{
+			name:       "artifact_write_sem_capability_negado",
+			in:         mut(fsRead(), func(i *Input) { i.Capability = "cap:artifact.write"; i.Principal.Authority = []string{"cap:fs.read"} }),
+			wantEffect: Deny,
+			reasonHas:  "default-deny",
+		},
+		{
 			// fs.read não depende de region nem taint: mesmo untrusted+us permite,
 			// espelhando a regra Rego allow_fs_read (acção reversível).
 			name:       "fs_read_untrusted_us_ainda_permite",
@@ -162,17 +180,17 @@ func TestDecide_GoldenTruthTable(t *testing.T) {
 func TestDecide_PolicyVersionRegistada(t *testing.T) {
 	t.Parallel()
 	p := mustOpen(t)
-	if p.Version() != "1.0.0" {
-		t.Fatalf("Version()=%q, esperava 1.0.0", p.Version())
+	if p.Version() != "1.1.0" {
+		t.Fatalf("Version()=%q, esperava 1.1.0 (AOS-549)", p.Version())
 	}
 	permit, _ := p.Decide(context.Background(), httpPost())
-	if permit.Effect != Permit || permit.PolicyVersion != "1.0.0" {
+	if permit.Effect != Permit || permit.PolicyVersion != "1.1.0" {
 		t.Errorf("permit: Effect=%q PolicyVersion=%q", permit.Effect, permit.PolicyVersion)
 	}
 	denyIn := httpPost()
 	denyIn.Resource.Region = "us"
 	deny, _ := p.Decide(context.Background(), denyIn)
-	if deny.Effect != Deny || deny.PolicyVersion != "1.0.0" {
+	if deny.Effect != Deny || deny.PolicyVersion != "1.1.0" {
 		t.Errorf("deny: Effect=%q PolicyVersion=%q", deny.Effect, deny.PolicyVersion)
 	}
 }

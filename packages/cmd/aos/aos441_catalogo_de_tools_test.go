@@ -120,11 +120,13 @@ func TestAOS441CatalogoServeOsNomesDoManifesto(t *testing.T) {
 	quer := map[string]entradaDoCatalogo{
 		"doc_read":   {Name: "doc_read", Egress: "none", Reversibility: "reversible", Mutation: "none", Version: "1.0.0"},
 		"media_view": {Name: "media_view", Egress: "none", Reversibility: "reversible", Mutation: "none", Version: "1.0.0"},
-		"ocr_read":   {Name: "ocr_read", Egress: "external", Reversibility: "reversible", Mutation: "none", Version: "1.0.0"},
-		"video_read": {Name: "video_read", Egress: "external", Reversibility: "reversible", Mutation: "none", Version: "1.0.0"},
+		// AOS-549: a artifact_write, escrita local do run.
+		"artifact_write": {Name: "artifact_write", Egress: "none", Reversibility: "reversible", Mutation: "run_artifact", Version: "1.0.0"},
+		"ocr_read":       {Name: "ocr_read", Egress: "external", Reversibility: "reversible", Mutation: "none", Version: "1.0.0"},
+		"video_read":     {Name: "video_read", Egress: "external", Reversibility: "reversible", Mutation: "none", Version: "1.0.0"},
 	}
 	if len(cat) != len(quer) {
-		t.Errorf("o manifesto de produção oferece %d tools (%+v) — por decisão do dono são doc_read, media_view, ocr_read e video_read (ADR-034 §2.7, emendas de 2026-10-18, 2026-10-19 e 2026-10-22)", len(cat), cat)
+		t.Errorf("o manifesto de produção oferece %d tools (%+v) — por decisão do dono são artifact_write, doc_read, media_view, ocr_read e video_read (ADR-034 §2.7, emendas de 2026-10-18, 2026-10-19 e 2026-10-22)", len(cat), cat)
 	}
 	for nome, q := range quer {
 		e, ok := porNome[nome]
@@ -286,7 +288,7 @@ func TestAOS441ServeAPIServeOCatalogo(t *testing.T) {
 	for _, e := range corpo.Tools {
 		nomes = append(nomes, e.Name)
 	}
-	if !reflect.DeepEqual(nomes, []string{"doc_read", "media_view", "ocr_read", "video_read"}) {
+	if !reflect.DeepEqual(nomes, []string{"artifact_write", "doc_read", "media_view", "ocr_read", "video_read"}) {
 		t.Fatalf("o servidor de serveAPI tinha de servir o catálogo do manifesto de produção, serviu %v", nomes)
 	}
 }

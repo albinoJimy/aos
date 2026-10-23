@@ -286,6 +286,46 @@ registado só com `AOS_MEDIA_NO_TURNO=on` — como a produção corre; desligado
 única tool oferecida sem executor, e o banner declara-a. Só o resultado dela produz media: uma
 referência no valor de outra tool é ignorada.
 
+**Emenda de 2026-10-22 (AOS-549, ADR-043 §2.3; decisão do dono: «Sim, como escrita local»).** Gravar
+no armazém de artefactos do **próprio** run é permitido também depois de o run ver dados de fora — é
+o que deixa um run que viu uma foto gravar a lista dos cômodos. Chama-se **escrita local do run**, e
+é uma terceira forma ao lado da leitura local (emenda de 2026-10-19):
+
+- **No registo de tools.** Um quarto valor do eixo de mutação, `mutation: run_artifact`. O nó só o
+  aceita numa forma fechada: a tool de código `artifact_write`, capability `cap:artifact.write`,
+  `egress: none`, `reversibility: reversible`, sem sandbox nem modelo (`validateMutation`). Qualquer
+  outra tool que o declare recusa o arranque, e a capability `cap:artifact.write` noutra tool também
+  (a regra Cedar dela não tem a cláusula de taint).
+- **No gate de taint estrutural.** Uma tool que se declara escrita local do run, com uma capability
+  que não denuncia egress, não é privilegiada; a decisão regista a razão `local_run_write`
+  (`TaintPrivilegeLocalRunWrite`), e o banner de arranque nomeia-a numa frase própria. O kernel fixa
+  ele próprio a capability (`ArtifactWriteCapability`): os três eixos noutra capability não ganham a
+  excepção. Como a leitura local, a excepção decide-se **antes** da lista `AOS_PRIVILEGED_CAPS` — pôr
+  lá `cap:artifact.write` não fecha a tool; fechá-la é tirá-la do registo.
+- **No aos-orq.** O snapshot pinado só aceita `run_artifact` na mesma forma fechada, e um
+  `run_artifact` no snapshot contra um `mutates` no nó é «menos risco do que o nó» e é recusado. Um
+  aos-orq anterior ao AOS-549 recusa um nó que sirva `run_artifact`: os dois saem na mesma release.
+- **Na política assinada.** A regra `allow_artifact_write` (bundle 1.1.0, assinado pelo dono) não tem
+  a cláusula `context.taint != "untrusted"` e diz porquê na anotação `@taint_exempt("local_run_write")`.
+  O gate `policy-taint` só aceita a anotação com esse valor, com `@id`, num permit simples (sem
+  `unless` nem `||`) cuja **cabeça** é `action == Action::"cap:artifact.write"` — a capability da
+  lista fechada `LOCAL_RUN_WRITE_CAPS`; os self-tests X7, X7b, X7c e X7d provam que ela não se
+  estende a outra capability, a outro valor, nem a uma cabeça livre que só nomeia a capability no
+  `when` ou no `unless`.
+- **No plano e no risco.** A escrita local do run **muta** — conta como efeito, um verificador não a
+  pode pinar, e o anúncio do primeiro turno confiável (emenda de 2026-10-21) mantém-se com ela — mas
+  **não é irreversível**: o nó que só grava no armazém do run deriva `gray` e não `danger`. Deriva
+  `gray` e não `safe` porque, numa tool que escreve, a sensibilidade declarada do recurso não se
+  aplica e conta o topo — a regra do RM do nó, que o planeador passou a aplicar também
+  (`deriveNodeAction`). `cap:artifact.write` — só ela, não a família — é local no classificador de risco.
+
+O que esta emenda **aceita**, por escrito: uma injecção num conteúdo lido pode escolher o **conteúdo**
+e o **nome** de um ficheiro gravado no armazém do run. O ficheiro não sai do nó por esta via: fica
+cifrado pela chave do titular, só se lê pelas rotas `GET /runs/{id}/artifacts` com `read:artifact`,
+é entregue como anexo com `nosniff` e CSP `sandbox`, e é apagável pela DSAR (AOS-548). O que a
+emenda **não aceita**: qualquer outro destino de escrita. Um efeito que saia do armazém do run
+continua privilegiado e negado com o contexto untrusted.
+
 ## 3. Alternativas consideradas
 
 - **(A) Dual-LLM / CaMeL completo** — um planeador que só vê trusted + handles e um executor que

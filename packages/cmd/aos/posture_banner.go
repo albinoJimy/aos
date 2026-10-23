@@ -72,7 +72,11 @@ const BudgetScopeDeclaration = "orcamento: cobre tool calls E o turno de modelo 
 // destinosDoGate é o que o banner precisa de saber do destino das tools composto no gate
 // (AOS-538): nil ⇒ o gate decide só pela capability; não-nil ⇒ decide pelo destino, e `livres`
 // são as tools que ficam livres do gate por se declararem leitura local.
-type destinosDoGate struct{ livres []string }
+type destinosDoGate struct {
+	livres []string
+	// escritas são as tools livres do gate por serem escrita local do run (AOS-549).
+	escritas []string
+}
 
 // destinosDoClassificador extrai do classificador REALMENTE composto no gate o que o banner diz —
 // a mesma disciplina de AOS-203: o estado composto, nunca a intenção da config.
@@ -81,7 +85,15 @@ func destinosDoClassificador(p referencemonitor.PrivilegedAuthorizer) *destinosD
 	if !ok {
 		return nil
 	}
-	return &destinosDoGate{livres: d.LocalReads()}
+	return &destinosDoGate{livres: d.LocalReads(), escritas: d.LocalRunWrites()}
+}
+
+// escritasDoRun é a frase do banner sobre a escrita local do run (AOS-549); vazia sem nenhuma.
+func escritasDoRun(escritas []string) string {
+	if len(escritas) == 0 {
+		return ""
+	}
+	return " E uma tool que se declara ESCRITA LOCAL DO RUN (egress none, mutation run_artifact e reversibility reversible: grava so no armazem de artefactos do proprio run, cifrado e apagavel; AOS-549, emenda de 2026-10-22 ao ADR-034) tambem nao e privilegiada; livres por escrita local do run: " + strings.Join(escritas, ",") + "."
 }
 
 // taintGatePostureBanner declara se a barreira control-data-plane (AOS-069/AOS-363) está ARMADA ou
@@ -103,7 +115,7 @@ func taintGatePostureBanner(active bool, destinos *destinosDoGate) []string {
 		if len(destinos.livres) > 0 {
 			livres = strings.Join(destinos.livres, ",")
 		}
-		return []string{comum + " — e o gate decide pelo DESTINO da tool (AOS-538, emenda de 2026-10-19 ao ADR-034): uma tool que se declara LEITURA LOCAL (egress none, mutation none e reversibility reversible, os tres EXPLICITOS em AOS_MODEL_TOOLS, e capability e recurso que nao denunciem egress) NUNCA e privilegiada e pede-se com o contexto untrusted; livres por leitura local: " + livres + ". As outras ficam com a regra da capability e sao privilegiadas tambem quando declaram um efeito (egress, mutacao ou irreversibilidade): enviar e mudar continuam negados com o contexto untrusted. Uma tool sem entrada no registo, ou com um eixo implicito, fica com a regra da capability. O evento de mediacao diz a razao (context.taint_privilege)"}
+		return []string{comum + " — e o gate decide pelo DESTINO da tool (AOS-538, emenda de 2026-10-19 ao ADR-034): uma tool que se declara LEITURA LOCAL (egress none, mutation none e reversibility reversible, os tres EXPLICITOS em AOS_MODEL_TOOLS, e capability e recurso que nao denunciem egress) NUNCA e privilegiada e pede-se com o contexto untrusted; livres por leitura local: " + livres + "." + escritasDoRun(destinos.escritas) + " As outras ficam com a regra da capability e sao privilegiadas tambem quando declaram um efeito (egress, mutacao ou irreversibilidade): enviar e mudar continuam negados com o contexto untrusted. Uma tool sem entrada no registo, ou com um eixo implicito, fica com a regra da capability. O evento de mediacao diz a razao (context.taint_privilege)"}
 	}
 	return []string{
 		"taint / barreira control-data-plane (AOS-069/AOS-363): INERTE — AOS_PRIVILEGED_CAPS nao esta definida (ou esta vazia), logo o conjunto privilegiado e VAZIO e o TaintGate esta PRESENTE-MAS-INERTE: NENHUMA promocao de escopo sobre dados untrusted e barrada pela barreira estrutural. E a perna RETRO-COMPATIVEL (o comportamento de todo deployment ate AOS-363). ATENCAO: com o gate inerte a UNICA aplicacao de taint que resta e a clausula `context.taint != \"untrusted\"` que cada regra permit do bundle Cedar TENHA — e no bundle de referencia a regra allow_fs_read AINDA NAO A TEM (AOS-363 criterio 6, por fechar): um cap:fs.read untrusted PASSA. Para fechar o buraco de forma ESTRUTURAL, define AOS_PRIVILEGED_CAPS com as capabilities privilegiadas, incluindo cap:fs.read (ex. \"cap:fs.read,cap:fs.write,cap:net.connect\"); desde o ADR-034 o taint e o do contexto do turno, pelo que armar cap:fs.read nao impede a leitura de um run cujo contexto so tem o objectivo. E OPT-IN de proposito",

@@ -47,3 +47,22 @@ permit (
 when {
     principal.authority.contains("cap:fs.read")
 };
+
+// allow_artifact_write — AOS-549 (ADR-043 §2.3; emenda de 2026-10-22 ao ADR-034, decisão do dono):
+// gravar no armazém de artefactos do PRÓPRIO run (a tool `artifact_write`: só o armazém do run, sem
+// rede, cifrado por titular e apagável pela DSAR) é ESCRITA LOCAL DO RUN e é permitida também com o
+// contexto untrusted — é o que deixa um run que viu uma foto gravar a lista dos cômodos. Por isso
+// esta regra NÃO tem a cláusula `context.taint != "untrusted"`, e diz porquê na anotação
+// `@taint_exempt`, que o gate policy-taint só aceita para as capabilities de escrita local do run
+// que ele conhece. A barreira de taint ESTRUTURAL (o TaintGate armado com AOS_PRIVILEGED_CAPS) é a
+// que classifica a escrita local do run pelo destino da tool declarado no registo trusted.
+@id("allow_artifact_write")
+@taint_exempt("local_run_write")
+permit (
+    principal,
+    action == Action::"cap:artifact.write",
+    resource
+)
+when {
+    principal.authority.contains("cap:artifact.write")
+};

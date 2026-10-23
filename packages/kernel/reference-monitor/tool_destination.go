@@ -26,7 +26,7 @@ import (
 type ToolDestination struct {
 	Capability    string
 	Egress        string // none | internal | external; "" implícito
-	Mutation      string // none | mutates; "" implícito
+	Mutation      string // none | run_artifact | mutates; "" implícito
 	Reversibility string // reversible | irreversible; "" implícito
 	Sensitivity   string // public | internal | sensitive; "" implícito (lê-se sensível)
 }
@@ -40,6 +40,28 @@ func normalizeAxis(s string) string { return strings.ToLower(strings.TrimSpace(s
 func (d ToolDestination) IsLocalRead() bool {
 	return normalizeAxis(d.Egress) == "none" &&
 		normalizeAxis(d.Mutation) == "none" &&
+		normalizeAxis(d.Reversibility) == "reversible"
+}
+
+// MutationRunArtifact é o valor do eixo de mutação de uma tool que ESCREVE SÓ no armazém de
+// artefactos do PRÓPRIO run (AOS-549, emenda de 2026-10-22 ao ADR-034, decisão do dono): append-only,
+// no âmbito do run, cifrado por titular e apagável pela DSAR, sem rede.
+const MutationRunArtifact = "run_artifact"
+
+// ArtifactWriteCapability é a ÚNICA capability que pode ser escrita local do run (AOS-549). O
+// kernel fixa-a ele próprio, para que um consumidor de [NewToolDestinations] que não passe pelo
+// validador do registo do nó não estenda a excepção a outra capability.
+const ArtifactWriteCapability = "cap:artifact.write"
+
+// IsLocalRunWrite diz se a tool se DECLARA escrita local do run: `egress: "none"`,
+// `mutation: "run_artifact"` e `reversibility: "reversible"`, os três explícitos (AOS-549). Como em
+// [IsLocalRead], é condição necessária e não suficiente: a capability e o recurso da call também não
+// podem denunciar egress. O registo do nó só aceita este eixo na tool de código do nó que grava no
+// armazém (`artifact_write`), com a capability dela.
+func (d ToolDestination) IsLocalRunWrite() bool {
+	return strings.ToLower(strings.TrimSpace(d.Capability)) == ArtifactWriteCapability &&
+		normalizeAxis(d.Egress) == "none" &&
+		normalizeAxis(d.Mutation) == MutationRunArtifact &&
 		normalizeAxis(d.Reversibility) == "reversible"
 }
 
@@ -111,6 +133,20 @@ func (t ToolDestinations) LocalReads() []string {
 	return out
 }
 
+// LocalRunWrites devolve, ordenados, os nomes das tools que se declaram escrita local do run
+// (AOS-549) e cuja capability não denuncia egress — as que o gate deixa gravar no armazém do run com
+// o contexto untrusted. É o que o banner de arranque nomeia.
+func (t ToolDestinations) LocalRunWrites() []string {
+	var out []string
+	for name, d := range t.m {
+		if d.IsLocalRunWrite() && !derivesEgress(&Call{Capability: d.Capability}) {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Razões, em vocabulário FECHADO, com que o [TaintGate] carimba [CallContext.TaintPrivilege] — o
 // porquê de a call ter sido (ou não) tratada como privilegiada, selado no evento de mediação
 // (AOS-538). Só são escritas quando o classificador do gate conhece o destino das tools
@@ -119,6 +155,9 @@ const (
 	// TaintPrivilegeLocalRead — NÃO privilegiada: a tool declara-se leitura local (os três eixos
 	// explícitos), seja qual for a capability.
 	TaintPrivilegeLocalRead = "local_read"
+	// TaintPrivilegeLocalRunWrite — NÃO privilegiada: a tool declara-se escrita local do run
+	// ([ToolDestination.IsLocalRunWrite], AOS-549, decisão do dono de 2026-10-22).
+	TaintPrivilegeLocalRunWrite = "local_run_write"
 	// TaintPrivilegeNotListed — NÃO privilegiada: a capability não está em AOS_PRIVILEGED_CAPS e a
 	// tool não declara efeito (ou não tem entrada no registo).
 	TaintPrivilegeNotListed = "capability_not_listed"
@@ -176,6 +215,9 @@ func (d DestinationPrivileged) HasPrivileged() bool { return privilegedIsEffecti
 // LocalReads devolve as tools que ficam livres do gate por serem leitura local (para o banner).
 func (d DestinationPrivileged) LocalReads() []string { return d.dests.LocalReads() }
 
+// LocalRunWrites devolve as tools livres do gate por serem escrita local do run (para o banner).
+func (d DestinationPrivileged) LocalRunWrites() []string { return d.dests.LocalRunWrites() }
+
 // ClassifyCall implementa [ToolPrivilegeClassifier].
 func (d DestinationPrivileged) ClassifyCall(call *Call) (bool, string) {
 	if call == nil || !privilegedIsEffective(d.base) {
@@ -184,6 +226,11 @@ func (d DestinationPrivileged) ClassifyCall(call *Call) (bool, string) {
 	dest, known := d.dests.forCall(call)
 	if known && dest.IsLocalRead() && !derivesEgress(call) {
 		return false, TaintPrivilegeLocalRead
+	}
+	// AOS-549: gravar no armazém do PRÓPRIO run depois de o contexto ficar untrusted não é um efeito
+	// privilegiado — não sai do nó, não muda estado de terceiros, e apaga-se com o titular.
+	if known && dest.IsLocalRunWrite() && !derivesEgress(call) {
+		return false, TaintPrivilegeLocalRunWrite
 	}
 	if d.base.IsPrivileged(call.Capability) {
 		return true, TaintPrivilegeCapability

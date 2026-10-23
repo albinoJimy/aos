@@ -143,6 +143,14 @@ const aos486Modelo = "gpt-4o"
 // (AOS-546: o resolvedor da media). Vazio na omissão.
 var aos486OpcoesExtra []opcaoDoAdaptador
 
+// aos486SpecsExtra são specs de tools a mais, por nome, com a forma dada (AOS-549: a
+// artifact_write, com a capability e os eixos dela); aos486CapsExtra, capabilities a mais no
+// token, na autoridade e na classe. Vazios na omissão.
+var (
+	aos486SpecsExtra = map[string]string{}
+	aos486CapsExtra  []string
+)
+
 // aos486No é o nó composto com o gateway real e as contagens de execução das suas tools.
 type aos486No struct {
 	node     *Node
@@ -185,6 +193,10 @@ func aos486ComporCom(t *testing.T, projeccao string, tweak func(*Config)) *aos48
 		specs = append(specs, `{"name":"`+nome+`","description":"tool `+nome+`","capability":"`+durCap+
 			`","resource_type":"file","resource_value":"doc://notes","resource_region":"eu"`+aos486CamposExtraDaSpec+`}`)
 	}
+	for _, spec := range aos486SpecsExtra {
+		specs = append(specs, spec)
+	}
+	capsDoToken := append([]string{durCap, "model:invoke"}, aos486CapsExtra...)
 	t.Setenv("AOS_MODEL_ENDPOINT", srv.URL)
 	t.Setenv("AOS_MODEL_NAME", aos486Modelo)
 	t.Setenv("AOS_MODEL_REGION", "")
@@ -211,6 +223,9 @@ func aos486ComporCom(t *testing.T, projeccao string, tweak func(*Config)) *aos48
 	for _, nome := range aos486OrdemDoFicheiro {
 		entries = append(entries, aos486Entry(signer, nome))
 	}
+	for nome := range aos486SpecsExtra {
+		entries = append(entries, aos486Entry(signer, nome))
+	}
 
 	cfg := tnBaseConfig()
 	cfg.DurableExecution = true
@@ -224,16 +239,16 @@ func aos486ComporCom(t *testing.T, projeccao string, tweak func(*Config)) *aos48
 	cfg.Catalog = catalogStub{entries: entries}
 	cfg.SignedToolRegistry = nodeSignedRegistrySpec(signer, nil, entries...)
 	cfg.IssuerClasses = map[string]identity.ClassPolicy{
-		durClass: {TTL: 15 * time.Minute, Scope: []string{durCap, "model:invoke"}},
+		durClass: {TTL: 15 * time.Minute, Scope: capsDoToken},
 	}
 	cfg.Policy = integration.StaticPolicy{MaxEgress: domain.EgressInternal}
 	if cfg.PDP, err = pdp.Open(pdpPoliciesDir); err != nil {
 		t.Fatalf("abrir bundle de politica de referencia: %v", err)
 	}
 	cfg.Authority = authz.NewStaticAuthoritySource().
-		Set("human:"+tnHuman, durCap, "model:invoke").
-		Set(durAgent, durCap, "model:invoke").
-		Set("agent:"+durClass, durCap, "model:invoke")
+		Set("human:"+tnHuman, capsDoToken...).
+		Set(durAgent, capsDoToken...).
+		Set("agent:"+durClass, capsDoToken...)
 	if tweak != nil {
 		tweak(&cfg)
 	}
@@ -259,7 +274,7 @@ func aos486ComporCom(t *testing.T, projeccao string, tweak func(*Config)) *aos48
 			t.Fatalf("Register(%s): %v", nome, err)
 		}
 	}
-	tok, err := node.Authority.MintForHuman(ctx, tnHuman, durAgent, durClass, []string{durCap, "model:invoke"})
+	tok, err := node.Authority.MintForHuman(ctx, tnHuman, durAgent, durClass, capsDoToken)
 	if err != nil {
 		t.Fatalf("MintForHuman: %v", err)
 	}

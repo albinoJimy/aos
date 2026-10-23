@@ -88,13 +88,20 @@ func deriveNodeAction(caps []Capability) risk.Action {
 	egRank := egressRank(risk.EgressNone)
 	irreversible := false
 	for _, c := range caps {
-		if l := c.Sensitivity.Level(); l > sensLevel {
+		l := c.Sensitivity.Level()
+		if c.Mutation.Mutates() {
+			// A sensibilidade declarada é a do recurso LIDO; numa tool que escreve não se aplica e
+			// conta o topo — a mesma regra do RM do nó (ToolDestination.ResourceSensitivityApplies).
+			// Desde a escrita local do run (AOS-549), reversível, é o que a deixa gray e não safe.
+			l = risk.SensitivityUnknown.Level()
+		}
+		if l > sensLevel {
 			sensLevel = l
 		}
 		if r := egressRank(c.Egress); r > egRank {
 			egRank = r
 		}
-		if c.Reversibility.IsIrreversible() || c.Mutation.Mutates() {
+		if c.Reversibility.IsIrreversible() || c.Mutation.Irreversible() {
 			irreversible = true
 		}
 	}

@@ -134,8 +134,8 @@ func TestIntegration_RM_PDP_Permit(t *testing.T) {
 	if pl.Decision != "permit" {
 		t.Errorf("payload.decision=%q, esperava permit", pl.Decision)
 	}
-	if pl.PolicyVersion != "1.0.0" {
-		t.Errorf("payload.policy_version=%q, esperava 1.0.0 (registo no audit)", pl.PolicyVersion)
+	if pl.PolicyVersion != "1.1.0" {
+		t.Errorf("payload.policy_version=%q, esperava 1.1.0 (registo no audit)", pl.PolicyVersion)
 	}
 }
 
@@ -252,7 +252,7 @@ func TestIntegration_RM_PDP_Deny(t *testing.T) {
 	if pl.Decision != "deny" {
 		t.Errorf("payload.decision=%q, esperava deny", pl.Decision)
 	}
-	if pl.PolicyVersion != "1.0.0" {
-		t.Errorf("payload.policy_version=%q, esperava 1.0.0 na negacao", pl.PolicyVersion)
+	if pl.PolicyVersion != "1.1.0" {
+		t.Errorf("payload.policy_version=%q, esperava 1.1.0 na negacao", pl.PolicyVersion)
 	}
 }

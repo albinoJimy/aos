@@ -96,7 +96,7 @@ func newACRChainComOpcoes(t *testing.T, worm audit.Store, comGate bool) *acrChai
 	ctx := context.Background()
 
 	// --- PDP REAL: bundle de referência ASSINADO + ORÁCULO DE AUTONOMIA ligado ---
-	anchor, err := base64.StdEncoding.DecodeString("tNHbo3n7mNWtl5Gt+GdRSkdUyrBjCdA+8TuoSPGReoY=")
+	anchor, err := base64.StdEncoding.DecodeString("A9O2AI0anPz7GmahpdJnvNM/588SeBQPk0jJHwx86+c=")
 	if err != nil {
 		t.Fatalf("anchor: %v", err)
 	}

@@ -31,7 +31,8 @@ package main
 // Os eixos saem FAIL-CLOSED, na convenção do `aos-orq`: um `egress` que o manifesto não declara é
 // `unknown` (o registo trata-o como `none` para o digest, mas o catálogo não afirma o que ninguém
 // declarou); uma `reversibility` que não seja «reversible» é `irreversible` (a semântica do nó —
-// ver [modelToolSpec]); uma `mutation` que não seja «none» é `mutates` (AOS-409, [validateMutation]).
+// ver [modelToolSpec]); uma `mutation` que não seja «none» nem «run_artifact» é `mutates` (AOS-409 e AOS-549,
+// [validateMutation]).
 //
 // NÃO se serve a SENSIBILIDADE. Desde o AOS-539 o manifesto pode declará-la por tool
 // (`resource_sensitivity`) e o classificador de risco do NÓ usa-a; o `aos-orq` continua a tirá-la
@@ -75,7 +76,7 @@ type entradaDoCatalogo struct {
 	Digest        string `json:"digest"`
 	Egress        string `json:"egress"`
 	Reversibility string `json:"reversibility"`
-	// Mutation é "none" ou "mutates" — nunca vazio (AOS-409). Um consumidor que o receba vazio
+	// Mutation é "none", "mutates" ou "run_artifact" (AOS-549) — nunca vazio (AOS-409). Um consumidor que o receba vazio
 	// está a falar com um nó anterior ao AOS-409, e conta-o como mutador.
 	Mutation string `json:"mutation"`
 }

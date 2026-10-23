@@ -247,8 +247,8 @@ subsystem is off and which env var turns it on. `Ctrl-C` drains and exits.
   form).
 - **`AOS_POLICY_TRUST_ANCHOR` is hex; the repo stores the key as base64.**
   `packages/control-plane/pdp/policies/trust_anchor.pub` holds
-  `tNHbo3n7mNWtl5Gt+GdRSkdUyrBjCdA+8TuoSPGReoY=`; the node wants
-  `b4d1dba379fb98d5ad9791adf867514a4754cab06309d03ef13ba848f1917a86`. Convert with
+  `A9O2AI0anPz7GmahpdJnvNM/588SeBQPk0jJHwx86+c=`; the node wants
+  `03d3b6008d1a9cfcfb1a66a1a5d267bcd33fe7cf1278140f9348c91f0c7cebe7`. Convert with
   `base64 -d | xxd -p`. Setting `AOS_POLICY_BUNDLE_DIR` without the anchor aborts boot
   (`ErrPolicyBundleNeedsTrustAnchor`) — deliberately, so nobody reads the anchor out of
   the same mutable directory it is meant to verify.

@@ -86,13 +86,14 @@ func TestManifestoDeProducaoNaoTemToolSemExecutor(t *testing.T) {
 	// AOS-546 (emenda de 2026-10-22 ao ADR-034 §2.7): a `media_view` tem executor — codigo do no —
 	// so com AOS_MEDIA_NO_TURNO=on, que e como producao corre; desligada, e a unica orfa, e o banner
 	// declara-a ([semMediaView]).
-	if orfas := semMediaView(toolsSemExecutor(specs, bindings), true); len(orfas) != 0 {
+	// E a `artifact_write` (AOS-549): executor do nó só com AOS_ARTIFACT_DIR, como a produção corre.
+	if orfas := semArtefactos(semMediaView(toolsSemExecutor(specs, bindings), true), true); len(orfas) != 0 {
 		t.Errorf("o manifesto de producao voltou a oferecer tools sem executor: %v. "+
 			"Desde 2026-09-26 (ADR-034 §2.7) nao oferece nenhuma; se a mudanca foi deliberada, "+
 			"actualize este teste E o ADR", orfas)
 	}
-	if orfas := toolsSemExecutor(specs, bindings); len(orfas) != 1 || orfas[0] != mediaViewToolName {
-		t.Errorf("com a media no turno desligada, a unica orfa tinha de ser a media_view: %v", orfas)
+	if orfas := toolsSemExecutor(specs, bindings); len(orfas) != 2 || orfas[0] != artifactWriteToolName || orfas[1] != mediaViewToolName {
+		t.Errorf("com a media no turno e o armazem desligados, as orfas tinham de ser a artifact_write e a media_view: %v", orfas)
 	}
 }
 

@@ -1623,6 +1623,72 @@ else
   bad "X2: não foi possível gerar a .cedar-fixture com a cláusula retirada"
 fi
 
+# X7 — A EXCEPÇÃO DA ESCRITA LOCAL DO RUN NÃO SE ESTENDE (AOS-549). A anotação
+# `@taint_exempt("local_run_write")` posta noutra capability (aqui, em allow_http_post, sem a
+# cláusula) ⇒ vermelho; e um valor da anotação que não é o da escrita local do run ⇒ vermelho.
+if ensure_python && python3 - "$REPO_ROOT/packages/control-plane/pdp/policies/aos_authz.cedar" "$PT_FIX" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding="utf-8").read()
+old = '@id("allow_http_post")\npermit ('
+assert old in text, "padrao de allow_http_post nao encontrado — self-test invalido"
+text = text.replace(old, '@id("allow_http_post")\n@taint_exempt("local_run_write")\npermit (', 1)
+old2 = '    resource.region == "eu" &&\n    context.taint != "untrusted"'
+assert old2 in text
+open(dst, "w", encoding="utf-8").write(text.replace(old2, '    resource.region == "eu"', 1))
+PY
+then
+  if AOS_POLICY_TAINT_POLICY="$PT_FIX" bash "$CI_DIR/policy-taint.sh" >/dev/null 2>&1; then
+    bad "X7: policy-taint aceitou @taint_exempt(local_run_write) em cap:http.post — a excepção estende-se"
+  else
+    pass "X7: policy-taint recusa a excepção da escrita local do run noutra capability (na cópia)"
+  fi
+else
+  bad "X7: não foi possível gerar a .cedar-fixture da excepção indevida"
+fi
+if ensure_python && python3 - "$REPO_ROOT/packages/control-plane/pdp/policies/aos_authz.cedar" "$PT_FIX" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding="utf-8").read()
+old = '@taint_exempt("local_run_write")'
+assert old in text, "a regra allow_artifact_write nao tem a anotacao — self-test invalido"
+open(dst, "w", encoding="utf-8").write(text.replace(old, '@taint_exempt("qualquer")', 1))
+PY
+then
+  if AOS_POLICY_TAINT_POLICY="$PT_FIX" bash "$CI_DIR/policy-taint.sh" >/dev/null 2>&1; then
+    bad "X7b: policy-taint aceitou @taint_exempt com outro valor"
+  else
+    pass "X7b: policy-taint recusa @taint_exempt com um valor que não é o da escrita local do run (na cópia)"
+  fi
+else
+  bad "X7b: não foi possível gerar a .cedar-fixture do valor indevido"
+fi
+
+# X7c/X7d — a acção do permit é a da CABEÇA (revisão do AOS-549): uma cabeça `action` livre
+# com `action == Action::"cap:artifact.write"` só no `when`, ou um `unless` com ela, não ganha a
+# excepção — senão uma capability de rede passava com o contexto untrusted.
+for caso in X7c X7d; do
+  if ensure_python && python3 - "$REPO_ROOT/packages/control-plane/pdp/policies/aos_authz.cedar" "$PT_FIX" "$caso" <<'PY'
+import sys
+src, dst, caso = sys.argv[1], sys.argv[2], sys.argv[3]
+text = open(src, encoding="utf-8").read()
+if caso == "X7c":
+    extra = '@id("forjada")\n@taint_exempt("local_run_write")\npermit (principal, action, resource)\nwhen { action == Action::"cap:artifact.write" || principal.authority.contains("cap:http.post") };\n'
+else:
+    extra = '@id("forjada")\n@taint_exempt("local_run_write")\npermit (principal, action in [Action::"cap:http.post"], resource)\nwhen { true }\nunless { action == Action::"cap:artifact.write" };\n'
+open(dst, "w", encoding="utf-8").write(text.rstrip("\n") + "\n\n" + extra)
+PY
+  then
+    if AOS_POLICY_TAINT_POLICY="$PT_FIX" bash "$CI_DIR/policy-taint.sh" >/dev/null 2>&1; then
+      bad "$caso: policy-taint aceitou a excepção num permit cuja cabeça não é cap:artifact.write"
+    else
+      pass "$caso: policy-taint lê a acção só da cabeça do permit (na cópia)"
+    fi
+  else
+    bad "$caso: não foi possível gerar a .cedar-fixture"
+  fi
+done
+
 # X3 — CONTROLO POSITIVO (o molde do P3/Q4/R3/V4): baseline REAL + política REAL ⇒
 # verde. Sem isto, um gate «sempre vermelho» passaria X1/X2 sem distinguir nada.
 if bash "$CI_DIR/policy-taint.sh" >/dev/null 2>&1; then

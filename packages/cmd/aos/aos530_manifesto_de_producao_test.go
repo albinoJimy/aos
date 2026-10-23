@@ -100,8 +100,8 @@ func TestAOS530_No_ManifestoDeProducaoComGatewayServeAOCR(t *testing.T) {
 	for _, e := range corpo.Tools {
 		porNome[e.Name] = e
 	}
-	if len(porNome) != 4 {
-		t.Fatalf("o GET /tools de producao tinha de servir doc_read, media_view, ocr_read e video_read; serviu %+v", corpo.Tools)
+	if len(porNome) != 5 {
+		t.Fatalf("o GET /tools de producao tinha de servir artifact_write, doc_read, media_view, ocr_read e video_read; serviu %+v", corpo.Tools)
 	}
 	if v, ok := porNome[videoToolName]; !ok || v.Egress != "external" || v.Reversibility != "reversible" || v.Mutation != "none" || len(v.Digest) != len("sha256:")+64 {
 		t.Fatalf("video_read: %+v — esperado egress external, reversible, mutation none e um digest sha256", v)
@@ -174,7 +174,7 @@ func TestAOS530_ProducaoArrancaComOManifestoRealEOGateway(t *testing.T) {
 	}
 	// AOS-546: a media_view entra no manifesto de producao (leitura local, executor do no com
 	// AOS_MEDIA_NO_TURNO=on).
-	if strings.Join(nomes, ",") != "doc_read,media_view,ocr_read,video_read" {
-		t.Fatalf("o catalogo de producao tinha de ser doc_read,media_view,ocr_read,video_read; e %v", nomes)
+	if strings.Join(nomes, ",") != "artifact_write,doc_read,media_view,ocr_read,video_read" {
+		t.Fatalf("o catalogo de producao tinha de ser artifact_write,doc_read,media_view,ocr_read,video_read; e %v", nomes)
 	}
 }

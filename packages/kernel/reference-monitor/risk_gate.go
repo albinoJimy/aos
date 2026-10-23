@@ -78,6 +78,12 @@ func isNetworkCapability(capability string) bool {
 // provadamente locais (sem egress). Case-insensitive.
 func isLocalCapability(capability string) bool {
 	c := strings.ToLower(strings.TrimSpace(capability))
+	// AOS-549: escrever no armazém de artefactos do PRÓPRIO run (ADR-043 §2.3) é local — o armazém é
+	// um volume do nó, cifrado por titular, sem rede. Só a capability EXACTA: outro verbo da família
+	// (`cap:artifact.export`, `cap:artifact.share`) continua indeterminado, fail-closed.
+	if c == ArtifactWriteCapability {
+		return true
+	}
 	for _, p := range localCapabilityPrefixes {
 		if strings.HasPrefix(c, p) {
 			return true
