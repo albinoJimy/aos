@@ -2,7 +2,9 @@
 
 - **Estado:** Aceite — **ratificado pelo dono a 2026-10-22** («ratifico, prossiga com o AOS-546»).
   A fase R1a (AOS-546 e AOS-547) está em produção desde a v0.1.68 (2026-10-22): o modelo do run
-  viu uma planta e listou os cômodos, com replay de fidelidade 1. O resto do roteiro (§7) por fazer.
+  viu uma planta e listou os cômodos, com replay de fidelidade 1. A fase R1b (AOS-548 e AOS-549)
+  está em produção desde a v0.1.69 (2026-10-23): o run viu a planta e gravou `comodos.json` e
+  `planta.svg` no armazém do run, e o dono descarregou os dois. O resto do roteiro (§7) por fazer.
 - **Data:** 2026-10-22
 - **Deciders:** Dono do produto. A análise de base é
   `docs/reports/analise-critica-harness-flexivel-2026-10-22.md` (v2): foi sujeita a duas revisões
