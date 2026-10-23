@@ -2488,6 +2488,72 @@ dão divergência normal no turno 3, com amostra e alerta.
 
 ---
 
+## AOS-551 — A separação de planos ligada: layout 1.8.0 e a autoridade por argumento (fase R2 do ADR-043; fecha o DEF-806)
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-02 — Agent Runtime e Execução Durável |
+| Fase | Harness por capacidades (ADR-043), fase R2 |
+| Tipo | feat |
+| Prioridade | P1 |
+| Estimativa | L |
+| Dependências | AOS-550 (o handle e a sua resolução); AOS-552 (a linhagem). **Nasce com um ADR próprio** (o ADR-038 §3 exigiu-o; o número atribui-se na emissão — ver o desenho §8) |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/adr/ADR-034-autorizacao-derivada-do-contexto.md` (§3 opção A, §5.4 o gatilho, §3 alternativa E); `docs/adr/ADR-043-harness-por-capacidades.md` (§2.6); `docs/reports/desenho-r2-entradas-por-handle-2026-10-23.md` (§3 e §4); `docs/governance/REGISTO-Deferimentos.md` (DEF-806) |
+
+### Contexto
+
+É o ticket que fecha o **DEF-806**, cujo registo nomeia o defeito com precisão: «a AUTORIZAÇÃO já é
+derivada do contexto (opção C) … mas o conteúdo untrusted continua a entrar **INLINE no tail que o
+modelo lê**, pelo que um efeito cujos argumentos venham desse conteúdo não tem separação». O código
+declara-o no mesmo sítio (`loop.go:766-775`, `prompt.go:622`).
+
+O limite de produto que levanta: hoje um plano em que um passo usa uma tool protegida **com base no
+que outro passo leu** falha sempre. A mitigação da v0.1.64 (AOS-540) é o nó consumidor pedir as
+tools de envio no primeiro turno, antes de ver os dados — e custa dois turnos a cada nó consumidor.
+
+**A separação sozinha não é segura, e é por isso que a autoridade por argumento entra com ela.** Se
+o contexto passar a trusted por construção (porque a `PlannerView` só tem trusted e handles), o
+`TaintGate` deixa de negar (`taint_gate.go:164`) e um `web_post` cujo corpo seja um handle de um
+documento com injecção passaria. A CaMeL fecha a integridade do fluxo de **controlo**, não a do
+fluxo de **dados**.
+
+### Critérios de Aceitação
+
+- [ ] Layout **1.8.0**: `plan_input` e `tool_result` entram no tail **como handle** — rótulo com o
+      digest e corpo fixo —, nunca como conteúdo. A mecânica é a que já existe duas vezes: o
+      `args_digest` da 1.4.0 (`layout.go:344-367`) e a `media_view` da 1.7.0 (`media.go:143-155`).
+- [ ] `SeparatePlanes` ganha chamador de produção, e a `PlannerView` é exactamente o que o modelo vê.
+- [ ] **A autoridade de uma call é `join(trusted, taint de cada handle resolvido nos seus
+      argumentos)`**, e não o rótulo do turno. Uma call sem handles nos argumentos é trusted mesmo
+      depois de o run ter lido — é o limite que se levanta; uma call que consome um handle untrusted
+      decide-se como hoje (nega, ou escala com o AOS-541).
+- [ ] **O interruptor da 1.8.0 não fica accionável** sem a autoridade por argumento composta: o nó
+      recusa arrancar, fail-closed, com o erro nomeado. Ligar a separação sem ela troca «negar a
+      mais» por «permitir a mais».
+- [ ] Um só rótulo para todos os leitores (ADR-034 §2.3): o classificador de risco lê o mesmo valor
+      (`risk_gate.go:373`, `:511`) e untrusted continua a elevar a sensibilidade um nível.
+- [ ] **Paridade nas duas vias de despacho** (ADR-034 §2.8), provada como o AOS-069, o AOS-538, o
+      AOS-540 e o AOS-541 a provaram: qualquer campo novo atravessa a `Activity`
+      (`activity/contract.go:184`) e o `DurableDispatcher` (`integration/runtime_ports.go:240`), ou a
+      produção decide diferente do teste.
+- [ ] O replay e a retoma reproduzem a autoridade por **dobra pura da sequência reconstruída**, sem a
+      gravar (`replay/engine.go:601`); a sequência de segmentos continua a ter uma só definição.
+- [ ] A bateria de injecção continua verde, e ganha o caso novo: uma injecção dentro de um handle que
+      **é** consumido por uma call privilegiada continua a não a autorizar.
+- [ ] Desligado por omissão.
+
+### Fora de âmbito
+
+- **R7 do ADR-034 permanece aberto:** conteúdo colado no `objective` continua a comandar no turno 1
+  (`api.go:1178-1188`, `TestAOS069_InjeccaoNoObjectivoPassaAClausulaDeTaint_R7`). A opção A não fecha
+  isto — a fronteira do rótulo é o principal autenticado, não o conteúdo.
+- A travessia da aresta do plano (AOS-553).
+- A retirada do AOS-540 e do AOS-542, que perdem a razão de ser para runs em 1.8.0 e ficam em vigor
+  para os outros layouts: simplificação de depois da prova em produção.
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -2507,3 +2573,4 @@ dão divergência normal no turno 3, com amostra e alerta.
 | 1.12 | 2026-10-05 | +AOS-497 (o kernel designa e sela a origem da saída de um run): em 2 de 21 planos em produção o nó de leitura chamou a tool com sucesso e entregou um resumo em vez do conteúdo; primeira peça da saída por referência | Equipa AOS |
 | 1.13 | 2026-10-05 | AOS-497 implementado e revisto: a regra de designação conta as chamadas pedidas, o run com entradas tem o estado `inapplicable`, a forma do nome valida-se no arranque, e a fonte dos bytes é o step-ledger. Por verificar em produção | Equipa AOS |
 | 1.14 | 2026-10-18 | +AOS-533 (o replay verificável de produção, `GET /runs/{id}/replay`): resíduo da sub-fase A5.1 — o replay de produção não recalculava os `prompt_hash` | Equipa AOS |
+| 1.15 | 2026-10-23 | +AOS-551 (a separação de planos ligada: layout 1.8.0 e a autoridade por argumento), fase R2 do ADR-043 — **fecha o DEF-806**. A autoridade de uma call passa a ser `join(trusted, taint de cada handle resolvido nos seus argumentos)`: a separação sozinha trocaria «negar a mais» por «permitir a mais». Nasce com um ADR próprio | Equipa AOS |

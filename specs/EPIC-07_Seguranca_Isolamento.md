@@ -1717,6 +1717,114 @@ negada pela política (default-deny) e irreversível no planeador.
 
 ---
 
+## AOS-550 — O handle resolve-se a jusante do RM: a quarentena sobre o armazém e os metadados de nível-esquema (fase R2 do ADR-043)
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-07 — Segurança e Isolamento |
+| Fase | Harness por capacidades (ADR-043), fase R2 |
+| Tipo | feat |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-548 e AOS-549 (o armazém e a escrita local do run) |
+| Responsável sugerido | Engenheiro de Plataforma |
+| Documentos de referência | `docs/adr/ADR-043-harness-por-capacidades.md` (§2.6); `docs/adr/ADR-034-autorizacao-derivada-do-contexto.md` (§3 opção A, §5.4); `docs/reports/desenho-r2-entradas-por-handle-2026-10-23.md` (§3); `packages/kernel/agent-runtime/taint_plane.go` (os primitivos); `packages/kernel/agent-runtime/media.go` (o precedente da fronteira pelo nome da tool) |
+
+### Contexto
+
+Os primitivos da opção A do ADR-034 estão escritos e testados em
+`packages/kernel/agent-runtime/taint_plane.go` — `Handle`, `Quarantine`, `PlannerView`,
+`SeparatePlanes`, `ControlPlanner` — e **não têm chamador de produção**, como o próprio ficheiro
+declara (`:172-175`). A quarentena é um mapa em memória: sem durabilidade, sem cifra, sem
+proveniência e fora do alcance da DSAR e da retenção.
+
+Decisão do dono de 2026-10-23 (desenho §3): o handle é **híbrido** — o modelo vê o tipo opaco, e o
+armazém de artefactos da R1b é o que está por baixo. E o modelo que decide vê **só factos de
+nível-esquema**, nunca um resumo do conteúdo (emenda ao ADR-043 §2.4, que a escreveu como
+«a referência e um resumo»).
+
+Este ticket entrega o handle e a sua resolução **dentro de um run**. A separação de planos é o
+AOS-551.
+
+### Critérios de Aceitação
+
+- [ ] `Quarantine.Resolve` lê do armazém por `(titular, run, digest)`; o mapa em memória sai. Os ids
+      continuam sequenciais pela ordem dos segmentos (`h1`, `h2`, …), sem relógio e sem `rand` — é o
+      que o replay por dobra pura exige.
+- [ ] O `Handle` carrega metadados que **o nó afirma** — tipo de media, bytes, validade, nome — e
+      nunca conteúdo nem resumo. O `PlannerView` continua sem campo por onde bytes cheguem: a
+      barreira é do tipo, não textual.
+- [ ] Um argumento de tool pode ser um handle: o modelo emite a referência, **o RM decide com ela**,
+      e só depois o nó a troca pelos bytes. Os bytes não aparecem no tail, no `prompt_hash`, nos
+      spans, nos selos nem nos erros.
+- [ ] Um handle forjado é recusado por **duas** condições independentes: (a) só uma referência
+      produzida por uma tool de código do nó é reconhecida — a regra de `media.go:26-32`; (b) o par
+      `(run, digest)` consta de um `artifact.created` do stream que o run pode ler, a verificação que
+      `artefactosDoRun` (`artifact_api.go:40-54`) já faz no plano HTTP, levantada para o runtime.
+- [ ] Nasce o **tecto do corpo de um `tool_result`**, que hoje não existe em sítio nenhum (há tecto
+      para os argumentos, 4 KiB, e para os rótulos, 256 B; o `dec.Output` entra inteiro): declarado,
+      imposto, com a recusa nomeada e dentro do tecto de 1 MiB por artefacto.
+- [ ] Os contadores do armazém (`gravados`, `recusados`, `servidos`) passam a ser publicados em
+      `/metrics` — uma fase em que os dados viajam por handle sem observabilidade do armazém não é
+      operável.
+- [ ] Desligado por omissão: o nó de sempre não muda de comportamento, byte a byte.
+
+### Fora de âmbito
+
+- A separação de planos e a autoridade por argumento (AOS-551).
+- A linhagem e o taint herdado do artefacto (AOS-552).
+- A travessia da aresta do plano (AOS-553).
+- **Uma tool `artifact_read`.** O desenho §3 corrige o âmbito que o AOS-548 declarou: com a
+  resolução interna e os metadados de nível-esquema, nenhuma tool de leitura nasce — uma
+  `artifact_read` daria ao modelo um pedido de leitura por digest, que é o vector que a condição (b)
+  existe para fechar.
+
+---
+
+## AOS-552 — O taint e a linhagem do artefacto: o artefacto herda o taint das entradas e o guard-test que falta (fase R2 do ADR-043)
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-07 — Segurança e Isolamento |
+| Fase | Harness por capacidades (ADR-043), fase R2 |
+| Tipo | feat |
+| Prioridade | P1 |
+| Estimativa | S |
+| Dependências | AOS-550 |
+| Responsável sugerido | Engenheiro de Plataforma |
+| Documentos de referência | `docs/adr/ADR-043-harness-por-capacidades.md` (§2.3 e §8); `docs/reports/desenho-r2-entradas-por-handle-2026-10-23.md` (§5); `packages/cmd/aos/artifact_store.go` (`artefactoCriado`, `:284`) |
+
+### Contexto
+
+O ADR-043 §2.3 exige que o evento de proveniência de um artefacto leve «os digests das entradas e da
+instrução». O `artefactoCriado` (`artifact_store.go:284-292`) tem sete campos e **nenhum de
+linhagem**: um artefacto derivado de outro não é rastreável, e a regra da R2 «o artefacto produzido
+herda o taint» não tem onde registar a herança.
+
+E o guard-test que o ADR-043 §8 exige para a R1b — «o artefacto é sempre untrusted» — **não existe**.
+Medido a 2026-10-23: o que existe é a invariante genérica do RM (`monitor.go:114-116`, `:280-281`) e
+o teste do lado da *entrada* (`aos549_escrita_local_no_test.go:93`, que prova a mediação com
+`Context.Taint == "untrusted"`). Nenhum teste afirma o taint do **resultado**.
+
+### Critérios de Aceitação
+
+- [ ] `artefactoCriado` ganha os digests das entradas que produziram o artefacto; um artefacto
+      derivado de outro é rastreável pelo evento, sem conteúdo no Event Store.
+- [ ] O artefacto **herda o taint das suas entradas**, e a herança fica selada no evento — não
+      recalculada por quem o lê.
+- [ ] Nasce o guard-test que o ADR-043 §8 exige: «o artefacto é sempre untrusted», a cobrir o
+      resultado da `artifact_write` **e** um artefacto relido por handle.
+- [ ] A retenção e a DSAR continuam a alcançar o artefacto pelo titular (`retention.go:115-122`), com
+      a linhagem incluída no que se apaga.
+
+### Fora de âmbito
+
+- Modelo, fornecedor efectivo e custo no evento de proveniência: nascem com a `model_invoke` da R3,
+  que é quem os produz. A `ocr_read` já grava custo e modelo servido num evento próprio
+  (`budget.toolcall.model_cost`).
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -1740,3 +1848,4 @@ negada pela política (default-deny) e irreversível no planeador.
 | 1.16 | 2026-10-21 | AOS-542 em produção na v0.1.64 (com o Go 1.26.10): série `p3a1`–`p3a5`, 5 de 5, a OCR no nó consumidor no primeiro turno, 0 pedidos tardios | Equipa AOS |
 | 1.17 | 2026-10-22 | +AOS-548 (armazém de artefactos) e +AOS-549 (a escrita local do run), fase R1b do ADR-043 | Equipa AOS |
 | 1.18 | 2026-10-23 | AOS-548 e AOS-549 em produção na v0.1.69; prova `plan-e2e-art1-1792753267`: o run viu a planta e gravou `comodos.json` e `planta.svg` com o contexto untrusted (`local_run_write`), e o dono descarregou os dois; correcção sobre o portão de plano (L4: `gray` corre sem humano) | Equipa AOS |
+| 1.19 | 2026-10-23 | +AOS-550 (o handle resolve-se a jusante do RM: a quarentena sobre o armazém e os metadados de nível-esquema) e +AOS-552 (o taint e a linhagem do artefacto, com o guard-test que o ADR-043 §8 exige e que não existia), fase R2 do ADR-043. Decisões do dono de 2026-10-23: o handle é híbrido (tipo opaco ao modelo, armazém por baixo) e o modelo que decide vê só factos de nível-esquema — emenda ao ADR-043 §2.4 | Equipa AOS |
