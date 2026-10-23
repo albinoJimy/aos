@@ -102,8 +102,13 @@ func TestQuarantineDeterministicHandles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Seal(b): %v", err)
 	}
-	if h1.String() != "h1" || h2.String() != "h2" {
-		t.Fatalf("handles não determinismos: %q, %q", h1.String(), h2.String())
+	// O TOKEN é cunhado pelo armazém ([MintHandleToken]): `h<ordinal>.<selo>`, com o ordinal pela
+	// ordem das entradas e o selo função de (run, digest). O determinismo prova-se no
+	// aos550_quarentena_sobre_armazem_test.go; aqui basta a SEQUÊNCIA.
+	for i, h := range []Handle{h1, h2} {
+		if n, ok := HandleTokenOrdinal(h.String()); !ok || n != i+1 {
+			t.Fatalf("handle %d = %q: ordinal %d, %v", i+1, h.String(), n, ok)
+		}
 	}
 	if h1.IsZero() {
 		t.Errorf("handle emitido não devia ser zero")

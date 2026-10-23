@@ -1025,10 +1025,10 @@ func nodeConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 
-	// AS ENTRADAS POR HANDLE (AOS-550, ADR-043 §2.6). Vocabulário fechado (`off`/`on`): um valor
-	// desconhecido aborta o arranque. Vazia ⇒ `off`. A exigência do armazém e do Event Store é
-	// do [Bootstrap].
-	if cfg.HandleNosArgumentos, err = parseHandleNosArgumentosFromEnv(); err != nil {
+	// O ESPAÇO PRÓPRIO DE HANDLES, e com ele as entradas por handle (AOS-550, ADR-043 §2.6).
+	// Vazio ⇒ desligado; o Bootstrap abre-o com o MESMO cifrador por titular do armazém de
+	// artefactos, e exige o Event Store.
+	if cfg.HandleDir, cfg.HandleMaxBytes, err = handleConfigFromEnv(); err != nil {
 		return Config{}, err
 	}
 

@@ -375,7 +375,7 @@ func TestAOS548_ReescritaComposta(t *testing.T) {
 	// Com um binding de sandbox, como em produção (a doc_read): o despacho composto tem de levar a
 	// artifact_write à reescrita dela, e não à da sandbox.
 	bindings := map[string]sandbox.SandboxBinding{"doc_read": {Command: "read", PathArg: "doc_id"}}
-	got, err := reescritaDoEfeito(bindings, nil, nil, true)(call)
+	got, err := reescritaDoEfeito(bindings, nil, nil, true, nil)(call)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -387,7 +387,7 @@ func TestAOS548_ReescritaComposta(t *testing.T) {
 	// recusa uma entrada que não seja a da reescrita.
 	forjada := call
 	forjada.Input = []byte(`{"schema":"aos-artifact-write/v1","run_id":"run-alheio","step_id":"x","subject":"outro","name":"a.json","media_type":"application/json","content":"{}"}`)
-	if _, err := reescritaDoEfeito(bindings, nil, nil, true)(forjada); err == nil {
+	if _, err := reescritaDoEfeito(bindings, nil, nil, true, nil)(forjada); err == nil {
 		t.Fatal("a reescrita aceitou a entrada forjada pelo modelo")
 	}
 	a, _, _ := aos548Armazem(t, 1<<30)

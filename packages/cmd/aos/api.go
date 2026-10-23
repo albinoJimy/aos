@@ -2527,32 +2527,28 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			labels := `{resultado="` + par.resultado + `"}`
 			if i == 0 {
 				g("aos_artifact_store_total",
-					"Operacoes do armazem de artefactos do run desde o arranque (AOS-548, ADR-043 §2.3), pelo resultado. gravados: chamadas da tool artifact_write que selaram um artefacto cifrado e o declararam no stream do run. recusados: chamadas que a tool fechou com uma causa do vocabulario fechado (entrada invalida, tipo nao aceite, conteudo invalido, acima do tecto, tecto do run, volume cheio, cifra/disco/registo indisponiveis, e as causas de handle do AOS-550). servidos: conteudos entregues por GET /runs/{id}/artifacts/{digest} depois das portas da leitura soberana. Por processo.",
+					"Operacoes do armazem de artefactos do run desde o arranque (AOS-548, ADR-043 §2.3), pelo resultado. gravados: chamadas da tool artifact_write que selaram um artefacto cifrado e o declararam no stream do run. recusados: chamadas que a TOOL fechou com uma causa do vocabulario fechado (entrada invalida, tipo nao aceite, conteudo invalido, acima do tecto, tecto do run, volume cheio, cifra/disco/registo indisponiveis, e as causas de handle do AOS-550). servidos: conteudos entregues por GET /runs/{id}/artifacts/{digest} depois das portas da leitura soberana. LACUNA DECLARADA (AOS-550): os dois planos nao tem paridade — `servidos` so se move na ROTA HTTP e `recusados` conta so recusas da TOOL, pelo que um 404 ou 410 da leitura soberana nao aparece em contador nenhum. A paridade fica para ticket proprio. Por processo.",
 					"counter", float64(par.valor), labels)
 				continue
 			}
 			amostra("aos_artifact_store_total", labels, float64(par.valor))
 		}
-		// AOS-550 — AS ENTRADAS POR HANDLE. Só com AOS_HANDLE_NOS_ARGUMENTOS=on; desligado, a
-		// família não existe e o /metrics é o de antes.
-		if p := a.handles; p != nil {
-			for i, par := range []struct {
-				resultado string
-				valor     int64
-			}{
-				{"cunhados", p.cunhados.Load()},
-				{"resolvidos", p.resolvidos.Load()},
-				{"recusados", p.recusados.Load()},
-			} {
-				labels := `{resultado="` + par.resultado + `"}`
-				if i == 0 {
-					g("aos_handle_args_total",
-						"Handles de conteudo em quarentena desde o arranque (AOS-550, ADR-043 §2.6), pelo resultado. cunhados: handles devolvidos ao modelo com a referencia de um artefacto gravado. resolvidos: argumentos de tool em que o no trocou a referencia pelos bytes, DEPOIS da decisao do Reference Monitor. recusados: resolucoes fechadas por uma das causas do vocabulario fechado (handle nao reconhecido, sem proveniencia no stream do run, acima do tecto do tool_result, ilegivel, sem run). Nenhum byte do conteudo e nenhum id. Por processo.",
-						"counter", float64(par.valor), labels)
-					continue
-				}
-				amostra("aos_handle_args_total", labels, float64(par.valor))
+	}
+
+	// AOS-550 — O ESPAÇO DE HANDLES, PELO RESULTADO. Só sai com o espaço composto: sem
+	// AOS_HANDLE_DIR a família não existe, e o /metrics é o de antes. Um contador por valor do
+	// vocabulário FECHADO (o mesmo da selagem e da resolução), sempre presente: o zero é um zero
+	// verdadeiro. Nenhum byte do conteúdo, nenhum token, nenhum digest, nenhum titular.
+	if h.node != nil && h.node.handles != nil {
+		for i, r := range handleResultados() {
+			labels := `{resultado="` + r + `"}`
+			if i == 0 {
+				g("aos_handle_total",
+					"Operacoes sobre handles de conteudo em quarentena desde o arranque (AOS-550, ADR-043 §2.6), pelo resultado. selado: conteudo cifrado no espaco de handles, com o run nos dados associados, e declarado num handle.created do stream do run. resolvido: argumento de tool em que o no trocou a referencia pelos bytes, no CallRewriter e ANTES da mediacao. As restantes sao as causas de recusa, num vocabulario fechado: handle_vazio, handle_acima_do_tecto (o tecto do corpo de um tool_result), tecto_de_handles_do_run, volume_de_handles_cheio, cifra/disco/registo_indisponivel, handle_nao_reconhecido, handle_sem_proveniencia (o par (run, digest) nao consta do stream), handle_nao_textual, handle_aninhado, handle_parcial, handle_no_slot_do_recurso, argumentos_ilegiveis, handle_sem_run e handle_ilegivel. Uma recusa de resolucao NEGA a tool call. Por processo.",
+					"counter", float64(h.node.handles.lido(r)), labels)
+				continue
 			}
+			amostra("aos_handle_total", labels, float64(h.node.handles.lido(r)))
 		}
 	}
 

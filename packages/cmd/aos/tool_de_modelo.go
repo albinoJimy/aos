@@ -118,6 +118,12 @@ func (l *ligacaoDeModelo) lido(resultado string) int64 {
 // falhar conta a causa e devolve o erro da tool, com o custo medido (zero antes do provider).
 func (l *ligacaoDeModelo) falhar(causa string, custo int64) ([]byte, int64, error) {
 	l.contar(causa)
+	// AOS-550: a causa é conferida contra o vocabulário FECHADO da tool. A mensagem já era
+	// construída de duas partes conhecidas; o que se acrescenta é recusar uma causa que não esteja
+	// declarada — a mensagem de erro vai no CORPO do segmento `tool_result` (erro_de_tool.go).
+	if !vocabularioDeErro()[l.tool][causa] {
+		return nil, custo, &falhaDeTool{tool: l.tool, causa: causaNaoDeclarada}
+	}
 	return nil, custo, &falhaDeTool{tool: l.tool, causa: causa}
 }
 
