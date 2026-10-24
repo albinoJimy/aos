@@ -3,6 +3,8 @@ package agentruntime
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"strconv"
 )
 
@@ -527,8 +529,85 @@ func tailFromPlanInput(in PlanInput) TailSegment {
 }
 
 // TailFromPlanInput é a MESMA construção, exportada para o motor de replay reconstruir o tail
-// byte-idêntico (como [TailFromCorrection]).
+// byte-idêntico (como [TailFromCorrection]). É a forma de ATÉ À 1.7.0: quem monta um tail da
+// 1.8.0 passa pela [TailSequence] ou por [OpenRunTail], que é onde vive a escolha.
 func TailFromPlanInput(in PlanInput) TailSegment { return tailFromPlanInput(in) }
+
+// PlanInputHandleLabel é a chave do rótulo com que o tail da 1.8.0 refere o handle de um
+// `plan_input`: `plan_input_handle=<token>`. É o token que o modelo escreve de volta num
+// argumento de tool para o `CallRewriter` o resolver (AOS-550).
+const PlanInputHandleLabel = "plan_input_handle"
+
+// corpoDeEntradaPorHandle180 é o corpo FIXO de um `plan_input` na 1.8.0: o payload não está
+// aqui, e esta é a única coisa que o modelo lê onde antes lia os dados.
+//
+// É uma CONSTANTE versionada com o assembler, nas restrições do preâmbulo da 1.4.0: ASCII, sem
+// dados do run nem do modelo, igual em todos os runs, nenhuma linha a abrir por '<', e sem
+// `taint=trusted` nem rótulo de recusa seguido de '='. Mudar um byte dela é mudar o layout.
+//
+// PORQUE A EXPLICAÇÃO VIVE NO CORPO, e não numa linha nova do preâmbulo: o preâmbulo é partilhado
+// por todos os layouts desde a 1.4.0 e mudá-lo mudaria o `prompt_hash` de todos eles. Um corpo
+// que só existe na 1.8.0 explica-se a si mesmo exactamente onde é lido, e nos layouts anteriores
+// não há byte nenhum a mais.
+//
+// PORQUE EM INGLÊS: como o preâmbulo, fala do vocabulário estrutural do layout, que é inglês.
+const corpoDeEntradaPorHandle180 = "The payload of this plan input is not in this context.\n" +
+	"It is held outside the model's context and is named by the handle on the\n" +
+	"delimiter line above. To act on it, write that handle as a tool argument:\n" +
+	"the runtime replaces it with the content when it mediates the call, after\n" +
+	"the call has been authorized. The payload itself is never placed in this\n" +
+	"context and cannot be read into it.\n"
+
+// tailFromPlanInputByHandle constrói o segmento de um `plan_input` na 1.8.0: os MESMOS rótulos de
+// [tailFromPlanInput] — a marcação untrusted e de onde veio —, mais o token do handle, e o corpo
+// fixo em vez do payload.
+//
+// O token vem do NÓ ([PlanInput.Handle]) e não se cunha aqui, apesar de [MintHandleToken] ser
+// pura e de o kernel ter os três argumentos dela. A razão é a do AOS-552: a DERIVAÇÃO É ÚNICA.
+// Quem sela a entrada no espaço de handles é o nó, e é a sequência de selagem dele que fixa o
+// ordinal; cunhar aqui em paralelo daria, num desvio de ordinal, um tail a mostrar um token que
+// não resolve — e o modelo a receber `E_EFFECT_REWRITE` sobre um handle que o prompt lhe
+// ofereceu. O kernel mostra o token de quem o selou, e mais nada.
+func tailFromPlanInputByHandle(in PlanInput) TailSegment {
+	seg := tailFromPlanInput(in)
+	seg.Meta = append(seg.Meta, TailMeta{Key: PlanInputHandleLabel, Value: in.Handle})
+	seg.Content = []byte(corpoDeEntradaPorHandle180)
+	return seg
+}
+
+// segmentoDeEntrada é o segmento de um `plan_input` NESTE layout: por handle na 1.8.0, com o
+// payload até à 1.7.0. É o ponto único da escolha — a semente, a entrega das adiadas e o digest
+// das adiadas passam todos por aqui, para não haver três definições da mesma forma.
+func (l layout) segmentoDeEntrada(in PlanInput) TailSegment {
+	if l.entradasPorHandle {
+		return tailFromPlanInputByHandle(in)
+	}
+	return tailFromPlanInput(in)
+}
+
+// ErrPlanInputWithoutHandle é um `plan_input` sem [PlanInput.Handle] num layout que os põe no tail
+// por handle (a 1.8.0). Ver [layout.conferirEntradas].
+var ErrPlanInputWithoutHandle = errors.New("agentruntime: plan_input sem handle no layout que os põe por handle")
+
+// conferirEntradas é o gate FAIL-CLOSED da 1.8.0: nela, toda a entrada do plano tem de trazer o
+// token do handle que o nó lhe selou.
+//
+// A alternativa — cair no corpo inline quando o token falta — seria a 1.7.0 a correr com o número
+// da 1.8.0: o payload de volta ao contexto do modelo, a separação silenciosamente desfeita, e um
+// `prompt_hash` que a versão gravada não explica. Por isso recusa no ARRANQUE do tail, onde há
+// erro para devolver e nenhum turno aconteceu ainda, e não no sítio onde o segmento se materializa
+// ([TailSequence.TurnWithState] não tem por onde falhar).
+func (l layout) conferirEntradas(inputs []PlanInput) error {
+	if !l.entradasPorHandle {
+		return nil
+	}
+	for i, in := range inputs {
+		if in.Handle == "" {
+			return fmt.Errorf("%w: entrada %d (%s>%s) no layout %s", ErrPlanInputWithoutHandle, i, in.From, in.Output, l.version)
+		}
+	}
+	return nil
+}
 
 // tailFromCorrection constrói o segmento de tail de uma correcção humana out-of-band
 // (AOS-158). Ao contrário do output do modelo e dos resultados de tool (untrusted), a

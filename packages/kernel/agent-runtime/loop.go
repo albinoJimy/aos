@@ -319,6 +319,14 @@ type PlanInput struct {
 	Output  string
 	Digest  string
 	Content []byte
+	// Handle é o token do handle que o NÓ selou para este payload (AOS-550), e é o que o tail da
+	// 1.8.0 mostra ao modelo em vez do conteúdo ([PlanInputHandleLabel]). Vazio é o normal até à
+	// 1.7.0, onde o payload entra no tail; na 1.8.0 é [ErrPlanInputWithoutHandle].
+	//
+	// O Content FICA, e não é redundância: é dele que sai o `prompt_hash` de um run até à 1.7.0,
+	// é dele que o nó deriva o digest com que sela, e é por ele que o replay reconstrói o tail de
+	// um run antigo. Na 1.8.0 não chega ao contexto do modelo.
+	Handle string
 }
 
 // CodeToolOutsideRunAllowlist é o Code de Deny quando a tool call não está na lista-branca

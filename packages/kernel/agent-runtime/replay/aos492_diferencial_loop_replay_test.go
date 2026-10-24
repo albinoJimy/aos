@@ -110,7 +110,7 @@ func aos492Casos() []aos492Caso {
 }
 
 func TestAOS492_Diferencial_OReplayTerminaOndeOLoopTerminou(t *testing.T) {
-	versoes := []string{agentruntime.AssemblyVersion130, agentruntime.AssemblyVersion140, agentruntime.AssemblyVersion150, agentruntime.AssemblyVersion160, agentruntime.AssemblyVersion170}
+	versoes := []string{agentruntime.AssemblyVersion130, agentruntime.AssemblyVersion140, agentruntime.AssemblyVersion150, agentruntime.AssemblyVersion160, agentruntime.AssemblyVersion170, agentruntime.AssemblyVersion180}
 	if got := agentruntime.SupportedAssemblyVersions(); len(got) != len(versoes) {
 		t.Fatalf("o assembler monta %v e este teste so cobre %v: um layout novo tem de entrar na tabela", got, versoes)
 	}
@@ -133,6 +133,7 @@ func TestAOS492_Diferencial_OReplayTerminaOndeOLoopTerminou(t *testing.T) {
 				// ganha esse turno à cabeça; o resto do caso é o mesmo, um turno mais tarde.
 				if agentruntime.DefersPlanInputs(versao) {
 					goal.Inputs = []agentruntime.PlanInput{{From: "n0", Output: "document_content", Digest: "sha256:00", Content: []byte("dados do passo anterior")}}
+					goal = aos551ComHandles(goal, versao)
 					primeiro := agentruntime.ModelResponse{Text: "peco antes de ler", Final: true, Usage: agentruntime.Usage{InputTokens: 10, OutputTokens: 5}}
 					c.guiao = append([]agentruntime.ModelResponse{primeiro}, c.guiao...)
 					c.turnos++

@@ -61,6 +61,28 @@ const (
 	// layout dos runs novos: só o usa o nó que liga a media no turno, e aí TODOS os runs novos
 	// ficam nela (o manifesto e a série de métricas dizem 1.7.0).
 	AssemblyVersion170 = "1.7.0"
+	// AssemblyVersion180 — a 1.7.0, byte a byte, mais o CONTEÚDO POR HANDLE (AOS-551, ADR-043
+	// §2.6, fase R2): um `plan_input` entra no tail com o corpo FIXO
+	// ([corpoDeEntradaPorHandle180]) e o token do handle no rótulo [PlanInputHandleLabel]. O
+	// payload não entra no contexto do modelo — fica no espaço de handles do nó, e o modelo só o
+	// alcança passando o token num argumento de tool, onde o `CallRewriter` o substitui pelos
+	// bytes antes de o Reference Monitor mediar a call (AOS-550).
+	//
+	// A mecânica é a que já existe duas vezes: o `args_digest` da 1.4.0 e a `media_view` da
+	// 1.7.0 — rótulo com o digest, corpo que não é o conteúdo. Deriva da 1.7.0 porque os layouts
+	// são CUMULATIVOS: herda o adiamento dos `plan_input` da 1.6.0 (pelo que não há ganho em
+	// turnos) e os segmentos de media da 1.7.0 (pelo que a media continua a ser PROJECTADA para o
+	// modelo, e é por isso que a autoridade de uma call tem de a contar).
+	//
+	// Um run SEM `plan_input` materializa nela os mesmos bytes que na 1.7.0. Não é o layout dos
+	// runs novos, e NÃO HÁ FORMA DE A ACCIONAR em produção: a autoridade por argumento que a
+	// torna segura é trabalho do mesmo ticket, e a política de fluxo de dados que a torna útil é
+	// o AOS-556. A separação sozinha nega a mais; é segura, e não compra nada.
+	//
+	// FAIL-CLOSED: nela, um `plan_input` sem [PlanInput.Handle] é [ErrPlanInputWithoutHandle] no
+	// arranque do tail — nunca se cai no corpo inline, porque isso seria a 1.7.0 a correr com o
+	// número da 1.8.0 e um `prompt_hash` que ninguém sabe explicar.
+	AssemblyVersion180 = "1.8.0"
 )
 
 // layout é o que UMA versão do assembler monta. Só se obtém por [layoutFor] (ou
@@ -87,6 +109,9 @@ type layout struct {
 	// mediaPorDigest: um resultado de tool que é uma referência a media acrescenta, depois de
 	// todos os resultados do turno, um segmento [TailMedia] (1.7.0).
 	mediaPorDigest bool
+	// entradasPorHandle: um `plan_input` entra no tail com o corpo fixo e o token do handle no
+	// rótulo, e não com o payload (1.8.0).
+	entradasPorHandle bool
 }
 
 func layout130() layout { return layout{version: AssemblyVersion130} }
@@ -130,6 +155,17 @@ func layout170() layout {
 	return l
 }
 
+// layout180 é o [layout170] com as entradas do plano por handle. Constrói-se a partir dele pela
+// razão de sempre, e fica POR CIMA da 1.7.0 e não ao lado: a media continua projectada para o
+// modelo, pelo que a separação das entradas não torna o contexto trusted — ver o comentário de
+// [AssemblyVersion180].
+func layout180() layout {
+	l := layout170()
+	l.version = AssemblyVersion180
+	l.entradasPorHandle = true
+	return l
+}
+
 // layoutCorrente é o layout de [AssemblyVersion] — o dos runs novos.
 // [TestLayout_OCorrenteEODaConstante] amarra os dois.
 func layoutCorrente() layout { return layout140() }
@@ -150,8 +186,10 @@ func layoutFor(version string) (layout, error) {
 		return layout160(), nil
 	case AssemblyVersion170:
 		return layout170(), nil
+	case AssemblyVersion180:
+		return layout180(), nil
 	default:
-		return layout{}, fmt.Errorf("%w: %q (suportadas: %s, %s, %s, %s, %s)", ErrUnknownAssemblyVersion, version, AssemblyVersion130, AssemblyVersion140, AssemblyVersion150, AssemblyVersion160, AssemblyVersion170)
+		return layout{}, fmt.Errorf("%w: %q (suportadas: %s, %s, %s, %s, %s, %s)", ErrUnknownAssemblyVersion, version, AssemblyVersion130, AssemblyVersion140, AssemblyVersion150, AssemblyVersion160, AssemblyVersion170, AssemblyVersion180)
 	}
 }
 
@@ -159,7 +197,7 @@ func layoutFor(version string) (layout, error) {
 // antiga para a mais recente. É o vocabulário FECHADO de quem rotula por layout (a métrica de
 // runs hospedados do nó).
 func SupportedAssemblyVersions() []string {
-	return []string{AssemblyVersion130, AssemblyVersion140, AssemblyVersion150, AssemblyVersion160, AssemblyVersion170}
+	return []string{AssemblyVersion130, AssemblyVersion140, AssemblyVersion150, AssemblyVersion160, AssemblyVersion170, AssemblyVersion180}
 }
 
 // DefersPlanInputs diz se o layout da versão dada adia os `plan_input` de um run para depois do
@@ -168,6 +206,14 @@ func SupportedAssemblyVersions() []string {
 func DefersPlanInputs(assemblyVersion string) bool {
 	l, err := layoutFor(assemblyVersion)
 	return err == nil && l.entradasDepoisDoPrimeiroTurno
+}
+
+// HasPlanInputsByHandle diz se o layout da versão dada põe os `plan_input` no tail por HANDLE,
+// com o corpo fixo (a 1.8.0). É a pergunta de quem compõe o nó: só nela é que o nó tem de selar
+// cada entrada no espaço de handles antes de abrir o run. Uma versão desconhecida responde false.
+func HasPlanInputsByHandle(assemblyVersion string) bool {
+	l, err := layoutFor(assemblyVersion)
+	return err == nil && l.entradasPorHandle
 }
 
 // ValidateAssemblyVersion diz se este assembler sabe montar a versão dada. É o que o motor de
@@ -634,7 +680,7 @@ func seedDoRun(goal Goal, lay layout) ([]TailSegment, error) {
 	}
 	if !adia {
 		for _, in := range goal.Inputs {
-			segs = append(segs, tailFromPlanInput(in))
+			segs = append(segs, lay.segmentoDeEntrada(in))
 		}
 	}
 	if goal.Objective != "" {
@@ -658,6 +704,9 @@ func seedDoRun(goal Goal, lay layout) ([]TailSegment, error) {
 // Goal e do MESMO layout. É a construção única que o loop usa; [OpenRunTail] expõe-na ao motor
 // de replay, para que a ordem dos `plan_input` adiados não tenha duas definições.
 func abrirTailDoRun(goal Goal, lay layout) ([]TailSegment, *TailSequence, error) {
+	if err := lay.conferirEntradas(goal.Inputs); err != nil {
+		return nil, nil, err
+	}
 	semente, err := seedDoRun(goal, lay)
 	if err != nil {
 		return nil, nil, err
@@ -677,7 +726,7 @@ func abrirTailDoRun(goal Goal, lay layout) ([]TailSegment, *TailSequence, error)
 func digestDasEntradas(inputs []PlanInput, lay layout) string {
 	h := sha256.New()
 	for _, in := range inputs {
-		campoDeHash(h, appendSegmento(nil, tailFromPlanInput(in), lay))
+		campoDeHash(h, appendSegmento(nil, lay.segmentoDeEntrada(in), lay))
 	}
 	return hashPrefix + hex.EncodeToString(h.Sum(nil))
 }
@@ -925,7 +974,7 @@ func (s *TailSequence) TurnWithState(stepID, text, stateDigest string, results [
 	s.entregouNoUltimoTurno = false
 	if len(s.adiadas) > 0 {
 		for _, in := range s.adiadas {
-			segs = append(segs, tailFromPlanInput(in))
+			segs = append(segs, s.lay.segmentoDeEntrada(in))
 		}
 		segs = append(segs, tailFromInputNotice(rotuloDoAvisoDeEntradasEntregues, avisoDeEntradasEntregues160))
 		s.adiadas = nil

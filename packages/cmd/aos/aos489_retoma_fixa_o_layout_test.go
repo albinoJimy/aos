@@ -428,12 +428,19 @@ func TestAOS489_MetricasDoLayoutEDasRepeticoes(t *testing.T) {
 			t.Fatalf("faltou %q:\n%s\n%s", quero, amostrasDe(corpo, "aos_runs_hosted_total"), amostrasDe(corpo, "aos_tool_calls"))
 		}
 	}
-	// Uma amostra por layout suportado — menos a 1.5.0 (AOS-514), que so tem serie num no com a
-	// captura do estado opaco ligada, a 1.6.0 (AOS-540), que so a tem num no que pede antes de
-	// ler, e a 1.7.0 (AOS-546), que so a tem num no com a media no turno; este no nao tem nenhum
-	// dos tres interruptores.
-	if n := strings.Count(corpo, "aos_runs_hosted_total{"); n != len(agentruntime.SupportedAssemblyVersions())-3 || strings.Contains(corpo, agentruntime.AssemblyVersion150) || strings.Contains(corpo, agentruntime.AssemblyVersion160) || strings.Contains(corpo, `"`+agentruntime.AssemblyVersion170+`"`) {
-		t.Fatalf("a familia tem %d amostras; queria uma por layout suportado, sem a 1.5.0, a 1.6.0 e a 1.7.0", n)
+	// Uma amostra por layout suportado — menos os QUATRO com serie condicionada: a 1.5.0
+	// (AOS-514), que so tem serie num no com a captura do estado opaco ligada, a 1.6.0 (AOS-540),
+	// que so a tem num no que pede antes de ler, a 1.7.0 (AOS-546), que so a tem num no com a
+	// media no turno, e a 1.8.0 (AOS-551), que nao tem interruptor nenhum que a possa ligar e por
+	// isso nunca sai a zero. Este no nao tem nenhum dos interruptores.
+	condicionadas := []string{agentruntime.AssemblyVersion150, agentruntime.AssemblyVersion160, agentruntime.AssemblyVersion170, agentruntime.AssemblyVersion180}
+	if n := strings.Count(corpo, "aos_runs_hosted_total{"); n != len(agentruntime.SupportedAssemblyVersions())-len(condicionadas) {
+		t.Fatalf("a familia tem %d amostras; queria uma por layout suportado menos as %d condicionadas", n, len(condicionadas))
+	}
+	for _, v := range condicionadas {
+		if strings.Contains(corpo, `"`+v+`"`) {
+			t.Fatalf("a serie do layout %s saiu num no sem o interruptor dela", v)
+		}
 	}
 	// Um run em 1.5.0 re-hospedado num no sem a captura conta, e a serie aparece com ele.
 	if !h.svc.layouts.contar(agentruntime.AssemblyVersion150) || h.svc.layouts.lido(agentruntime.AssemblyVersion150) != 1 {
