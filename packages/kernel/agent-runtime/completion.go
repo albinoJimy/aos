@@ -306,6 +306,10 @@ type RunEvidence struct {
 	// origem é a tool declarada como origem da saída que a evidência segue
 	// ([RunEvidence.FollowOutputFrom]). Vazia num run sem declaração.
 	origem string
+	// resultadosPorHandle diz que o layout do run põe o corpo dos `tool_result` por handle (a
+	// 1.8.0, AOS-551): aí nenhum resultado designa a origem da saída — ver
+	// [RunEvidence.ResultsByHandle] e [observarPrimeiroDespacho].
+	resultadosPorHandle bool
 }
 
 // NewRunEvidence devolve os contadores de um run que ainda não despachou nada.
@@ -320,6 +324,18 @@ func NewRunEvidence() *RunEvidence {
 // diferente da seguida faz [ConcludeRun] falhar com [ErrOutputSourceNotFollowed].
 func (e *RunEvidence) FollowOutputFrom(tool string) {
 	e.origem = tool
+}
+
+// ResultsByHandle diz à evidência que o layout deste run põe o corpo dos `tool_result` por HANDLE
+// (a 1.8.0, AOS-551). Chama-se ANTES de [RunEvidence.Observe], no molde de
+// [RunEvidence.FollowOutputFrom], e tem UMA consequência: nenhum resultado designa a origem da
+// saída, porque os bytes que a regra digeriria são a referência do handle e não o conteúdo.
+//
+// É um setter e não um parâmetro de [RunEvidence.Observe] de propósito: a designação é um concern
+// do run inteiro e não de um turno, e mudar a assinatura do Observe tocaria em todos os chamadores
+// para transportar um valor que não varia entre turnos.
+func (e *RunEvidence) ResultsByHandle(porHandle bool) {
+	e.resultadosPorHandle = porHandle
 }
 
 // Observe soma as tool calls de um turno, na ordem de despacho. Uma chamada é EFECTIVA quando
@@ -341,7 +357,7 @@ func (e *RunEvidence) Observe(stepID string, authority taint.Label, results []Ca
 		return
 	}
 	if e.primeiro == nil {
-		e.primeiro = observarPrimeiroDespacho(stepID, authority, e.origem, results)
+		e.primeiro = observarPrimeiroDespacho(stepID, authority, e.origem, results, e.resultadosPorHandle)
 	}
 	negadas, falhadas := 0, 0
 	defer func() {

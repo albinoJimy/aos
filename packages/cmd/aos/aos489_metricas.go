@@ -62,7 +62,8 @@ type runsPorLayout struct {
 // desligou — o recuo — NÃO fica invisível: a série aparece assim que conta um (ver
 // [runsPorLayout.publicadas]). A da 1.6.0 («pedir antes de ler», ADR-034 §4) segue a mesma regra
 // com o seu interruptor: a zero só com `AOS_PLAN_INPUT_DEPOIS_DO_PRIMEIRO_TURNO=on`. E a da 1.7.0
-// (AOS-546) com o seu: a zero só com `AOS_MEDIA_NO_TURNO=on`.
+// (AOS-546) com o seu: a zero só com `AOS_MEDIA_NO_TURNO=on`. A da 1.8.0 (AOS-551) NÃO tem
+// interruptor que a possa ligar, e por isso nunca sai a zero — ver o `case` dela.
 func novoRunsPorLayout(capturaDoEstado, pedirAntesDeLer, media bool) *runsPorLayout {
 	r := &runsPorLayout{todas: agentruntime.SupportedAssemblyVersions(), sempre: map[string]bool{}, total: map[string]*atomic.Int64{}}
 	for _, v := range r.todas {
@@ -74,6 +75,14 @@ func novoRunsPorLayout(capturaDoEstado, pedirAntesDeLer, media bool) *runsPorLay
 			r.sempre[v] = pedirAntesDeLer
 		case agentruntime.AssemblyVersion170:
 			r.sempre[v] = media
+		case agentruntime.AssemblyVersion180:
+			// A 1.8.0 (AOS-551) não tem interruptor: a autoridade por argumento que a torna segura
+			// e a política de fluxo de dados que a torna útil (AOS-556) ainda não existem, pelo que
+			// nenhum run NOVO pode ficar nela. Logo a série nunca sai a zero — sairia a dizer que o
+			// nó a oferece. Aparece se e quando contar um run, que hoje só pode vir de uma
+			// re-hospedagem, pela regra de [runsPorLayout.publicadas]. Quando o interruptor nascer,
+			// esta linha passa a seguir o dele, como as três de cima.
+			r.sempre[v] = false
 		default:
 			r.sempre[v] = true
 		}

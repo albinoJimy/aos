@@ -204,7 +204,7 @@ type primeiroDespacho struct {
 
 // observarPrimeiroDespacho tira os factos do primeiro turno que despachou tool calls. origem
 // vazia (run sem declaração) ⇒ nenhum resultado é lido.
-func observarPrimeiroDespacho(stepID string, authority taint.Label, origem string, results []CapturedToolResult) *primeiroDespacho {
+func observarPrimeiroDespacho(stepID string, authority taint.Label, origem string, results []CapturedToolResult, resultadosPorHandle bool) *primeiroDespacho {
 	p := &primeiroDespacho{stepID: stepID, authority: authority, origem: origem, indice: -1}
 	if origem == "" {
 		return p
@@ -219,9 +219,45 @@ func observarPrimeiroDespacho(stepID string, authority taint.Label, origem strin
 			p.efectiva = r.Denial == nil && r.ToolError == nil
 		}
 	}
+	// AOS-551 (fatia 1b) — NUM LAYOUT QUE PÕE OS RESULTADOS POR HANDLE, NENHUM RESULTADO DESIGNA.
+	//
+	// A regra de designação ancora no DIGEST DOS BYTES do resultado. Na 1.8.0 esses bytes são a
+	// REFERÊNCIA do handle, não o conteúdo: digeri-los daria uma âncora que descreve o handle e não
+	// a saída, e a atestação deixava de ligar ao conteúdo — num eixo que decide comportamento real
+	// (a entrega por referência entre nós do plano, `aos-orq/entrega_por_referencia.go:252`, e a
+	// transição terminal, `state/machine.go:574`).
+	//
+	// A recusa é por NÃO-EFECTIVIDADE, e a forma importa. A primeira versão desta fatia deixava o
+	// digest vazio com a chamada ainda efectiva, o que dá `State=designated` com `Digest=""` — a
+	// ÚNICA combinação que [OutputSource.BemFormada] recusa. A âncora deixava de ser selável, a
+	// máquina de estados recusava a transição terminal, e o run ficava SEM DESFECHO no log durável,
+	// indistinguível de um crash, sem o `failed` que dispara a compensação e com a reserva de quota
+	// presa. Isso não é falhar fechado: é pior do que o defeito que a mudança queria evitar, e
+	// quebrava o invariante declarado acima — «uma âncora que este run produza é sempre selável».
+	//
+	// Por não-efectividade o estado resolve `missing`, que é BEM FORMADO com os campos vazios: a
+	// transição sela, os consumidores do `aos-orq` recusam, e o veredicto sai
+	// `output_source_missing` — e não `empty_output`, que é o que um `designated` com zero bytes
+	// produziria (`completion.go`, o `case vincula`) e que seria um diagnóstico errado sobre uma
+	// tool que devolveu conteúdo.
+	//
+	// A CONDIÇÃO É O LAYOUT, e não a forma do valor. Condicioná-la ao valor deixava de fora o ramo
+	// em que o nó compôs a 1.8.0 SEM o envelope que sela: aí o valor não é uma referência, o tail
+	// mostra ao modelo um erro de tool e esconde-lhe o conteúdo, mas a designação digeria esse
+	// conteúdo e entregava-o a jusante como saída do run — conteúdo que o modelo nunca viu, num run
+	// cujo texto final não pode ter sido baseado nele. Fail-OPEN, e na direcção que a assimetria
+	// que eu invocava não cobria.
+	//
+	// Consequência assumida: na 1.8.0 NENHUM run designa a origem da saída, pelo que um run que a
+	// declare fecha `output_source_missing`. É a fatia 4 do AOS-551 que redefine a âncora — no
+	// digest do próprio handle, que o nó tem e este pacote não.
+	if p.pedidas == 1 && p.efectiva && resultadosPorHandle {
+		p.efectiva = false
+	}
 	if p.pedidas == 1 && p.efectiva {
-		// Os bytes do resultado tal como o despacho os devolveu nesta vida do run: os do
-		// segmento `tool_result` do tail e, na via durável, os do `result_hash` do step-ledger.
+		// Os bytes do resultado tal como o despacho os devolveu nesta vida do run: os do corpo do
+		// segmento `tool_result` do tail (nos layouts que o põem lá) e, na via durável, os do
+		// `result_hash` do step-ledger.
 		valor := results[p.indice].Result.Value
 		soma := sha256.Sum256(valor)
 		p.digest = outputDigestAlgo + hex.EncodeToString(soma[:])

@@ -660,6 +660,11 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 		if manifest.Completion != nil {
 			evidencia.FollowOutputFrom(manifest.Completion.OutputFrom)
 		}
+		// AOS-551: e o layout DESTE turno diz se os resultados vão por handle — nessa versão
+		// nenhum resultado designa a origem. É a mesma pergunta que o loop faz ao seu layout, pela
+		// mesma função; sem isto o replay designaria onde o loop não designou e dava uma
+		// divergência falsa num run da 1.8.0.
+		evidencia.ResultsByHandle(agentruntime.HasToolResultsByHandle(manifest.AssemblyVersion))
 		evidencia.Observe(stepID, authority, results)
 
 		// (4) TERMINAÇÃO — a MESMA função do loop ([agentruntime.TurnEndsRun], AOS-492), no

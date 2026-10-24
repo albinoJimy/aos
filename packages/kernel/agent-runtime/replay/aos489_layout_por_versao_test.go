@@ -302,7 +302,7 @@ func reescreverVersao(t *testing.T, eventos []eventstore.Event, turno int, versa
 // «no layout mais recente» — que daria um prompt_hash divergente sem causa à vista.
 func TestAOS489_VersaoDesconhecidaNoLogFalhaFechada(t *testing.T) {
 	r := carregarFixture130(t).Runs[0]
-	for _, versao := range []string{"1.8.0", "1.2.0", "", "9.9.9"} {
+	for _, versao := range []string{"1.9.0", "1.2.0", "", "9.9.9"} {
 		adulterado := aos489Run{RunID: r.RunID, Spec: r.Spec, Events: reescreverVersao(t, r.Events, 3, versao)}
 		res, err := motorSobre(t, adulterado).Replay(context.Background(), r.RunID, Options{Spec: r.spec()})
 		if !errors.Is(err, agentruntime.ErrUnknownAssemblyVersion) {
@@ -372,6 +372,28 @@ func aos489Goal(runID string) agentruntime.Goal {
 		},
 		Objective: "Ler o documento 'notes' e devolver o conteudo.",
 	}
+}
+
+// aos551ComHandles põe em cada `plan_input` o token do handle que o NÓ lhe selaria, quando o
+// layout põe as entradas por handle (a 1.8.0, AOS-551). Nos layouts anteriores devolve o Goal
+// inalterado — nessas versões o payload entra no tail e o campo não existe para ninguém.
+//
+// A cunhagem é a do nó: [agentruntime.HandleRefPrefix] + [agentruntime.MintHandleToken] sobre
+// (run, digest, ordinal), com o ordinal pela ORDEM do Goal a partir de 1, que é a ordem por que o
+// nó sela. O PREFIXO não é decoração: é a forma que [agentruntime.ParseHandleRef] aceita e a
+// única que o `CallRewriter` resolve — sem ele o tail ofereceria ao modelo uma string que não
+// resolve nem é recusada. Os diferenciais do replay precisam disto porque semeiam o tail pelo
+// mesmo caminho do loop.
+func aos551ComHandles(g agentruntime.Goal, versao string) agentruntime.Goal {
+	if !agentruntime.HasPlanInputsByHandle(versao) {
+		return g
+	}
+	ins := append([]agentruntime.PlanInput(nil), g.Inputs...)
+	for i := range ins {
+		ins[i].Handle = agentruntime.HandleRefPrefix + agentruntime.MintHandleToken(g.RunID, ins[i].Digest, i+1)
+	}
+	g.Inputs = ins
+	return g
 }
 
 func aos489SpecDe(g agentruntime.Goal) TrajectorySpec {

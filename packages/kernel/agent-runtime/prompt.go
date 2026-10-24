@@ -3,6 +3,8 @@ package agentruntime
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"strconv"
 )
 
@@ -527,8 +529,203 @@ func tailFromPlanInput(in PlanInput) TailSegment {
 }
 
 // TailFromPlanInput é a MESMA construção, exportada para o motor de replay reconstruir o tail
-// byte-idêntico (como [TailFromCorrection]).
+// byte-idêntico (como [TailFromCorrection]). É a forma de ATÉ À 1.7.0: quem monta um tail da
+// 1.8.0 passa pela [TailSequence] ou por [OpenRunTail], que é onde vive a escolha.
 func TailFromPlanInput(in PlanInput) TailSegment { return tailFromPlanInput(in) }
+
+// PlanInputHandleLabel é a chave do rótulo com que o tail da 1.8.0 refere o handle de um
+// `plan_input`: `plan_input_handle=aos-handle/v1:h<n>.<hex>`.
+//
+// O VALOR É A FORMA TEXTUAL do handle ([HandleRefPrefix] + token), e não o token nu. É a forma
+// que o modelo escreve de volta num argumento e a ÚNICA que [ParseHandleRef] aceita — é também a
+// que o nó já mostra em todos os outros sítios ([planoDeHandles.selarEmQuarentena] devolve
+// `h.Ref()`), pelo que a 1.8.0 não inventa uma segunda forma.
+//
+// CORRECÇÃO DE 2026-10-24, por revisão adversarial: a primeira versão punha aqui o token nu. Não
+// era resolvido — [ParseHandleRef] exige o prefixo — e TAMBÉM NÃO ERA RECUSADO: o `CallRewriter`
+// só recusa um argumento que contenha [HandleRefPrefix] mal formado, pelo que o token nu caía no
+// caminho «nenhuma referência» e seguia para o Reference Monitor como conteúdo literal. Uma call
+// autorizada e selada sobre a string do token, exactamente o estado que o banner do AOS-550 diz
+// não existir («um token que nao resolve recusa a call, nunca passa como literal»).
+//
+// O alfabeto sobrevive ao saneamento do rótulo byte a byte: ':' e '/' estão na allowlist de
+// [byteDeRotulo], pelo que o que o modelo lê é o que o resolvedor recebe.
+const PlanInputHandleLabel = "plan_input_handle"
+
+// corpoDeEntradaPorHandle180 é o corpo FIXO de um `plan_input` na 1.8.0: o payload não está
+// aqui, e esta é a única coisa que o modelo lê onde antes lia os dados.
+//
+// É uma CONSTANTE versionada com o assembler, nas restrições do preâmbulo da 1.4.0: ASCII, sem
+// dados do run nem do modelo, igual em todos os runs, nenhuma linha a abrir por '<', e sem
+// `taint=trusted` nem rótulo de recusa seguido de '='. Mudar um byte dela é mudar o layout.
+//
+// PORQUE A EXPLICAÇÃO VIVE NO CORPO, e não numa linha nova do preâmbulo: o preâmbulo é partilhado
+// por todos os layouts desde a 1.4.0 e mudá-lo mudaria o `prompt_hash` de todos eles. Um corpo
+// que só existe na 1.8.0 explica-se a si mesmo exactamente onde é lido, e nos layouts anteriores
+// não há byte nenhum a mais.
+//
+// PORQUE EM INGLÊS: como o preâmbulo, fala do vocabulário estrutural do layout, que é inglês.
+const corpoDeEntradaPorHandle180 = "The payload of this plan input is not in this context.\n" +
+	"It is held outside the model's context and is named by the handle on the\n" +
+	"delimiter line above. To act on it, write that handle, exactly as shown and\n" +
+	"including its aos-handle/v1: prefix, as a tool argument. The runtime then\n" +
+	"replaces the handle with the content before the call is authorized, so the\n" +
+	"decision is made on the content and not on the handle. The payload itself is\n" +
+	"never placed in this context and cannot be read into it.\n"
+
+// tailFromPlanInputByHandle constrói o segmento de um `plan_input` na 1.8.0: os MESMOS rótulos de
+// [tailFromPlanInput] — a marcação untrusted e de onde veio —, mais o token do handle, e o corpo
+// fixo em vez do payload.
+//
+// A REFERÊNCIA VEM DO NÓ ([PlanInput.Handle]) e não se cunha aqui, apesar de [MintHandleToken]
+// ser pura e de o kernel ter os três argumentos dela. A razão é a do AOS-552: a DERIVAÇÃO É ÚNICA.
+// Quem sela a entrada no espaço de handles é o nó, e é a sequência de selagem dele que fixa o
+// ordinal; cunhar aqui em paralelo daria, num desvio de ordinal, um tail a mostrar um handle que
+// não resolve — e o modelo a receber `E_EFFECT_REWRITE` sobre um handle que o prompt lhe ofereceu.
+//
+// MAS CONFERIR NÃO É CUNHAR, e a primeira versão usou o argumento de cima para não fazer nem uma
+// coisa nem outra: aceitava qualquer string não vazia, incluindo um token de ordinal errado — o
+// estado exacto que este comentário diz temer. A FORMA é agora conferida
+// ([layout.conferirEntradas]), porque é a verificação que não depende do run e que apanha a
+// classe de defeito inteira. O que fica ao nó é a ligação ao RUN e ao ORDINAL: o motor de replay
+// não a pode conferir, porque `goalDaSpec` não re-fornece o `RunID`, e o critério de aceitação do
+// AOS-551 põe essa obrigação na composição do nó, onde o selo e a cunhagem são o mesmo passo.
+func tailFromPlanInputByHandle(in PlanInput) TailSegment {
+	seg := tailFromPlanInput(in)
+	seg.Meta = append(seg.Meta, TailMeta{Key: PlanInputHandleLabel, Value: in.Handle})
+	seg.Content = []byte(corpoDeEntradaPorHandle180)
+	return seg
+}
+
+// ToolResultHandleLabel é a chave do rótulo com que o tail da 1.8.0 refere o handle do corpo de
+// um `tool_result`: `tool_result_handle=aos-handle/v1:h<n>.<hex>`. Como em
+// [PlanInputHandleLabel], o valor é a forma TEXTUAL — a única que [ParseHandleRef] aceita e que o
+// `CallRewriter` resolve.
+const ToolResultHandleLabel = "tool_result_handle"
+
+// corpoDeResultadoPorHandle180 é o corpo FIXO de um `tool_result` permitido na 1.8.0.
+//
+// Constante versionada com o assembler, nas restrições do preâmbulo da 1.4.0 — ver
+// [corpoDeEntradaPorHandle180], que explica porque a explicação vive no corpo e não no preâmbulo.
+const corpoDeResultadoPorHandle180 = "This tool returned content that is not in this context.\n" +
+	"The content is held outside the model's context and is named by the handle\n" +
+	"on the delimiter line above. To act on it, write that handle, exactly as\n" +
+	"shown and including its aos-handle/v1: prefix, as a tool argument. The\n" +
+	"runtime replaces the handle with the content before the call is authorized,\n" +
+	"so the decision is made on the content and not on the handle. The content\n" +
+	"itself is never placed in this context and cannot be read into it.\n"
+
+// ErrToolResultNotByHandle é o corpo de um `tool_result` PERMITIDO que, num layout que os põe por
+// handle (a 1.8.0), não é uma referência de handle bem formada.
+//
+// NÃO É um erro devolvido a ninguém: é o que o tail materializa, no sítio do `tool_error`, em vez
+// do conteúdo. Na 1.8.0 quem sela é o nó e todo o resultado permitido é uma referência, pelo que
+// isto só acontece se o nó compôs o layout sem o envelope que sela — defeito de composição. A
+// escolha de o materializar como erro de tool, e não de abortar o run, é deliberada: nega a mais
+// (nenhum byte de conteúdo entra no contexto), o modelo lê que a chamada não deu resultado
+// utilizável e pode repetir, e o `prompt_hash` continua explicável pela versão gravada. A mensagem
+// é FIXA e não leva nada do conteúdo.
+var ErrToolResultNotByHandle = errors.New("tool result not available by handle")
+
+// tailFromResultByHandle constrói o `tool_result` de uma call PERMITIDA na 1.8.0: os mesmos
+// rótulos de [tailFromIdentifiedResult], mais a referência do handle, e o corpo fixo em vez do
+// output da tool.
+//
+// O corpo do resultado É a referência — o nó substituiu-o no envelope do [ActivityDispatcher], no
+// molde da `media_view` da 1.7.0, onde a referência também viaja nos próprios bytes do resultado.
+// É o que torna o replay fiel de graça: a captura grava a referência, e o tail reconstruído a
+// partir dela é byte-idêntico sem que o motor saiba nada de handles.
+func tailFromResultByHandle(id, name string, r Tainted) TailSegment {
+	ref := string(r.Value)
+	if _, ok := ParseHandleRef(ref); !ok {
+		// Corpo não-referência: materializa-se o erro, nunca o conteúdo. O [Tainted] vai VAZIO
+		// de propósito — é o que impede o output de chegar ao corpo por [tailResultado].
+		return tailFromIdentifiedResult(id, name, Tainted{Taint: r.Taint}, ErrToolResultNotByHandle, nil)
+	}
+	identidade := identidadeDaChamada(id, name)
+	identidade = append(identidade, TailMeta{Key: ToolResultHandleLabel, Value: ref})
+	seg := tailResultado(Tainted{Taint: r.Taint}, nil, nil, identidade)
+	seg.Content = []byte(corpoDeResultadoPorHandle180)
+	return seg
+}
+
+// segmentoDeResultado é o `tool_result` NESTE layout: por handle na 1.8.0 quando a call foi
+// PERMITIDA e devolveu conteúdo, e a forma de sempre em todos os outros casos.
+//
+// NUM LAYOUT POR HANDLE, O VALOR NUNCA CHEGA AO CORPO — em nenhum ramo. Isto é estrutural e não
+// uma promessa sobre os chamadores: a primeira versão desta fatia ramificava só o caso
+// `toolErr == nil` e passava o `r` INTEIRO ao ramo de sempre, onde [tailResultado] faz
+// `append(content, r.Value...)`. Um resultado com erro de tool E output não-vazio punha o output
+// CRU no contexto do modelo, na própria versão que existe para o tirar de lá — e o comentário que
+// aqui estava afirmava o contrário («não têm conteúdo devolvido»), que é falso: o
+// [CapturedToolResult] transporta `Result` e `ToolError` independentemente.
+//
+// A negação continua sem corpo pelo seu próprio invariante (o resultado de uma call negada é
+// untrusted-VAZIO, selado por teste em [tailFromResultDenied]). Um permit com output vazio não tem
+// nada para selar e materializa os mesmos bytes que na 1.7.0.
+//
+// A `media_view` É A EXCEPÇÃO, e por desenho da fase. A 1.8.0 herda os segmentos de media da
+// 1.7.0, e `mediaDoTurno` lê os resultados CRUS: pôr uma `MediaRef` atrás de um handle faria
+// `parseMediaRef` falhar e a imagem deixava SILENCIOSAMENTE de chegar ao modelo — regressão da
+// R1a. E não é inconsistência da R2: a correcção 1 do AOS-551 diz que a media é PROJECTADA para o
+// modelo e que é por isso que a autoridade de uma call tem de a contar. O que fica inline é a
+// `MediaRef` (doc, digest, tipo, bytes) que o nó produziu, não o conteúdo da imagem.
+//
+// RESÍDUO DECLARADO: o texto de um `tool_error` é `error.Error()` — texto LIVRE de uma tool ou de
+// uma camada downstream —, pelo que uma tool pode lá pôr conteúdo e alcançar o contexto do modelo
+// por essa via. As tools do nó têm vocabulário de erro FECHADO imposto por tipo (AOS-550,
+// `cmd/aos/erro_de_tool.go`), o que fecha a superfície do nó; uma tool MCP de terceiros não está
+// coberta. Fica fora do âmbito desta fatia, e é o eixo a fechar quando a R2 admitir tools MCP.
+func (l layout) segmentoDeResultado(id, name string, r Tainted, toolErr error, den *ToolDenial) TailSegment {
+	if !l.resultadosPorHandle || name == MediaViewTool {
+		return tailFromIdentifiedResult(id, name, r, toolErr, den)
+	}
+	if den == nil && toolErr == nil && len(r.Value) > 0 {
+		return tailFromResultByHandle(id, name, r)
+	}
+	// Qualquer outro ramo num layout por handle: a forma de sempre, mas com o VALOR FORA. Um
+	// resultado cujo corpo não passou pelo selo do nó não entra no contexto do modelo, seja qual
+	// for a razão por que não passou.
+	return tailFromIdentifiedResult(id, name, Tainted{Taint: r.Taint}, toolErr, den)
+}
+
+// segmentoDeEntrada é o segmento de um `plan_input` NESTE layout: por handle na 1.8.0, com o
+// payload até à 1.7.0. É o ponto único da escolha — a semente, a entrega das adiadas e o digest
+// das adiadas passam todos por aqui, para não haver três definições da mesma forma.
+func (l layout) segmentoDeEntrada(in PlanInput) TailSegment {
+	if l.entradasPorHandle {
+		return tailFromPlanInputByHandle(in)
+	}
+	return tailFromPlanInput(in)
+}
+
+// ErrPlanInputWithoutHandle é um `plan_input` cujo [PlanInput.Handle] está ausente ou não é uma
+// referência de handle bem formada, num layout que as põe no tail por handle (a 1.8.0). Ver
+// [layout.conferirEntradas].
+var ErrPlanInputWithoutHandle = errors.New("agentruntime: plan_input sem referência de handle bem formada no layout que os põe por handle")
+
+// conferirEntradas é o gate FAIL-CLOSED da 1.8.0: nela, toda a entrada do plano tem de trazer o
+// token do handle que o nó lhe selou.
+//
+// A alternativa — cair no corpo inline quando o token falta — seria a 1.7.0 a correr com o número
+// da 1.8.0: o payload de volta ao contexto do modelo, a separação silenciosamente desfeita, e um
+// `prompt_hash` que a versão gravada não explica. Por isso recusa no ARRANQUE do tail, onde há
+// erro para devolver e nenhum turno aconteceu ainda, e não no sítio onde o segmento se materializa
+// ([TailSequence.TurnWithState] não tem por onde falhar).
+func (l layout) conferirEntradas(inputs []PlanInput) error {
+	if !l.entradasPorHandle {
+		return nil
+	}
+	for i, in := range inputs {
+		if in.Handle == "" {
+			return fmt.Errorf("%w: entrada %d (%s>%s) no layout %s: ausente", ErrPlanInputWithoutHandle, i, in.From, in.Output, l.version)
+		}
+		if _, ok := ParseHandleRef(in.Handle); !ok {
+			return fmt.Errorf("%w: entrada %d (%s>%s) no layout %s: %q não é %s seguido de um token na forma de MintHandleToken", ErrPlanInputWithoutHandle, i, in.From, in.Output, l.version, in.Handle, HandleRefPrefix)
+		}
+	}
+	return nil
+}
 
 // tailFromCorrection constrói o segmento de tail de uma correcção humana out-of-band
 // (AOS-158). Ao contrário do output do modelo e dos resultados de tool (untrusted), a
