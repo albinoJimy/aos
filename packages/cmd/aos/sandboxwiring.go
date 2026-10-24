@@ -28,6 +28,7 @@ import (
 
 	integration "github.com/aos-ref/integration"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
+	"github.com/aos-ref/kernel/reference-monitor/taint"
 	"github.com/aos-ref/substrate/sandbox"
 )
 
@@ -264,6 +265,34 @@ func declararSemExecutor(semExecutor []string, log func(string, ...any)) {
 		"que nao pode e ficar por dizer", len(semExecutor), semExecutor)
 }
 
+// reescritaDaAutoridade calcula a AUTORIDADE POR ARGUMENTO de uma call (AOS-551, fase R2 do
+// ADR-043) e escreve-a no `Context.Taint`.
+//
+// # O QUE ELA CALCULA, E O QUE O KERNEL GARANTE
+//
+// Num layout por handle o kernel constrói a Call com o PISO — o rótulo que a autoridade por
+// argumento não pode levantar ([agentruntime.SegmentFloor]) — em vez da autoridade do contexto.
+// Esta reescrita junta-lhe o taint do que a call CONSOME: um handle resolvido é untrusted, porque
+// a quarentena nunca promove.
+//
+// O resultado é `join(piso, untrusted se resolveu algum handle)`. Uma call que não consome handle
+// nenhum, num run sem memória nem media, fica TRUSTED mesmo depois de o run ter lido — e é esse o
+// limite que a fase existe para levantar. Num run com media ou memória o piso já está no chão e
+// nada se levanta, que é a decisão (c) do dono de 2026-10-23.
+//
+// NÃO É ESTA FUNÇÃO QUE GARANTE A SEGURANÇA, e vale dizê-lo onde se lê: o kernel RE-JUNTA o piso
+// depois desta cadeia correr, pelo que um erro aqui — ou uma reescrita que escreva lixo no campo —
+// só consegue SUBIR acima do piso, nunca descer. Ver [agentruntime.WithPerArgumentAuthority].
+//
+// ONDE ENTRA NA CADEIA: depois da reescrita dos handles, que é quem enche o bilhete, e antes de
+// tudo o que produz efeito. A ordem está em [reescritaDoEfeito].
+func reescritaDaAutoridade(call referencemonitor.Call, bilhete *bilheteDaCall) (referencemonitor.Call, error) {
+	if bilhete.resolveuAlgum() {
+		call.Context.Taint = taint.Untrusted.String()
+	}
+	return call, nil
+}
+
 // reescritaDoEfeito é a reescrita do efeito que o nó compõe: a dos HANDLES (AOS-550), a da sandbox,
 // a das tools de modelo e — com o armazém de artefactos ligado (AOS-548) — a da `artifact_write`,
 // que põe na entrada o run, o passo e o titular da tool call REAL. Sem ela a tool recebia os
@@ -286,6 +315,10 @@ func reescritaDoEfeito(bindings map[string]sandbox.SandboxBinding, ocrRw, videoR
 	// call, e as reescritas das tools de modelo deixam-na inalterada — cada uma só toca na sua.
 	return emCadeia(
 		reescritaDeHandles(handles),
+		// A AUTORIDADE vem LOGO a seguir aos handles, e antes de qualquer elo que produza efeito:
+		// o bilhete já está cheio e o rótulo da call fica decidido antes de alguém a usar para
+		// construir um `ExecRequest` ou para selar um artefacto.
+		reescritaDaAutoridade,
 		semBilhete(comporReescritas(newSandboxEffectRewriter(bindings), juntarReescritasDeModelo(ocrRw, videoRw))),
 		artRw,
 	)
@@ -320,6 +353,39 @@ type bilheteDaCall struct {
 	// TRANSPORTAM CONTEÚDO —, e não todos: uma referência resolvida num argumento que só nomeia o
 	// tipo de media não é uma derivação do conteúdo.
 	digestPorArgumento map[string]string
+	// resolvidos conta os handles que a reescrita resolveu nesta call, SEM filtro: é o que a
+	// autoridade por argumento lê ([bilheteDaCall.resolveuAlgum]). Separado do mapa de cima
+	// porque as duas perguntas são diferentes e os filtros de uma não servem a outra.
+	resolvidos int
+}
+
+// resolveuAlgum diz se a cadeia resolveu ALGUM handle nesta call. É a pergunta da autoridade por
+// argumento (AOS-551), e é diferente da da linhagem: aqui contam TODOS os argumentos resolvidos,
+// incluindo um que só nomeie o tipo de media. Um handle é sempre untrusted — a quarentena nunca
+// promove —, pelo que resolver um já suja a call, qualquer que seja o argumento em que entrou.
+// nil-safe.
+//
+// LÊ UM CONTADOR PRÓPRIO, e não o mapa da linhagem. A primeira versão perguntava
+// `len(digestPorArgumento) > 0`, e uma revisão adversarial mediu o que isso custava: [anotarDigest]
+// deixa cair um argumento de NOME VAZIO — um guarda legítimo da linhagem, herdado do AOS-552 —,
+// mas o nome dos argumentos é escolhido pelo MODELO e uma chave vazia é JSON válido. Um modelo que
+// emitisse `{"": "<referência>"}` fazia o handle resolver-se e os bytes entrarem na call, com o
+// bilhete vazio e a autoridade a sair TRUSTED: o Reference Monitor autorizava, auditava e selava
+// como trusted uma call cujos argumentos transportavam conteúdo em quarentena.
+//
+// A lição é a forma, não o caso: inferir uma propriedade de uma estrutura FILTRADA para outro fim
+// herda os filtros dela. O contador é incrementado onde a resolução acontece, sem filtro nenhum.
+func (b *bilheteDaCall) resolveuAlgum() bool {
+	return b != nil && b.resolvidos > 0
+}
+
+// anotarResolvido conta UM handle resolvido nesta call, qualquer que seja o argumento — incluindo
+// um de nome vazio, que a linhagem deixa cair. É o que a autoridade por argumento lê. nil-safe.
+func (b *bilheteDaCall) anotarResolvido() {
+	if b == nil {
+		return
+	}
+	b.resolvidos++
 }
 
 // digestDoArgumento devolve o digest do handle resolvido no argumento dado, ou vazio. nil-safe.

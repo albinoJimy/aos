@@ -101,7 +101,7 @@ func TestAuthorityWindow_IgualADobra(t *testing.T) {
 		tailFromHistory("h3"),
 	}
 	inner := &inlineWindow{asm: NewPromptAssembler("s", nil)}
-	w := newAuthorityWindow(inner)
+	w := newAuthorityWindow(inner, false, false)
 	if w.authority() != taint.Trusted {
 		t.Fatal("a janela tem de começar no prefixo, trusted")
 	}

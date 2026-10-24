@@ -451,7 +451,8 @@ func (b *aos489Bancada) correr(goal agentruntime.Goal, respostas []agentruntime.
 		}
 		return respostas[v.Turn-1], nil
 	})
-	todas := append([]agentruntime.Option{agentruntime.WithCapturer(b.cap)}, opts...)
+	todas := append([]agentruntime.Option{agentruntime.WithCapturer(b.cap)}, aos551ComoNoComposto()...)
+	todas = append(todas, opts...)
 	return agentruntime.New(model, b.rm, agentruntime.NewTurnRecorder(b.store), todas...).Run(context.Background(), goal)
 }
 
@@ -463,7 +464,27 @@ func (b *aos489Bancada) correrCom(goal agentruntime.Goal, aoInterrogar func()) (
 		aoInterrogar()
 		return agentruntime.ModelResponse{Text: "feito", Final: true, StopReason: agentruntime.StopStop}, nil
 	})
-	return agentruntime.New(model, b.rm, agentruntime.NewTurnRecorder(b.store), agentruntime.WithCapturer(b.cap)).Run(context.Background(), goal)
+	opts := append([]agentruntime.Option{agentruntime.WithCapturer(b.cap)}, aos551ComoNoComposto()...)
+	return agentruntime.New(model, b.rm, agentruntime.NewTurnRecorder(b.store), opts...).Run(context.Background(), goal)
+}
+
+// aos551ComoNoComposto é o que um NÓ COMPOSTO entrega ao runtime para poder hospedar um run num
+// layout por handle (AOS-551): a DECLARAÇÃO da autoridade por argumento e a REESCRITA que a
+// calcula. O `Run` exige as duas — declarar sem compor dava um run com a Call a sair com o piso e
+// ninguém para a levantar, que é o rótulo mais baixo que o portão existe para impedir.
+//
+// A reescrita aqui é a IDENTIDADE, e é o que está certo para esta bancada: nenhum destes runs
+// resolve handles, pelo que a autoridade de cada call É o piso. O kernel re-junta-o a seguir, de
+// qualquer modo.
+//
+// Inócuo nos layouts anteriores: o kernel só exige isto onde a Call sai com o piso.
+func aos551ComoNoComposto() []agentruntime.Option {
+	return []agentruntime.Option{
+		agentruntime.WithPerArgumentAuthority(),
+		agentruntime.WithCallRewriter(func(call referencemonitor.Call) (referencemonitor.Call, error) {
+			return call, nil
+		}),
+	}
 }
 
 func (b *aos489Bancada) eventos(runID string) []eventstore.Event {

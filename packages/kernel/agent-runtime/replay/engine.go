@@ -13,6 +13,7 @@ import (
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
+	"github.com/aos-ref/kernel/reference-monitor/taint"
 	"github.com/aos-ref/substrate/eventstore"
 )
 
@@ -599,6 +600,11 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 		incoming := tailHash(corrente.tail)
 		view := corrente.asm.Assemble(turn, corrente.tail)
 		authority := agentruntime.ContextAuthority(corrente.tail)
+		// AOS-551: o PISO do turno, que é o limite que a autoridade de cada call respeita num
+		// layout por handle. Fora dele é igual à autoridade e a verificação não muda.
+		entradasPorHandle := agentruntime.HasPlanInputsByHandle(manifest.AssemblyVersion)
+		resultadosPorHandle := agentruntime.HasToolResultsByHandle(manifest.AssemblyVersion)
+		piso := agentruntime.ContextFloor(corrente.tail, entradasPorHandle, resultadosPorHandle)
 
 		// (2) "CHAMAR" o modelo de replay — devolve a resposta REGISTADA.
 		resp, cerr := modelClient.Call(ctx, view)
@@ -621,7 +627,7 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 			}
 			div := e.detectDivergence(runID, turn, stepID, view.PromptHash, manifest, opts.Spec, opts.StepIdentity)
 			if div == nil && opts.VerifyAuthority {
-				div = authorityDivergence(turn, stepID, authority.String(), tr.sealedTaint[stepID])
+				div = authorityDivergence(turn, stepID, authority.String(), tr.sealedTaint[stepID], piso.String(), entradasPorHandle || resultadosPorHandle)
 			}
 			if div != nil {
 				res.Steps = append(res.Steps, rt) // rt.Matched fica false
@@ -843,8 +849,29 @@ func activeAnchors(spec TrajectorySpec, ident agentruntime.StepIdentity, verifyA
 
 // authorityDivergence compara a autoridade re-dobrada do turno com o taint selado em cada
 // mediação desse turno (ADR-034). Sem mediações seladas não há nada a comparar (nil).
-func authorityDivergence(turn int, stepID, actual string, sealed []string) *ReplayDivergence {
+//
+// NUM LAYOUT POR HANDLE A VERIFICAÇÃO É UM LIMITE, NÃO UMA IGUALDADE (AOS-551), e foi uma revisão
+// adversarial que o obrigou. Desde a fatia 2 o loop sela, por call, `join(piso, taint dos handles
+// que ELA resolveu)` — que é deliberadamente MENOR do que a autoridade do contexto (um
+// `plan_input` por handle já não suja o que a call pode fazer) e, para uma call que resolveu
+// handles, MAIOR do que o piso. Comparar por igualdade dava `Reason="authority"` em todos os
+// turnos de um run 1.8.0 perfeitamente fiel.
+//
+// Verificar por igualdade seria POSSÍVEL se a captura gravasse, por call, que handles ela
+// resolveu — e não grava. O que o motor sabe reconstruir é o PISO ([agentruntime.ContextFloor]),
+// e o piso é exactamente o invariante que a fatia 2 garante por aritmética: nenhuma call pode
+// descer abaixo dele. Um selo ABAIXO do piso é divergência genuína; um selo acima é a autoridade
+// por argumento a fazer o seu trabalho, e não há como distingui-la de um log adulterado sem a
+// captura por call — que é a caixa «autoridade por call no replay», e esta é mais uma razão para
+// ela ser maior do que o critério diz.
+func authorityDivergence(turn int, stepID, actual string, sealed []string, piso string, porHandle bool) *ReplayDivergence {
 	for _, rec := range sealed {
+		if porHandle {
+			if taint.Join(taint.ParseLabel(piso), taint.ParseLabel(rec)) != taint.ParseLabel(rec) {
+				return &ReplayDivergence{StepID: stepID, Turn: turn, ExpectedHash: rec, ActualHash: piso, Reason: "authority"}
+			}
+			continue
+		}
 		if rec != actual {
 			return &ReplayDivergence{StepID: stepID, Turn: turn, ExpectedHash: rec, ActualHash: actual, Reason: "authority"}
 		}
