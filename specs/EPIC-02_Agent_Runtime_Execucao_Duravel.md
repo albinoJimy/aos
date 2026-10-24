@@ -2488,6 +2488,98 @@ dão divergência normal no turno 3, com amostra e alerta.
 
 ---
 
+## AOS-551 — A separação de planos ligada: layout 1.8.0, autoridade que conta a media e política de fluxo de dados (fase R2 do ADR-043; fecha o DEF-806)
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-02 — Agent Runtime e Execução Durável |
+| Fase | Harness por capacidades (ADR-043), fase R2 |
+| Tipo | feat |
+| Prioridade | P1 |
+| Estimativa | L |
+| Dependências | AOS-550 (o handle e a sua resolução) e AOS-552 (a linhagem). **Cerimónia do dono: regras Cedar novas e re-assinatura do bundle.** Nasce com um ADR próprio (o ADR-038 §3 exigiu-o; o número atribui-se na emissão) |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/desenho-r2-entradas-por-handle-2026-10-23.md` (§3, §4 e §5) — **lê a §10, «o que a v1 dizia e caiu»**; `docs/adr/ADR-034-autorizacao-derivada-do-contexto.md` (§3 opção A e alternativa E, §5.4); `docs/governance/REGISTO-Deferimentos.md` (DEF-806) |
+
+### Contexto
+
+Fecha o **DEF-806**, cujo registo nomeia o defeito: «a AUTORIZAÇÃO já é derivada do contexto (opção
+C) … mas o conteúdo untrusted continua a entrar **INLINE no tail que o modelo lê**, pelo que um
+efeito cujos argumentos venham desse conteúdo não tem separação». O código declara-o no mesmo sítio
+(`loop.go:766-775`, `prompt.go:622`).
+
+**Três correcções da v2, todas de revisão adversarial confirmada por leitura do código:**
+
+1. **A autoridade conta a media.** A premissa «o modelo que decide deixa de ver conteúdo untrusted» é
+   **falsa** no layout em que a R2 vive: `projection_media.go:91-111` resolve a `MediaRef` e faz
+   `m.AttachMedia(parte)` — é a funcionalidade da R1a (`media_turno.go:16-19`). Se a `PlannerView`
+   tornasse o contexto trusted por construção, o texto do próprio modelo passaria a segmento trusted
+   e uma injecção visual lavava-se para trusted — caminho que **hoje morre**.
+2. **A política decide por fluxo de dados, não por um binário.** Com a regra binária da v1, uma call
+   que consome um handle untrusted continuava negada — logo a R2 não compraria «gerar a partir do que
+   se viu», que é o seu motivo de existir.
+3. **A 1.8.0 deriva da 1.7.0.** Os layouts são cumulativos (`layout.go:113-131`) e a 1.7.0 exige a
+   1.6.0 (`media_turno.go:70`, `:107-113`). A 1.8.0 herda o adiamento do AOS-540 — pelo que **não há
+   ganho em turnos** — e deixa o anúncio do AOS-542 e a regra P4 do `aos-orq` intactos.
+
+### Critérios de Aceitação
+
+- [ ] Layout **1.8.0, derivado da 1.7.0**: `plan_input` e `tool_result` entram no tail **como
+      handle** — rótulo com o digest e corpo fixo —, nunca como conteúdo. A mecânica é a que já existe
+      duas vezes: o `args_digest` da 1.4.0 (`layout.go:344-367`) e a `media_view` da 1.7.0
+      (`media.go:143-155`).
+- [ ] `SeparatePlanes` ganha chamador de produção, e a `PlannerView` é exactamente o que o modelo vê.
+- [ ] **A autoridade de uma call é**
+      `join(trusted, taint de cada handle resolvido nos argumentos, taint de cada segmento de media
+      projectado no run)`, calculada **no `CallRewriter`**, sobre a mesma `Call` que o RM vê. Uma call
+      sem handles e num run sem media é trusted mesmo depois de o run ter lido — é o limite que se
+      levanta. **Num run com media, nada se levanta**, e isso tem guard-test.
+- [ ] **Política de fluxo de dados em Cedar assinado:** a decisão é por (capability, destino,
+      proveniência do que entra), e não por um binário. Um handle untrusted pode fluir para o gateway
+      de modelo e **não** para o `web_post`. O SA-ROC do ADR-013 **não muda** e continua a classificar
+      pela sensibilidade.
+- [ ] O gate `policy-taint` (`scripts/ci/policy-taint.py`) conhece a forma nova das regras de fluxo
+      (hoje só aceita a anotação de isenção para as capabilities que conhece, `:358-367`).
+- [ ] **O interruptor da 1.8.0 não fica accionável** sem a autoridade por argumento: ela é um
+      colaborador que o construtor do layout **exige**, de modo que `layoutFor("1.8.0")` sem ela seja
+      **erro de arranque** — no molde de `comporMediaNoTurno` (`media_turno.go:107-113`) —, mais uma
+      linha de banner e um guard-test. A restrição vale nos **dois** sentidos: autoridade por
+      argumento com o conteúdo ainda inline é um **downgrade** da protecção actual, porque o modelo
+      copia o que leu para um argumento literal e o `join` autoriza.
+- [ ] **Autoridade por call no replay.** `ReplayedTurn.Authority` é hoje **uma** string por turno
+      (`replay/engine.go:611-621`) e `authorityDivergence` exige que todos os taints selados do turno
+      sejam iguais a ela (`:841-848`): um turno misto dispararia `Reason="authority"` falso. Passa a
+      recalcular por call, chaveado pelo `ToolStepID`, e a comparar listas.
+- [ ] **A âncora da designação de origem fica redefinida.** `designar` exige contexto trusted no
+      primeiro turno com tools «para garantir que os argumentos foram escolhidos por um modelo que só
+      tinha visto o prefixo e o objectivo» (`output_source.go:242-245`). Em 1.8.0 isso passa a ser
+      verdade em mais turnos, pelo que `OutputSourceInapplicable` fica quase inalcançável e runs que
+      hoje fecham `complete` com `inapplicable` passariam a falhar `output_source_missing` com
+      `binding` + `enforce` (`completion.go:487-498`). A âncora nova e a mudança de veredicto ficam
+      declaradas.
+- [ ] Um só rótulo para todos os leitores (ADR-034 §2.3): o classificador de risco lê o mesmo valor
+      (`risk_gate.go:373`, `:511`).
+- [ ] **Paridade nas duas vias**, provada como o AOS-069, o AOS-538, o AOS-540 e o AOS-541 a provaram.
+      O comportamento em `ModeReplay` e em dedup fica declarado: o `Dispatcher` devolve o output
+      registado sem efeito e sem mediação (`activity/contract.go:195-207`), pelo que uma call
+      deduplicada nunca resolve nada.
+- [ ] A bateria de injecção continua verde e ganha dois casos: uma injecção dentro de um handle que
+      **é** consumido por uma call privilegiada; e uma injecção visual numa imagem num run em 1.8.0.
+- [ ] Desligado por omissão.
+
+### Fora de âmbito
+
+- **R7 do ADR-034 permanece aberto:** conteúdo colado no `objective` continua a comandar no turno 1
+  (`api.go:1178-1188`, `TestAOS069_InjeccaoNoObjectivoPassaAClausulaDeTaint_R7`).
+- **Fluxo de controlo dependente de dados:** o planeador vê a ordem, a contagem e o tipo dos handles
+  e escolhe qual passa a que tool. Classe declarada pela CaMeL; fica resíduo.
+- **Injecção visual numa imagem** não é fechada por este desenho. O que a contém é a autoridade
+  contar a media.
+- A travessia da aresta do plano (AOS-553).
+- A retirada do AOS-540 e do AOS-542: não se aplica, porque a 1.8.0 herda o adiamento.
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -2507,3 +2599,5 @@ dão divergência normal no turno 3, com amostra e alerta.
 | 1.12 | 2026-10-05 | +AOS-497 (o kernel designa e sela a origem da saída de um run): em 2 de 21 planos em produção o nó de leitura chamou a tool com sucesso e entregou um resumo em vez do conteúdo; primeira peça da saída por referência | Equipa AOS |
 | 1.13 | 2026-10-05 | AOS-497 implementado e revisto: a regra de designação conta as chamadas pedidas, o run com entradas tem o estado `inapplicable`, a forma do nome valida-se no arranque, e a fonte dos bytes é o step-ledger. Por verificar em produção | Equipa AOS |
 | 1.14 | 2026-10-18 | +AOS-533 (o replay verificável de produção, `GET /runs/{id}/replay`): resíduo da sub-fase A5.1 — o replay de produção não recalculava os `prompt_hash` | Equipa AOS |
+| 1.15 | 2026-10-23 | +AOS-551 (a separação de planos ligada: layout 1.8.0 e a autoridade por argumento), fase R2 do ADR-043 — **fecha o DEF-806**. A autoridade de uma call passa a ser `join(trusted, taint de cada handle resolvido nos seus argumentos)`: a separação sozinha trocaria «negar a mais» por «permitir a mais». Nasce com um ADR próprio | Equipa AOS |
+| 1.16 | 2026-10-23 | AOS-551 reescrito para a v2 do desenho da R2: a premissa «o modelo que decide deixa de ver conteúdo untrusted» era **falsa** (a R1a projecta a imagem para ele, `projection_media.go:91-111`), logo a autoridade passa a contar também os segmentos de media e um run com media não ganha nada; a decisão passa a uma **política de fluxo de dados** em Cedar assinado, com cerimónia do dono, sem a qual a R2 não compra «gerar a partir do que se viu»; a 1.8.0 deriva da 1.7.0 e herda o adiamento, logo **não há ganho em turnos**; autoridade por call no replay e âncora nova da designação de origem | Equipa AOS |

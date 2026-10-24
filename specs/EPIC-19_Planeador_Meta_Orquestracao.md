@@ -5539,6 +5539,7 @@ são o mesmo processo.
 | 1.21 | 2026-09-25 | AOS-436, terceira ronda: a segunda revisão adversarial confirmou os oito achados fechados (o 1 parcial) e mediu novos — MAC encadeado, importado mais antigo do que o bundle recusado, chave nunca recriada, importado fundido deixa de ser exigido, «indisponível» distinto de «apagado» no step-ledger. Segunda tabela no ticket. | Equipa AOS |
 | 1.22 | 2026-10-05 | +AOS-498, +AOS-499, +AOS-500 e +AOS-501 (saída por referência ao resultado da tool): o nó devolve a origem e a saída designadas, o `aos-orq` mede sem mudar a entrega, o plano declara `outputs[].from_tool` (schema 1.3.0) e o `aos-orq` entrega por referência as saídas declaradas. Em 2 de 21 planos em produção o nó de leitura entregou um resumo em vez do conteúdo. | Equipa AOS |
 | 1.23 | 2026-10-06 | +AOS-502 e +AOS-503 (fase A1, recuperação): o nó `aos` aceita a nova tentativa de um nó do plano e prova no seu log que a anterior não pediu tools; o `aos-orq` volta a submeter, até duas vezes a mais, um nó que terminou sem chamar a tool. Em 12 de 74 planos em produção (16%) o nó terminou sem chamar a tool. | Equipa AOS |
+| 1.24 | 2026-10-23 | +AOS-553 (a travessia da aresta do plano por handle: o consumidor resolve pela declaração selada), fase R2 do ADR-043. Dispara o gatilho que o ADR-038 §3 escreveu ao rejeitar «o nó consumidor resolve a referência» — a reabertura do DEF-806 | Equipa AOS |
 
 ---
 
@@ -10864,3 +10865,44 @@ Decisão D2 do dono tomada no mesmo dia; entra em `observe` antes de `on`.
   tentativa, conta-a nas séries do AOS-503 e apaga as desta classe (I-1). A ordem do recuo de
   imagem está no runbook.
 - **Por fazer:** as duas verificações em produção (`observe`, depois `on`).
+
+## AOS-553 — A travessia da aresta do plano por handle: o consumidor resolve pela declaração selada (fase R2 do ADR-043)
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador e Meta-Orquestração |
+| Fase | Harness por capacidades (ADR-043), fase R2 |
+| Tipo | feat |
+| Prioridade | P2 |
+| Estimativa | M |
+| Dependências | AOS-551 e AOS-552 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/adr/ADR-038-a-saida-de-um-no-de-passagem-directa-e-o-resultado-da-tool.md` (§3, a alternativa rejeitada e os seus gatilhos); `docs/reports/desenho-r2-entradas-por-handle-2026-10-23.md` (§3 e §7); `docs/adr/ADR-043-harness-por-capacidades.md` (§2.3) |
+
+### Contexto
+
+O ADR-038 §3 rejeitou «o nó consumidor resolve a referência», chamou-lhe **a direcção certa a prazo**
+e escreveu os gatilhos para a reabrir — entre eles, literalmente, **a reabertura do DEF-806**. O
+AOS-551 é essa reabertura, e o perigo está pré-nomeado no mesmo parágrafo: põe o nó a decifrar
+conteúdo de um titular por conta de uma referência escrita num corpo de pedido, dentro do caminho de
+admissão (*confused deputy*).
+
+Hoje o ADR-038, mesmo com `AOS_ORQ_SAIDA_POR_REFERENCIA=on`, transporta a referência **como texto**:
+o nó seguinte recebe o JSON como `plan_input` untrusted e não consegue abrir o digest — outra pasta
+(`sha256(outro run_id)`), nenhuma tool de leitura, e a rota HTTP exige posse do stream do produtor.
+
+### Critérios de Aceitação
+
+- [ ] O handle atravessa a aresta **pela declaração selada** do ADR-038 (`outputs[].from_tool` e a
+      âncora do kernel), nunca por um digest que o modelo forneça.
+- [ ] O nó consumidor resolve do armazém do run produtor com a declaração selada por autoridade. A
+      escolha entre **reescrever na pasta do consumidor** e **abrir a do produtor** é tomada e
+      registada: a decisão «sem deduplicação entre runs» (ADR-043 §2.3) foi tomada com o artefacto a
+      ser só saída, e este é o primeiro caso em que o mesmo artefacto tem de ser legível por mais de
+      um run.
+- [ ] As defesas do *confused deputy* do ADR-038 §3: o titular vem do **evento**, nunca do pedido; o
+      par `(run, digest)` é validado contra um `artifact.created` do stream declarado; o caminho de
+      admissão não decifra por conta de uma referência de um corpo de pedido.
+- [ ] O caso **cross-titular** é decidido e nomeado: a cifra por titular bloqueia a abertura, que é a
+      propriedade que se quer — o que falta é a recusa ser explícita e não um erro de decifra.
+- [ ] Desligado por omissão, atrás do interruptor que já existe.
