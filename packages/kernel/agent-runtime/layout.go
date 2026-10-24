@@ -63,10 +63,12 @@ const (
 	AssemblyVersion170 = "1.7.0"
 	// AssemblyVersion180 — a 1.7.0, byte a byte, mais o CONTEÚDO POR HANDLE (AOS-551, ADR-043
 	// §2.6, fase R2): um `plan_input` entra no tail com o corpo FIXO
-	// ([corpoDeEntradaPorHandle180]) e o token do handle no rótulo [PlanInputHandleLabel]. O
-	// payload não entra no contexto do modelo — fica no espaço de handles do nó, e o modelo só o
-	// alcança passando o token num argumento de tool, onde o `CallRewriter` o substitui pelos
-	// bytes antes de o Reference Monitor mediar a call (AOS-550).
+	// ([corpoDeEntradaPorHandle180]) e a REFERÊNCIA do handle no rótulo [PlanInputHandleLabel] — a
+	// forma `aos-handle/v1:h<n>.<hex>`, que é a única que [ParseHandleRef] aceita. O payload não
+	// entra no contexto do modelo: fica no espaço de handles do nó, e o modelo só o alcança
+	// escrevendo essa referência num argumento de tool, onde o `CallRewriter` a substitui pelos
+	// bytes ANTES de o Reference Monitor mediar a call (AOS-550) — pelo que o RM decide sobre o
+	// conteúdo, e não sobre o handle.
 	//
 	// A mecânica é a que já existe duas vezes: o `args_digest` da 1.4.0 e a `media_view` da
 	// 1.7.0 — rótulo com o digest, corpo que não é o conteúdo. Deriva da 1.7.0 porque os layouts
@@ -79,7 +81,8 @@ const (
 	// torna segura é trabalho do mesmo ticket, e a política de fluxo de dados que a torna útil é
 	// o AOS-556. A separação sozinha nega a mais; é segura, e não compra nada.
 	//
-	// FAIL-CLOSED: nela, um `plan_input` sem [PlanInput.Handle] é [ErrPlanInputWithoutHandle] no
+	// FAIL-CLOSED: nela, um `plan_input` sem referência de handle bem formada é
+	// [ErrPlanInputWithoutHandle] no
 	// arranque do tail — nunca se cai no corpo inline, porque isso seria a 1.7.0 a correr com o
 	// número da 1.8.0 e um `prompt_hash` que ninguém sabe explicar.
 	AssemblyVersion180 = "1.8.0"
@@ -719,14 +722,25 @@ func abrirTailDoRun(goal Goal, lay layout) ([]TailSegment, *TailSequence, error)
 	return semente, seq, nil
 }
 
-// digestDasEntradas é o digest dos segmentos `plan_input` tal como o layout os materializa, pela
-// ordem, cada um com o comprimento à frente. Vai no `turn.recorded` do turno que NÃO os teve
+// digestDasEntradas é o digest dos segmentos `plan_input` com o PAYLOAD, pela ordem, cada um com
+// o comprimento à frente. Vai no `turn.recorded` do turno que NÃO os teve
 // ([TailSequence.DeferredPlanInputsDigest]): o `prompt_hash` desse turno não depende deles, e é
 // este digest que deixa quem compara duas tentativas do mesmo nó ver que as entradas mudaram.
+//
+// É A FORMA COM PAYLOAD EM TODOS OS LAYOUTS, incluindo a 1.8.0, e isso é deliberado. A primeira
+// versão do AOS-551 usou aqui a forma que o layout materializa, o que na 1.8.0 inclui o rótulo do
+// handle — e o token é ESCOPADO AO RUN por desenho ([MintHandleToken]). O digest de entradas
+// byte-idênticas passava a ser diferente em cada tentativa, e o sinal de AOS-502/506 que compara
+// uma tentativa com o run anterior (`nova_tentativa.go`, `turno.PlanInputsDigest != prova.entradas`)
+// disparava SEMPRE: deixava de distinguir «as entradas mudaram» de «é outra tentativa».
+//
+// Este digest não descreve o tail; descreve AS ENTRADAS. Por isso tem de ser independente do run,
+// e a forma com payload é a única que o é. Em troca, o número é comparável entre a 1.8.0 e os
+// layouts anteriores, que é o que quem compara tentativas precisa.
 func digestDasEntradas(inputs []PlanInput, lay layout) string {
 	h := sha256.New()
 	for _, in := range inputs {
-		campoDeHash(h, appendSegmento(nil, lay.segmentoDeEntrada(in), lay))
+		campoDeHash(h, appendSegmento(nil, tailFromPlanInput(in), lay))
 	}
 	return hashPrefix + hex.EncodeToString(h.Sum(nil))
 }
@@ -751,6 +765,14 @@ func OpenRunTail(assemblyVersion string, goal Goal) ([]TailSegment, *TailSequenc
 func SeedTail(assemblyVersion string, goal Goal) ([]TailSegment, error) {
 	lay, err := layoutFor(assemblyVersion)
 	if err != nil {
+		return nil, err
+	}
+	// O MESMO gate de [abrirTailDoRun], e não por simetria: hoje a 1.8.0 não põe entradas na
+	// semente porque HERDA o adiamento da 1.6.0, pelo que a imunidade vinha da herança e não da
+	// estrutura. Um layout futuro com as entradas por handle e sem o adiamento materializaria aqui
+	// o payload inline sob um número que afirma o contrário. A garantia tem de ser ESTRUTURAL —
+	// é a regra que [appendSegmento] já escreve para os delimitadores.
+	if err := lay.conferirEntradas(goal.Inputs); err != nil {
 		return nil, err
 	}
 	return seedDoRun(goal, lay)

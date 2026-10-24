@@ -319,9 +319,11 @@ type PlanInput struct {
 	Output  string
 	Digest  string
 	Content []byte
-	// Handle é o token do handle que o NÓ selou para este payload (AOS-550), e é o que o tail da
-	// 1.8.0 mostra ao modelo em vez do conteúdo ([PlanInputHandleLabel]). Vazio é o normal até à
-	// 1.7.0, onde o payload entra no tail; na 1.8.0 é [ErrPlanInputWithoutHandle].
+	// Handle é a REFERÊNCIA TEXTUAL do handle que o NÓ selou para este payload — a forma
+	// [HandleRefPrefix] + token, a mesma que o nó mostra em todo o resto e a única que
+	// [ParseHandleRef] aceita. É o que o tail da 1.8.0 mostra ao modelo em vez do conteúdo
+	// ([PlanInputHandleLabel]). Vazia é o normal até à 1.7.0, onde o payload entra no tail; na
+	// 1.8.0, ausente ou mal formada é [ErrPlanInputWithoutHandle].
 	//
 	// O Content FICA, e não é redundância: é dele que sai o `prompt_hash` de um run até à 1.7.0,
 	// é dele que o nó deriva o digest com que sela, e é por ele que o replay reconstrói o tail de

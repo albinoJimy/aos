@@ -534,8 +534,22 @@ func tailFromPlanInput(in PlanInput) TailSegment {
 func TailFromPlanInput(in PlanInput) TailSegment { return tailFromPlanInput(in) }
 
 // PlanInputHandleLabel é a chave do rótulo com que o tail da 1.8.0 refere o handle de um
-// `plan_input`: `plan_input_handle=<token>`. É o token que o modelo escreve de volta num
-// argumento de tool para o `CallRewriter` o resolver (AOS-550).
+// `plan_input`: `plan_input_handle=aos-handle/v1:h<n>.<hex>`.
+//
+// O VALOR É A FORMA TEXTUAL do handle ([HandleRefPrefix] + token), e não o token nu. É a forma
+// que o modelo escreve de volta num argumento e a ÚNICA que [ParseHandleRef] aceita — é também a
+// que o nó já mostra em todos os outros sítios ([planoDeHandles.selarEmQuarentena] devolve
+// `h.Ref()`), pelo que a 1.8.0 não inventa uma segunda forma.
+//
+// CORRECÇÃO DE 2026-10-24, por revisão adversarial: a primeira versão punha aqui o token nu. Não
+// era resolvido — [ParseHandleRef] exige o prefixo — e TAMBÉM NÃO ERA RECUSADO: o `CallRewriter`
+// só recusa um argumento que contenha [HandleRefPrefix] mal formado, pelo que o token nu caía no
+// caminho «nenhuma referência» e seguia para o Reference Monitor como conteúdo literal. Uma call
+// autorizada e selada sobre a string do token, exactamente o estado que o banner do AOS-550 diz
+// não existir («um token que nao resolve recusa a call, nunca passa como literal»).
+//
+// O alfabeto sobrevive ao saneamento do rótulo byte a byte: ':' e '/' estão na allowlist de
+// [byteDeRotulo], pelo que o que o modelo lê é o que o resolvedor recebe.
 const PlanInputHandleLabel = "plan_input_handle"
 
 // corpoDeEntradaPorHandle180 é o corpo FIXO de um `plan_input` na 1.8.0: o payload não está
@@ -553,21 +567,29 @@ const PlanInputHandleLabel = "plan_input_handle"
 // PORQUE EM INGLÊS: como o preâmbulo, fala do vocabulário estrutural do layout, que é inglês.
 const corpoDeEntradaPorHandle180 = "The payload of this plan input is not in this context.\n" +
 	"It is held outside the model's context and is named by the handle on the\n" +
-	"delimiter line above. To act on it, write that handle as a tool argument:\n" +
-	"the runtime replaces it with the content when it mediates the call, after\n" +
-	"the call has been authorized. The payload itself is never placed in this\n" +
-	"context and cannot be read into it.\n"
+	"delimiter line above. To act on it, write that handle, exactly as shown and\n" +
+	"including its aos-handle/v1: prefix, as a tool argument. The runtime then\n" +
+	"replaces the handle with the content before the call is authorized, so the\n" +
+	"decision is made on the content and not on the handle. The payload itself is\n" +
+	"never placed in this context and cannot be read into it.\n"
 
 // tailFromPlanInputByHandle constrói o segmento de um `plan_input` na 1.8.0: os MESMOS rótulos de
 // [tailFromPlanInput] — a marcação untrusted e de onde veio —, mais o token do handle, e o corpo
 // fixo em vez do payload.
 //
-// O token vem do NÓ ([PlanInput.Handle]) e não se cunha aqui, apesar de [MintHandleToken] ser
-// pura e de o kernel ter os três argumentos dela. A razão é a do AOS-552: a DERIVAÇÃO É ÚNICA.
+// A REFERÊNCIA VEM DO NÓ ([PlanInput.Handle]) e não se cunha aqui, apesar de [MintHandleToken]
+// ser pura e de o kernel ter os três argumentos dela. A razão é a do AOS-552: a DERIVAÇÃO É ÚNICA.
 // Quem sela a entrada no espaço de handles é o nó, e é a sequência de selagem dele que fixa o
-// ordinal; cunhar aqui em paralelo daria, num desvio de ordinal, um tail a mostrar um token que
-// não resolve — e o modelo a receber `E_EFFECT_REWRITE` sobre um handle que o prompt lhe
-// ofereceu. O kernel mostra o token de quem o selou, e mais nada.
+// ordinal; cunhar aqui em paralelo daria, num desvio de ordinal, um tail a mostrar um handle que
+// não resolve — e o modelo a receber `E_EFFECT_REWRITE` sobre um handle que o prompt lhe ofereceu.
+//
+// MAS CONFERIR NÃO É CUNHAR, e a primeira versão usou o argumento de cima para não fazer nem uma
+// coisa nem outra: aceitava qualquer string não vazia, incluindo um token de ordinal errado — o
+// estado exacto que este comentário diz temer. A FORMA é agora conferida
+// ([layout.conferirEntradas]), porque é a verificação que não depende do run e que apanha a
+// classe de defeito inteira. O que fica ao nó é a ligação ao RUN e ao ORDINAL: o motor de replay
+// não a pode conferir, porque `goalDaSpec` não re-fornece o `RunID`, e o critério de aceitação do
+// AOS-551 põe essa obrigação na composição do nó, onde o selo e a cunhagem são o mesmo passo.
 func tailFromPlanInputByHandle(in PlanInput) TailSegment {
 	seg := tailFromPlanInput(in)
 	seg.Meta = append(seg.Meta, TailMeta{Key: PlanInputHandleLabel, Value: in.Handle})
@@ -585,9 +607,10 @@ func (l layout) segmentoDeEntrada(in PlanInput) TailSegment {
 	return tailFromPlanInput(in)
 }
 
-// ErrPlanInputWithoutHandle é um `plan_input` sem [PlanInput.Handle] num layout que os põe no tail
-// por handle (a 1.8.0). Ver [layout.conferirEntradas].
-var ErrPlanInputWithoutHandle = errors.New("agentruntime: plan_input sem handle no layout que os põe por handle")
+// ErrPlanInputWithoutHandle é um `plan_input` cujo [PlanInput.Handle] está ausente ou não é uma
+// referência de handle bem formada, num layout que as põe no tail por handle (a 1.8.0). Ver
+// [layout.conferirEntradas].
+var ErrPlanInputWithoutHandle = errors.New("agentruntime: plan_input sem referência de handle bem formada no layout que os põe por handle")
 
 // conferirEntradas é o gate FAIL-CLOSED da 1.8.0: nela, toda a entrada do plano tem de trazer o
 // token do handle que o nó lhe selou.
@@ -603,7 +626,10 @@ func (l layout) conferirEntradas(inputs []PlanInput) error {
 	}
 	for i, in := range inputs {
 		if in.Handle == "" {
-			return fmt.Errorf("%w: entrada %d (%s>%s) no layout %s", ErrPlanInputWithoutHandle, i, in.From, in.Output, l.version)
+			return fmt.Errorf("%w: entrada %d (%s>%s) no layout %s: ausente", ErrPlanInputWithoutHandle, i, in.From, in.Output, l.version)
+		}
+		if _, ok := ParseHandleRef(in.Handle); !ok {
+			return fmt.Errorf("%w: entrada %d (%s>%s) no layout %s: %q não é %s seguido de um token na forma de MintHandleToken", ErrPlanInputWithoutHandle, i, in.From, in.Output, l.version, in.Handle, HandleRefPrefix)
 		}
 	}
 	return nil
