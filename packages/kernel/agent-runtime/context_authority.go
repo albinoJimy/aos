@@ -75,25 +75,154 @@ func ContextAuthority(tail []TailSegment) taint.Label {
 	return label
 }
 
+// SegmentFloor é o PISO que um segmento põe na autoridade de uma call — o rótulo que a
+// autoridade por argumento (AOS-551) NÃO pode levantar.
+//
+// POR QUE EXISTE UM SEGUNDO ACUMULADOR, e não uma emenda a [SegmentAuthority]. A autoridade do
+// contexto pergunta «o que é que este modelo VIU?», e por isso um `plan_input` ou um
+// `tool_result` caem no `default: untrusted` dela — e bem, nos layouts em que levam o payload.
+// Num layout POR HANDLE (a 1.8.0) esses segmentos têm corpo FIXO escrito pelo runtime: o modelo
+// não viu conteúdo nenhum neles, e é esse o limite que a autoridade por argumento levanta.
+// Emendar [SegmentAuthority] mudaria o rótulo de TODOS os layouts, incluindo os que estão em
+// produção; o piso é uma pergunta diferente e tem acumulador próprio.
+//
+// O QUE CONTRIBUI PARA O PISO é «conteúdo que o modelo LÊ e que o runtime não escreveu».
+//
+// A REGRA É DIRIGIDA PELO RÓTULO, não pelo kind nem pelo nome da tool, e foi uma revisão
+// adversarial que a obrigou. A primeira versão perguntava «é um `plan_input`?» e respondia
+// trusted, assumindo que num layout por handle o corpo é sempre fixo. Não é:
+//
+//   - a `media_view` é EXCEPÇÃO ao caminho dos handles (`segmentoDeResultado`): o seu
+//     `tool_result` leva a `MediaRef` INLINE e não tem rótulo `tool_error`, pelo que a regra por
+//     kind declarava trusted um corpo que o runtime não escreveu. O que tapava o buraco era uma
+//     coincidência noutro ficheiro — o segmento [TailMedia] que a 1.7.0 acrescenta a seguir —, e
+//     uma coincidência não é uma garantia;
+//   - `entradasPorHandle` e `resultadosPorHandle` são flags SEPARADAS. Hoje a 1.8.0 liga as duas,
+//     mas um layout futuro que ligue só uma fazia a regra por kind declarar trusted o segmento
+//     que ainda leva o payload.
+//
+// O rótulo do handle ([PlanInputHandleLabel], [ToolResultHandleLabel]) está presente EXACTAMENTE
+// quando o corpo é o texto fixo — é o mesmo sítio que o escreve. Perguntar pelo rótulo é
+// perguntar pela propriedade, e não por um proxy dela: os dois casos acima fecham-se juntos, sem
+// nomes de tool e sem dependência de outro ficheiro.
+//
+// AS DUAS ENTRADAS QUE A ENUMERAÇÃO ENCONTROU, e que uma suposição teria perdido:
+//
+//   - [TailMemory] — o contexto de memória entra INLINE, e a 1.8.0 não o põe atrás de um handle.
+//     Um piso só com media deixaria um run com memória levantar para trusted tendo o modelo lido
+//     conteúdo de fora.
+//   - [TailToolResult] COM `tool_error` — a mensagem de um erro de tool é `error.Error()`, texto
+//     LIVRE de uma tool. Hoje já não tem o rótulo do handle (o corpo não é fixo), pelo que a regra
+//     nova o apanha sem caso próprio.
+//
+// E [TailMedia] contribui sempre: a projecção anexa a imagem à mensagem (a funcionalidade da R1a,
+// `projection_media.go`), pelo que num run com media NADA se levanta — a decisão (c) do dono de
+// 2026-10-23 e a correcção 1 do AOS-551.
+//
+// O `steer` (`control.TailSteer`) cai no `default` e contribui UNTRUSTED. É conservador de
+// propósito: o [SegmentAuthority] também o põe lá hoje, e mudar isso é uma decisão de segurança
+// que não pertence a esta fatia. CONSEQUÊNCIA DECLARADA: num run da 1.8.0 um steer põe o piso no
+// chão para sempre, isto é, a fase não levanta nada em runs esteerados. A constante vive no
+// pacote `control`, que importa este — por isso não há cá referência a ela.
+//
+// FORA DE UM LAYOUT POR HANDLE o piso É a autoridade, byte a byte: sem as duas flags delega em
+// [SegmentAuthority]. Assim usar o piso num layout que leva os payloads inline não muda nada — a
+// utilização errada não é expressável, em vez de ser desencorajada.
+func SegmentFloor(seg TailSegment, producedUnder taint.Label, entradasPorHandle, resultadosPorHandle bool) taint.Label {
+	if !entradasPorHandle && !resultadosPorHandle {
+		return SegmentAuthority(seg.Kind, producedUnder)
+	}
+	switch seg.Kind {
+	case TailObjective, TailCorrection, TailNotice:
+		// Escritos pelo submissor, por um humano autenticado pelo canal de controlo, ou pelo
+		// runtime com corpo de vocabulário fechado.
+		return taint.Trusted
+	case TailHistory, TailToolCall:
+		// O texto e os argumentos do próprio modelo: herdam, como em [SegmentAuthority].
+		return producedUnder
+	case TailPlanInput:
+		// Trusted SÓ com o rótulo do handle, que é o que diz que o corpo é o texto fixo.
+		if entradasPorHandle && segmentoTemRotulo(seg, PlanInputHandleLabel) {
+			return taint.Trusted
+		}
+		return taint.Untrusted
+	case TailToolResult:
+		// Idem. Apanha de uma vez o erro de tool, a excepção da `media_view` e um layout que
+		// ponha só as entradas por handle: em todos eles o rótulo não está lá.
+		if resultadosPorHandle && segmentoTemRotulo(seg, ToolResultHandleLabel) {
+			return taint.Trusted
+		}
+		return taint.Untrusted
+	default:
+		// [TailMemory], [TailMedia], [TailTimestamp], o `steer`, e qualquer kind que venha a
+		// existir: FAIL-CLOSED. O `timestamp` está aqui e não no caso trusted porque o kernel
+		// NÃO o escreve — quem o emite é a memória de trabalho (`platform/memory/working`), fora
+		// do seu controlo; classificar por nome um kind que não se produz é a excepção exacta
+		// que este `default` existe para não ter.
+		return taint.Untrusted
+	}
+}
+
+// segmentoTemRotulo diz se o segmento leva o rótulo dado na linha de delimitação.
+func segmentoTemRotulo(seg TailSegment, chave string) bool {
+	for _, m := range seg.Meta {
+		if m.Key == chave {
+			return true
+		}
+	}
+	return false
+}
+
+// ContextFloor dobra [SegmentFloor] sobre o tail, a partir do prefixo trusted — o análogo de
+// [ContextAuthority] para o piso. É o que quem RECONSTRÓI um tail precisa: o motor de replay não
+// sabe que handles cada call resolveu (a captura não o grava), mas sabe o piso, e o piso é o
+// LIMITE que a autoridade de qualquer call desse turno tem de respeitar.
+//
+// Determinista e sem estado, como [ContextAuthority]. Sem segmentos devolve trusted.
+func ContextFloor(tail []TailSegment, entradasPorHandle, resultadosPorHandle bool) taint.Label {
+	label := taint.Trusted
+	for _, seg := range tail {
+		label = taint.Join(label, SegmentFloor(seg, label, entradasPorHandle, resultadosPorHandle))
+	}
+	return label
+}
+
 // authorityWindow decora a [WindowPort] do run com o acumulado de [ContextAuthority]. É o
 // ÚNICO sítio por onde o loop acrescenta ao tail, pelo que nenhum segmento pode entrar no
 // prompt sem entrar também no rótulo — esquecer-se de o actualizar não é expressável.
+//
+// Acumula DOIS rótulos pela mesma razão: o piso ([SegmentFloor]) tem de passar pelo mesmo ponto
+// único, senão um segmento podia entrar no prompt sem entrar no piso.
 type authorityWindow struct {
 	WindowPort
 	label taint.Label
+	piso  taint.Label
+	// entradasPorHandle/resultadosPorHandle são as DUAS flags do layout, separadas. Cada `case`
+	// de [SegmentFloor] consulta a sua: um layout que ligue só uma não pode declarar trusted o
+	// segmento que ainda leva o payload.
+	entradasPorHandle   bool
+	resultadosPorHandle bool
 }
 
-// newAuthorityWindow começa no prefixo: trusted.
-func newAuthorityWindow(w WindowPort) *authorityWindow {
-	return &authorityWindow{WindowPort: w, label: taint.Trusted}
+// newAuthorityWindow começa no prefixo: trusted, nos dois acumuladores.
+func newAuthorityWindow(w WindowPort, entradasPorHandle, resultadosPorHandle bool) *authorityWindow {
+	return &authorityWindow{
+		WindowPort: w, label: taint.Trusted, piso: taint.Trusted,
+		entradasPorHandle: entradasPorHandle, resultadosPorHandle: resultadosPorHandle,
+	}
 }
 
-// Append junta o rótulo do segmento ao do contexto e só depois o entrega à janela.
+// Append junta o rótulo do segmento ao do contexto E ao piso, e só depois o entrega à janela.
 func (w *authorityWindow) Append(seg TailSegment) {
 	w.label = taint.Join(w.label, SegmentAuthority(seg.Kind, w.label))
+	w.piso = taint.Join(w.piso, SegmentFloor(seg, w.piso, w.entradasPorHandle, w.resultadosPorHandle))
 	w.WindowPort.Append(seg)
 }
 
 // authority é o rótulo do contexto NESTE momento. O loop lê-o logo a seguir ao Assemble do
 // turno: é esse o contexto que o modelo viu, e é esse o rótulo das tool calls que pedir.
 func (w *authorityWindow) authority() taint.Label { return w.label }
+
+// floor é o PISO da autoridade NESTE momento — o rótulo que a autoridade por argumento não pode
+// levantar ([SegmentFloor]). Fora de um layout por handle é igual a [authorityWindow.authority].
+func (w *authorityWindow) floor() taint.Label { return w.piso }

@@ -279,6 +279,18 @@ type SecuredConfig struct {
 	// [referencemonitor.Decision] Deny (nenhum efeito, visível no tail), como uma tool
 	// call malformada. nil ⇒ sem reescrita (comportamento byte-idêntico).
 	EffectRewriter func(referencemonitor.Call) (referencemonitor.Call, error)
+	// PerArgumentAuthority declara que o [SecuredConfig.EffectRewriter] composto calcula a
+	// AUTORIDADE POR ARGUMENTO (AOS-551): escreve em `Call.Context.Taint` o `join` do piso com o
+	// taint de cada handle que resolveu nos argumentos da call.
+	//
+	// É OBRIGATÓRIA para correr um run num layout que põe o conteúdo por handle (a 1.8.0): sem
+	// ela o [agentruntime.Runtime] recusa arrancar esse run
+	// ([agentruntime.ErrArgumentAuthorityRequired]). Nos outros layouts não muda nada — o kernel
+	// só a exige onde a Call sai com o piso em vez da autoridade do contexto.
+	//
+	// Declará-la NÃO é a garantia: o kernel re-junta o piso depois da reescrita, pelo que uma
+	// reescrita errada só consegue SUBIR. Ver [agentruntime.WithPerArgumentAuthority].
+	PerArgumentAuthority bool
 
 	// Tracer é a VIA EXPLÍCITA de observabilidade dos colaboradores que este
 	// composition root constrói INTERNAMENTE — hoje, o dispatcher durável de AOS-021
@@ -661,6 +673,11 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 	// só corre sob permit não-forjável) e no dispatcher (Mediate é a única via de efeito).
 	if cfg.EffectRewriter != nil {
 		runtimeOpts = append(runtimeOpts, agentruntime.WithCallRewriter(cfg.EffectRewriter))
+	}
+	// AOS-551: a declaração de que a reescrita composta calcula a autoridade por argumento. Sem
+	// ela, um run num layout por handle não arranca — ver [SecuredConfig.PerArgumentAuthority].
+	if cfg.PerArgumentAuthority {
+		runtimeOpts = append(runtimeOpts, agentruntime.WithPerArgumentAuthority())
 	}
 
 	rt := agentruntime.New(cfg.Model, rm, cfg.Recorder, runtimeOpts...)

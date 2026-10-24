@@ -2,6 +2,7 @@ package agentruntime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
@@ -278,8 +279,11 @@ type Runtime struct {
 	windowFactory    WindowFactory          // AOS-037: dono único do tail/assembly (D-TAIL)
 	dispatcher       ActivityDispatcher     // AOS-021: despacho durável do efeito
 	callRewriter     CallRewriter           // AOS-005/064: forma final do efeito, na construção
-	assemblyVersion  string
-	defaultMaxTurns  int
+	// autoridadePorArgumento: o callRewriter composto calcula a autoridade por argumento
+	// (AOS-551). Obrigatório num layout por handle — ver [WithPerArgumentAuthority].
+	autoridadePorArgumento bool
+	assemblyVersion        string
+	defaultMaxTurns        int
 }
 
 // Option configura o Runtime na construção.
@@ -339,6 +343,38 @@ const CodeToolOutsideRunAllowlist = referencemonitor.CodeToolOutsideRunAllowlist
 
 // WithCallRewriter injecta o [CallRewriter]. Default: nenhum (Call inalterada).
 func WithCallRewriter(r CallRewriter) Option { return func(rt *Runtime) { rt.callRewriter = r } }
+
+// ErrArgumentAuthorityRequired é um run num layout que põe o conteúdo por HANDLE (a 1.8.0) sem o
+// colaborador da autoridade por argumento declarado ([WithPerArgumentAuthority]). Ver
+// [Runtime.Run].
+var ErrArgumentAuthorityRequired = errors.New("agentruntime: layout por handle exige o colaborador da autoridade por argumento")
+
+// WithPerArgumentAuthority declara que o [CallRewriter] composto calcula a AUTORIDADE POR
+// ARGUMENTO (AOS-551): escreve em `Call.Context.Taint` o `join` do piso com o taint de cada handle
+// que resolveu nos argumentos da call.
+//
+// É OBRIGATÓRIA num layout por handle, e [Runtime.Run] recusa arrancar sem ela
+// ([ErrArgumentAuthorityRequired]). A razão é a ordem: num layout por handle a Call é construída
+// com o PISO e não com a autoridade do contexto, porque é isso que torna levantável o limite que a
+// fase existe para levantar. Sem ninguém a levantar, a Call chegava ao Reference Monitor com um
+// rótulo MAIS BAIXO do que o de hoje — a separação a pagar-se com uma perda de autoridade.
+//
+// PORQUE É UM PORTÃO NO `Run` E NÃO UM BANNER NO NÓ. O critério do ticket punha a imposição na
+// composição do nó, porque `layoutFor` é uma função pura e não tem colaboradores. Mas o `Run` não
+// é puro e tem as duas coisas na mão: o layout do run e as portas injectadas. Entregar ao RM um
+// rótulo mais baixo e CONFIAR que outra camada se lembra de o levantar é uma promessa sobre os
+// chamadores — o padrão que derrubou a primeira versão das duas fatias anteriores desta série.
+// Aqui é estrutural: sem a declaração, nenhum run arranca.
+//
+// E A DECLARAÇÃO NÃO É A GARANTIA. O kernel não confia no valor que a reescrita devolve: faz
+// `join(piso, devolvido)` depois dela ([Runtime.callDeUmaInvocacao]), pelo que uma reescrita
+// errada, maliciosa ou ausente só consegue SUBIR acima do piso, nunca descer. A declaração serve
+// para o run não arrancar sem quem levante; a aritmética é que garante que ninguém baixa.
+func WithPerArgumentAuthority() Option {
+	return func(rt *Runtime) { rt.autoridadePorArgumento = true }
+}
+
+// autoridadePorArgumento: ver [WithPerArgumentAuthority].
 
 // WithAssemblyVersion fixa o LAYOUT de montagem dos runs que não tragam o seu
 // ([Goal.AssemblyVersion]); por omissão [AssemblyVersion]. Desde o AOS-489 a versão não é só o
@@ -413,7 +449,9 @@ func (rt *Runtime) openWindow(goal Goal, lay layout) (*authorityWindow, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrWindow, err)
 	}
-	return newAuthorityWindow(w), nil
+	// O piso acumula-se com a regra do layout: num layout por handle os `plan_input` e os
+	// `tool_result` têm corpo fixo e não contribuem — ver [SegmentFloor].
+	return newAuthorityWindow(w, lay.entradasPorHandle, lay.resultadosPorHandle), nil
 }
 
 // layoutDoRun resolve o layout em que o run fica FIXADO (AOS-489): o do [Goal], quando quem o
@@ -493,6 +531,23 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 	lay, err := rt.layoutDoRun(goal)
 	if err != nil {
 		return Result{}, err
+	}
+	// PORTÃO DA AUTORIDADE POR ARGUMENTO (AOS-551) — aqui, pela mesma razão que o layout: antes
+	// de qualquer efeito, evento ou span. Num layout que põe o conteúdo por handle a Call é
+	// construída com o PISO em vez da autoridade do contexto, e sem quem a levante por argumento
+	// ela chegava ao Reference Monitor com um rótulo mais baixo do que o de hoje. Ver
+	// [WithPerArgumentAuthority], que explica por que o portão vive aqui e não num banner do nó.
+	//
+	// EXIGE AS DUAS COISAS, e não só a declaração: um `Runtime` com a opção posta mas SEM
+	// [CallRewriter] admitia o run, construía a Call com o piso e não tinha ninguém para a
+	// levantar — o rótulo mais baixo que o portão existe para impedir, pela porta do lado. A
+	// opção e o rewriter são injectados por opções independentes, e no composition-root por
+	// campos independentes; a conjunção tem de ser conferida aqui.
+	if lay.entradasPorHandle || lay.resultadosPorHandle {
+		if !rt.autoridadePorArgumento || rt.callRewriter == nil {
+			return Result{}, fmt.Errorf("%w: layout %s (declarada=%t, reescrita composta=%t)",
+				ErrArgumentAuthorityRequired, lay.version, rt.autoridadePorArgumento, rt.callRewriter != nil)
+		}
 	}
 	// A SEMENTE DO TAIL resolve-se aqui, antes de qualquer efeito (AOS-506): um aviso de nova
 	// tentativa fora do vocabulário recusa o run antes de haver janela, evento ou span.
@@ -668,6 +723,9 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		// que o turno pedir — lido aqui, antes de a resposta existir, para que nada do que o
 		// modelo devolva (texto, tool calls, resultados) o possa mudar retroactivamente.
 		turnAuthority := win.authority()
+		// O PISO do turno (AOS-551): o rótulo que a autoridade por argumento não pode levantar.
+		// Fora de um layout por handle é igual ao `turnAuthority` — ver [SegmentFloor].
+		turnFloor := win.floor()
 		if err := rt.cp(ctx, goal.RunID, stepID, turn, PhaseAssembled); err != nil {
 			return res, err
 		}
@@ -847,7 +905,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			return nil
 		}
 		for j, inv := range resp.ToolCalls {
-			out, err := rt.mediateToolCall(ctx, goal, stepID, j, inv, turnAuthority)
+			out, err := rt.mediateToolCall(ctx, goal, stepID, j, inv, turnFloor)
 			if err != nil {
 				return res, err
 			}
@@ -1175,7 +1233,12 @@ func (o toolOutcome) escalated() bool {
 	return o.Denial != nil && o.Denial.Effect == string(referencemonitor.EffectEscalate)
 }
 
-func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep string, idx int, inv ToolInvocation, authority taint.Label) (toolOutcome, error) {
+// O rótulo que a Call leva é o PISO, e não a autoridade do contexto (AOS-551): é a reescrita que
+// o levanta por argumento, e o kernel re-junta-o a seguir. Nos layouts anteriores à 1.8.0 os dois
+// são o MESMO valor ([SegmentFloor] delega em [SegmentAuthority]), pelo que esta função deixou de
+// precisar da autoridade — tê-la no parâmetro deixava dois rótulos homónimos ao alcance de quem
+// editasse a seguir, com o errado primeiro na lista.
+func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep string, idx int, inv ToolInvocation, piso taint.Label) (toolOutcome, error) {
 	// step_id distinto: evento de mediação próprio. É também o `id` do `tool_call` e do
 	// `tool_result` no prompt (AOS-489) — o mesmo [ToolStepID], para que o que o modelo vê e o
 	// que o log regista falem da mesma chamada.
@@ -1203,7 +1266,17 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 			// ([ContextAuthority]), nunca lido da [ToolInvocation], que é saída do modelo. O
 			// [referencemonitor.TaintGate] impõe: uma autorização untrusted não pode originar
 			// uma capability privilegiada.
-			Taint: authority.String(),
+			// AOS-551 — NUM LAYOUT POR HANDLE SAI O PISO, e não a autoridade do contexto. É isso
+			// que torna LEVANTÁVEL o limite que a fase existe para levantar: a autoridade desta
+			// call passa a ser `join(piso, taint de cada handle resolvido nos seus argumentos)`,
+			// e quem resolve os handles — a reescrita — é quem a levanta. Fora de um layout por
+			// handle o piso É a autoridade, pelo que esta linha materializa o mesmo rótulo de
+			// sempre ([SegmentFloor] delega em [SegmentAuthority]).
+			//
+			// O `Run` recusa arrancar um layout por handle sem o colaborador que levanta
+			// ([WithPerArgumentAuthority]), e o piso é RE-JUNTADO depois da reescrita (abaixo):
+			// a reescrita só consegue subir.
+			Taint: piso.String(),
 			// A reversibilidade DECLARADA pelo registry. Sem isto o classificador recebe vazio,
 			// trata a acção como irreversível, e toda a tool call sai `danger` — o que colapsa
 			// a taxonomia de autonomia L0–L5 em dois estados.
@@ -1255,6 +1328,25 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 		// seja a Call que o rewriter devolveu.
 		call.AllowedTools = goal.AllowedTools
 	}
+
+	// O PISO É RE-JUNTADO (AOS-551), e é isto que faz a garantia ser aritmética em vez de uma
+	// promessa. A reescrita é quem calcula a autoridade por argumento e escreve-a no
+	// `Context.Taint`; o kernel não confia no valor: junta-lhe o piso outra vez. Uma reescrita
+	// errada, maliciosa ou que simplesmente não escreva nada só consegue SUBIR acima do piso,
+	// nunca descer abaixo dele. Num run com media o piso é untrusted e NADA se levanta — a
+	// decisão (c) do dono de 2026-10-23.
+	//
+	// FORA DO `if`, e isso foi um achado de revisão adversarial. Dentro dele, dois caminhos
+	// escapavam: um `Runtime` sem [CallRewriter] (agora recusado no arranque), e uma call a uma
+	// tool FORA da lista-branca do run, para a qual a reescrita não corre de propósito. Nesse
+	// segundo caso a Call chegava ao RM com o piso e sem re-junção: o RM nega-a pelo backstop,
+	// logo não havia escalada, mas o `tool.call.denied` ficava SELADO como trusted uma call que o
+	// modelo pediu de um contexto untrusted — o rótulo que o AOS-556 vai interrogar e que a
+	// âncora do replay compara.
+	//
+	// `taint.ParseLabel` é fail-closed: um valor ausente ou desconhecido resolve untrusted, pelo
+	// que uma reescrita que escreva lixo no campo também não baixa nada.
+	call.Context.Taint = taint.Join(piso, taint.ParseLabel(call.Context.Taint)).String()
 
 	// EVIDÊNCIA DE APROVAÇÃO (AOS-021) — na RETOMA de uma acção escalada, é aqui que a
 	// prova volta a acompanhar a call. A consulta é pela PREVIEW da call já construída

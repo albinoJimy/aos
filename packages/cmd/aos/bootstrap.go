@@ -2654,12 +2654,15 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 
 	sec, err := integration.NewSecuredRuntime(integration.SecuredConfig{
 		EffectRewriter: reescritaDoEfeito(sandboxBindings, ocrRewriter, videoRewriter, armazem != nil, planoHandles), // AOS-005: args→ExecRequest; AOS-530/536: args→entrada da ocr_read/video_read; AOS-548: args→entrada da artifact_write; AOS-550: handle→bytes antes da mediação; nil ⇒ sem reescrita
-		Model:          model,
-		Recorder:       agentruntime.NewTurnRecorder(es),
-		Catalog:        catalog,
-		Revalidator:    revalidator,
-		Policy:         policy,
-		WORM:           wormForChain, // decorado com observabilidade quando ligada (AOS-173)
+		// AOS-551: a cadeia acima inclui SEMPRE a [reescritaDaAutoridade], logo o nó declara-o. É
+		// o que permite a um run correr num layout por handle; nos outros layouts não muda nada.
+		PerArgumentAuthority: true,
+		Model:                model,
+		Recorder:             agentruntime.NewTurnRecorder(es),
+		Catalog:              catalog,
+		Revalidator:          revalidator,
+		Policy:               policy,
+		WORM:                 wormForChain, // decorado com observabilidade quando ligada (AOS-173)
 		// AOS-379: o MESMO Event Store do nó (`es`) materializa o canal tool.call.* — antes
 		// INALCANÇÁVEL como Event Store (só o WORM o via). O TeeSink faz o fan-out (WORM
 		// PRIMÁRIO, Event Store a seguir — a ordem garante que o ES nunca fica com um `mediated`
@@ -2774,6 +2777,9 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		log("%s", l)
 	}
 	for _, l := range handlesBanner(planoHandles) {
+		log("%s", l)
+	}
+	for _, l := range autoridadeBanner(planoHandles) {
 		log("%s", l)
 	}
 

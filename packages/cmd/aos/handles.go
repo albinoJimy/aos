@@ -537,6 +537,10 @@ func reescritaDeHandles(p *planoDeHandles) reescritaDaCall {
 			// adversarial mediu exactamente isso, um evento a afirmar uma derivação inexistente.
 			// O bilhete morre no fim desta cadeia: não há mapa, chave, tecto nem concorrência.
 			bilhete.anotarDigest(nome, vistosDigest[token])
+			// A AUTORIDADE conta à parte, e SEM filtro (AOS-551): o guarda de [anotarDigest] sobre
+			// o nome vazio é legítimo para a linhagem e seria um buraco para a autoridade — o nome
+			// do argumento é escolhido pelo modelo, e `{"": "<referência>"}` é JSON válido.
+			bilhete.anotarResolvido()
 		}
 		raw, err := json.Marshal(args)
 		if err != nil {
@@ -626,4 +630,19 @@ func handlesBanner(p *planoDeHandles) []string {
 	}
 	return []string{fmt.Sprintf("entradas por handle (AOS-550, ADR-043 §2.6): um argumento de tool pode ser uma referencia %s<token> e o no troca-a pelos bytes NO CallRewriter, ANTES da mediacao — a Call que o RM decide, audita e sela e a que ja tem os bytes (a preview da aprovacao e o hash do span descrevem o efeito executado; o resource_value e calculado dos argumentos do MODELO, antes da reescrita, e por isso uma referencia num argumento que preencha um slot dele RECUSA a call). Procura-se SO nos escalares de topo do documento DESCODIFICADO: uma referencia aninhada, parcial, numa chave, ou numa chave repetida, RECUSA a call; ate %d referencias e %d bytes resolvidos por call. Um token que nao resolve recusa a call (E_EFFECT_REWRITE), nunca passa como literal. Handle forjado: so codigo do no CRIA um handle (emissor %s) e so o que o stream do run declara se RESOLVE — duas conferencias sobre a MESMA fonte duravel, defesa em profundidade e nao independencia; o texto que NOMEIA um token nao tem proveniencia verificavel nesta porta, e quem governa esse fluxo e a politica de dados do AOS-551. NENHUM dos dois guardas decide o taint: um handle e sempre untrusted. Tokens cunhados pelo no, escopados ao run, ligados a posicao e NAO ESCRIVEIS por quem nao conhece os bytes (hash sem chave de run+digest+ordinal, nao um segredo), com a sequencia pela ordem dos eventos (sem relogio, sem rand). Nesta fase o unico produtor de handles e a tool %s, que valida o conteudo antes de selar; sem AOS_ARTIFACT_DIR nenhum handle e cunhado",
 		agentruntime.HandleRefPrefix, handleMaxRefsPorCall, handleMaxBytesPorCall, handleNHI, artifactWriteToolName)}
+}
+
+// autoridadeBanner e a linha de arranque da AUTORIDADE POR ARGUMENTO (AOS-551). Sem plano de
+// handles nao sai linha nenhuma: sem handles nao ha nada para resolver nem para levantar.
+//
+// DECLARA A POSTURA, NAO A IMPOE. Quem a impoe e o kernel, em dois sitios: o `Run` recusa um run
+// num layout por handle sem a declaracao, e re-junta o piso depois da reescrita. Esta linha existe
+// para o operador saber o que o no faz — e, desde que o portao vive no Run, deixou de ser a unica
+// defesa.
+func autoridadeBanner(p *planoDeHandles) []string {
+	if p == nil {
+		return nil
+	}
+	return []string{fmt.Sprintf("autoridade por argumento (AOS-551, ADR-043 §2.6, fase R2): a reescrita deste no calcula o taint de cada tool call a partir do que ela CONSOME, e nao do que o modelo viu — join(piso, untrusted se a call resolveu algum handle). O PISO vem do kernel e e o que isto nao pode levantar: um `plan_input` ou um `tool_result` so NAO contribuem quando levam o ROTULO do handle, que e o que diz que o corpo e o texto fixo — logo contribuem o `tool_result` da media_view (que leva a MediaRef inline, por desenho da R1a), o de um `tool_error` (texto livre de uma tool) e os de um layout que ponha so uma das metades por handle. Contribuem sempre a MEMORIA do run (que entra inline), a MEDIA projectada para o modelo (R1a), o `timestamp` (que o kernel nao escreve) e o `steer` — logo num run com memoria ou com media NADA se levanta. Uma call que nao consome handle nenhum, num run sem memoria nem media, fica TRUSTED mesmo depois de o run ter lido: e esse o limite que a fase R2 levanta. A GARANTIA NAO E ESTA LINHA: o kernel recusa arrancar um run em %s sem esta declaracao (%s) e RE-JUNTA o piso depois desta reescrita, pelo que um erro aqui so consegue SUBIR acima do piso, nunca descer. Esta reescrita nao muda nenhum run nos layouts anteriores a %s, onde o piso E a autoridade do contexto. A politica que decide SOBRE este rotulo e o AOS-556, e sem ela uma call que consome um handle untrusted continua negada pela regra binaria de hoje",
+		agentruntime.AssemblyVersion180, "ErrArgumentAuthorityRequired", agentruntime.AssemblyVersion180)}
 }
