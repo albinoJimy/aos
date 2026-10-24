@@ -1786,7 +1786,7 @@ AOS-551, e **não pode ligar sem ele** nem ele sem ela (`docs/reports/desenho-r2
       `(run, digest)` consta de um evento do próprio stream. **Fica declarado no ticket que nenhuma
       das duas decide o taint** — a `artifact_write` não é privilegiada mesmo com contexto untrusted
       (ADR-034 `:289-304`) e emite evento legítimo, pelo que um run injectado cunha um handle válido
-      sobre conteúdo que escolheu. Quem decide é a política de fluxo do AOS-551, e um handle cunhado
+      sobre conteúdo que escolheu. Quem decide é a política de fluxo do AOS-556, e um handle cunhado
       com contexto untrusted é **untrusted**, com guard-test.
 - [ ] **Nasce o tecto do corpo de um `tool_result`**, que hoje não existe: `loop.go:1296`
       (`Result: Untrusted(dec.Output)`), `Decision.Output` sem limite (`decision.go:145-146`),
@@ -1852,7 +1852,7 @@ genérica do RM (`monitor.go:114-116`, `:280-281`) e o teste do lado da *entrada
 fase declarada fechada em produção.
 
 **A linhagem é proveniência registada, NÃO desclassificação.** O ADR-043 §2.3 («todo o artefacto é
-untrusted, seja qual for o produtor») **fica**: a política de fluxo de dados do AOS-551 decide
+untrusted, seja qual for o produtor») **fica**: a política de fluxo de dados do AOS-556 decide
 **sobre** untrusted e não precisa de promover nada. É isto que faz «o artefacto herda o taint das
 entradas» conviver com «o artefacto é sempre untrusted» no mesmo ticket.
 
