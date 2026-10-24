@@ -77,7 +77,9 @@ type ledgerSubjectWire struct {
 }
 
 // subjectOf devolve o TITULAR de um evento CLASSIFICADO do Event Store, ou "" se o evento não for
-// conteúdo cifrado por-titular. Cobre as TRÊS famílias que selam sob a KEK por-titular de AOS-093:
+// conteúdo cifrado por-titular. Desde o AOS-548 cobre também o armazém de artefactos, e desde o
+// AOS-550 o espaço de handles. As famílias originais são as que selam sob a KEK por-titular de
+// AOS-093:
 // a captura de não-determinismo ("replay.captured": resposta do modelo + resultados de tools) e o
 // step-ledger ("step.ledger.applied": o Result.Payload memorizado de cada passo, selado desde
 // AOS-245). Enumerar só a primeira deixaria um titular cujo conteúdo vive apenas no ledger
@@ -115,6 +117,17 @@ func subjectOf(e eventstore.Event) string {
 	case EventTypeArtifactCreated:
 		// AOS-548: o artefacto está cifrado sob a KEK do titular do evento; expira com ela.
 		var p artefactoCriado
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			return ""
+		}
+		return p.SealedSubject
+	case EventTypeHandleCreated:
+		// AOS-550: o conteúdo em quarentena está cifrado sob a MESMA KEK por titular (o espaço de
+		// handles usa o mesmo [contentSealer]), pelo que o crypto-shred já lhe chegava. O que
+		// faltava era o job VER o registo que faz o relógio correr: sem este ramo, um run cujo
+		// único conteúdo cifrado fosse um handle ficava invisível à expiração por TTL — o mesmo
+		// defeito que o AOS-429 fechou para a fila de pedidos de plano.
+		var p handleCriado
 		if err := json.Unmarshal(e.Payload, &p); err != nil {
 			return ""
 		}

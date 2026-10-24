@@ -129,6 +129,10 @@ type armazemDeArtefactos struct {
 	cifra  cifradorDeArtefactos
 	// registar escreve o evento de proveniência (ligado no Bootstrap; nil ⇒ a tool recusa).
 	registar func(ctx context.Context, runID string, p artefactoCriado) error
+	// handles é o plano de entradas por handle (AOS-550; ligado no Bootstrap com AOS_HANDLE_DIR).
+	// nil ⇒ desligado: nenhum handle é cunhado e o resultado da tool é o de sempre, byte a byte.
+	// Ver handles.go e handle_store.go.
+	handles *planoDeHandles
 
 	mu    sync.Mutex // serializa as gravações (tectos por run e do volume)
 	usado atomic.Int64
@@ -380,6 +384,9 @@ func (a *armazemDeArtefactos) executar(ctx context.Context, input []byte) ([]byt
 	if !tiposDeArtefacto[in.MediaType] {
 		return a.recusar(artCausaTipo)
 	}
+	// AOS-550: um `content` que seja uma referência a handle já chegou aqui RESOLVIDO. A troca
+	// acontece no `CallRewriter`, ANTES da mediação, para que a preview da aprovação, o
+	// `resource_value` auditado e o hash do span descrevam o efeito executado — ver handles.go.
 	conteudo := []byte(in.Content)
 	if len(conteudo) == 0 || len(conteudo) > artifactMaxBytes {
 		return a.recusar(artCausaGrande)
@@ -389,6 +396,26 @@ func (a *armazemDeArtefactos) executar(ctx context.Context, input []byte) ([]byt
 	}
 	if a.registar == nil {
 		return a.recusar(artCausaRegisto)
+	}
+	// AOS-550 — O HANDLE DO ARTEFACTO, selado ANTES de o artefacto ser gravado e declarado.
+	//
+	// A ORDEM É DELIBERADA: uma falha da selagem com o artefacto já gravado deixaria o efeito
+	// FEITO e a tool a reportar falha — a divergência entre o que se diz ao mundo e o que
+	// aconteceu que este repositório fecha em todos os outros caminhos. Pela outra ordem, uma
+	// falha da gravação deixa no máximo um handle selado que o modelo nunca vê (conteúdo que ele
+	// próprio escreveu, na quarentena do seu run), e nada no armazém de artefactos.
+	//
+	// O conteúdo vai para o ESPAÇO PRÓPRIO DE HANDLES (tectos, vocabulário e superfície de leitura
+	// próprios — handle_store.go), com o run nos dados associados e um `handle.created` de emissor
+	// próprio: nada deste espaço fica descarregável com `read:artifact`. O token é cunhado pelo nó
+	// e o nome do handle é `<tool>-<índice>`, nunca o nome que o modelo pediu.
+	var handle string
+	if a.handles != nil {
+		ref, hcausa := a.handles.selarEmQuarentena(ctx, in.Subject, in.RunID, in.StepID, artifactWriteToolName, in.MediaType, conteudo)
+		if hcausa != "" {
+			return a.recusar(hcausa)
+		}
+		handle = ref
 	}
 	digest, causa := a.guardar(ctx, in.Subject, in.RunID, conteudo)
 	if causa != "" {
@@ -405,13 +432,18 @@ func (a *armazemDeArtefactos) executar(ctx context.Context, input []byte) ([]byt
 		MediaType string `json:"media_type"`
 		Bytes     int    `json:"bytes"`
 		Name      string `json:"name"`
-	}{ArtifactRefSchema, digest, in.MediaType, len(conteudo), in.Name})
+		Handle    string `json:"handle,omitempty"`
+	}{ArtifactRefSchema, digest, in.MediaType, len(conteudo), in.Name, handle})
 }
 
 // recusar conta a recusa e devolve o erro da tool com a causa.
+//
+// AOS-550: o erro é construído por [erroDaTool], que recusa uma causa fora do vocabulário FECHADO
+// da tool — a mensagem de erro de uma tool vai no CORPO do segmento `tool_result`, e um texto de
+// terceiros aí repõe o canal inline que a fase R2 fecha.
 func (a *armazemDeArtefactos) recusar(causa string) ([]byte, error) {
 	a.recusados.Add(1)
-	return nil, fmt.Errorf("%s: %s", artifactWriteToolName, causa)
+	return nil, erroDaTool(artifactWriteToolName, causa)
 }
 
 // validarConteudo confere o conteúdo pelo tipo: UTF-8 sem NUL em todos; JSON bem formado; SVG pelas
@@ -566,10 +598,19 @@ func semArtefactos(semExecutor []string, ligado bool) []string {
 }
 
 // artifactBanner é a linha de arranque. Sem armazém não sai linha nenhuma.
+//
+// O TECTO POR ARTEFACTO QUE SE ANUNCIA É O EFECTIVO. Com o espaço de handles ligado (AOS-550) a
+// tool sela cada conteúdo em quarentena ANTES de o gravar, e o tecto de lá é o do corpo de um
+// `tool_result` — mais apertado. Anunciar 1 MiB nesse caso era uma regressão silenciosa: o
+// operador lia um número e a tool recusava noutro (achado B-2 da revisão de segurança).
 func artifactBanner(a *armazemDeArtefactos) []string {
 	if a == nil {
 		return nil
 	}
-	return []string{fmt.Sprintf("armazem de artefactos (AOS-548, ADR-043 §2.3): AOS_ARTIFACT_DIR=%q — a tool %s grava texto (json, markdown, csv, texto, svg sem script nem ligacoes externas; ate %d bytes, %d artefactos e %d bytes por run, %d bytes no volume) CIFRADO por titular, sela a proveniencia (%s) no stream do run e devolve uma referencia; GET /runs/{id}/artifacts serve-o como anexo (nosniff, CSP sandbox) pelas portas da leitura soberana. Ocupado no arranque: %d bytes. Resíduo: um titular apagado deixa os blobs cifrados (ilegiveis) na pasta",
-		a.pasta, artifactWriteToolName, artifactMaxBytes, artifactMaxPorRun, artifactMaxBytesPorRun, a.maximo, EventTypeArtifactCreated, a.usado.Load())}
+	tecto, nota := artifactMaxBytes, ""
+	if a.handles != nil && handleMaxBytes < tecto {
+		tecto, nota = handleMaxBytes, fmt.Sprintf(" (o tecto por artefacto e o do corpo de um tool_result, %d, e nao os %d do armazem: com AOS_HANDLE_DIR ligada cada artefacto e selado tambem no espaco de handles)", handleMaxBytes, artifactMaxBytes)
+	}
+	return []string{fmt.Sprintf("armazem de artefactos (AOS-548, ADR-043 §2.3): AOS_ARTIFACT_DIR=%q — a tool %s grava texto (json, markdown, csv, texto, svg sem script nem ligacoes externas; ate %d bytes%s, %d artefactos e %d bytes por run, %d bytes no volume) CIFRADO por titular, sela a proveniencia (%s) no stream do run e devolve uma referencia; GET /runs/{id}/artifacts serve-o como anexo (nosniff, CSP sandbox) pelas portas da leitura soberana. Ocupado no arranque: %d bytes. Resíduo: um titular apagado deixa os blobs cifrados (ilegiveis) na pasta",
+		a.pasta, artifactWriteToolName, tecto, nota, artifactMaxPorRun, artifactMaxBytesPorRun, a.maximo, EventTypeArtifactCreated, a.usado.Load())}
 }

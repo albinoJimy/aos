@@ -246,6 +246,44 @@ const MaxToolCallLabelBytes = 256
 // Mudar este valor muda os bytes materializados: exige versão nova do assembler.
 const MaxToolCallArgBytes = 4 << 10
 
+// MaxToolResultBytes é o tecto, em bytes, do CORPO de um `tool_result` que entra em
+// quarentena por handle (AOS-550, fase R2 do ADR-043).
+//
+// # PORQUE NASCE AGORA, E O QUE NÃO EXISTIA
+//
+// Até ao AOS-550 não havia tecto nenhum para o corpo de um `tool_result` em sítio nenhum: há
+// 4 KiB para os argumentos de uma tool call ([MaxToolCallArgBytes]), 256 B para um rótulo
+// ([MaxToolCallLabelBytes]) e 16 KiB para o objectivo — e o `dec.Output` de uma tool permitida
+// entrava inteiro. Três varreduras do código a 2026-10-23 confirmaram-no. Enquanto o corpo só
+// ia para o prompt, a consequência era custo. A partir do momento em que ele passa a ser
+// SELADO NUM ARMAZÉM com 1 MiB por artefacto, a ausência de tecto deixa de ser cara e passa a
+// ser uma falha: o corpo que não cabe é um handle que o run nunca consegue usar, descoberto
+// tarde e sem causa nomeada.
+//
+// # O VALOR, E PORQUE ESTE
+//
+// 256 KiB. É o terceiro degrau de uma escada coerente de potências de quatro — 4 KiB para os
+// argumentos, 16 KiB para o objectivo, 256 KiB para o corpo de um resultado, 1 MiB para um
+// artefacto do armazém (`artifactMaxBytes`) — e deixa um quarto do tecto do artefacto livre
+// para o envelope da cifra e para a expansão que um corpo sofre quando viaja como string JSON
+// dentro dos argumentos de uma tool. Cabe no tecto de 1 MiB por artefacto, que é o requisito
+// explícito do ticket, com margem de 4×.
+//
+// # ONDE É IMPOSTO, E ONDE DELIBERADAMENTE NÃO É
+//
+// Nos dois sentidos do caminho por handle: [Quarantine.Seal] recusa um corpo acima do tecto
+// antes de ele chegar ao armazém, e [Quarantine.Resolve] recusa-o à saída. A recusa é nomeada
+// ([ErrHandleBodyTooLarge]) e o nó traduz-la numa causa do vocabulário fechado da tool.
+//
+// NÃO é imposto no corpo que vai para o tail de um run que não usa handles, e isso é uma
+// decisão: o AOS-550 entrega-se DESLIGADO POR OMISSÃO, com o nó de sempre a não mudar de
+// comportamento byte a byte. Aplicar o tecto ao tail de todos os runs mudaria o prompt de
+// qualquer run cuja tool devolva mais de 256 KiB — o que é precisamente o que a condição de
+// entrega proíbe. Quando a R2 (AOS-551) puser o `tool_result` a viajar por handle no layout
+// 1.8.0, o tecto passa a reger esse corpo pelo caminho de [Quarantine.Seal], que é por onde
+// ele então entra.
+const MaxToolResultBytes = 256 << 10
+
 // ToolStepID é o identificador de UMA tool call de um turno: `<passo>-tool-<n>`, com n a
 // contar de 1 pela ordem de despacho. É cunhado pelo runtime — nunca vem do provider — e é o
 // MESMO valor em todo o lado: o `step_id` do evento de mediação e do step-ledger, o sub-passo

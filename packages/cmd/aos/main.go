@@ -1025,6 +1025,13 @@ func nodeConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 
+	// O ESPAÇO PRÓPRIO DE HANDLES, e com ele as entradas por handle (AOS-550, ADR-043 §2.6).
+	// Vazio ⇒ desligado; o Bootstrap abre-o com o MESMO cifrador por titular do armazém de
+	// artefactos, e exige o Event Store.
+	if cfg.HandleDir, cfg.HandleMaxBytes, err = handleConfigFromEnv(); err != nil {
+		return Config{}, err
+	}
+
 	// O GATE DE TAINT ESCALA EM VEZ DE NEGAR (AOS-541). Vocabulário fechado (`off`/`on`): um valor
 	// desconhecido aborta o arranque. Vazia ⇒ `off`. A exigência de aprovadores é do [Bootstrap].
 	taintEscala, err := parseTaintEscalaFromEnv()

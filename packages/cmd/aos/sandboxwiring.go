@@ -264,14 +264,50 @@ func declararSemExecutor(semExecutor []string, log func(string, ...any)) {
 		"que nao pode e ficar por dizer", len(semExecutor), semExecutor)
 }
 
-// reescritaDoEfeito é a reescrita do efeito que o nó compõe: a da sandbox, a das tools de modelo e
-// — com o armazém de artefactos ligado (AOS-548) — a da `artifact_write`, que põe na entrada o run,
-// o passo e o titular da tool call REAL. Sem ela a tool recebia os argumentos do modelo, e um modelo
-// podia escrever no stream de outro run em nome de outro titular (achado 1 da revisão do AOS-548).
-func reescritaDoEfeito(bindings map[string]sandbox.SandboxBinding, ocrRw, videoRw func(referencemonitor.Call) (referencemonitor.Call, error), artefactos bool) func(referencemonitor.Call) (referencemonitor.Call, error) {
+// reescritaDoEfeito é a reescrita do efeito que o nó compõe: a dos HANDLES (AOS-550), a da sandbox,
+// a das tools de modelo e — com o armazém de artefactos ligado (AOS-548) — a da `artifact_write`,
+// que põe na entrada o run, o passo e o titular da tool call REAL. Sem ela a tool recebia os
+// argumentos do modelo, e um modelo podia escrever no stream de outro run em nome de outro titular
+// (achado 1 da revisão do AOS-548).
+//
+// A ORDEM DA CADEIA NÃO É ARBITRÁRIA (AOS-550). A reescrita dos handles corre PRIMEIRO, sobre os
+// argumentos TAL COMO O MODELO OS EMITIU: é esse o documento em que ela procura referências (só nos
+// escalares de topo) e é o MESMO documento de que o [resolveResourceValue] tira o `resource_value`
+// auditado. As reescritas por tool vêm depois e reformam o documento num envelope de execução
+// (`ExecRequest`, `entradaDoArtefacto`) — procurar referências nesse envelope seria procurá-las
+// numa estrutura que o modelo não escreveu.
+func reescritaDoEfeito(bindings map[string]sandbox.SandboxBinding, ocrRw, videoRw func(referencemonitor.Call) (referencemonitor.Call, error), artefactos bool, handles *planoDeHandles) func(referencemonitor.Call) (referencemonitor.Call, error) {
 	var artRw func(referencemonitor.Call) (referencemonitor.Call, error)
 	if artefactos {
 		artRw = newArtifactRewriter()
 	}
-	return comporReescritas(newSandboxEffectRewriter(bindings), juntarReescritasDeModelo(ocrRw, videoRw, artRw))
+	return emCadeia(reescritaDeHandles(handles),
+		comporReescritas(newSandboxEffectRewriter(bindings), juntarReescritasDeModelo(ocrRw, videoRw, artRw)))
+}
+
+// emCadeia aplica as reescritas pela ordem dada, parando na primeira que recuse. Uma reescrita nil
+// é saltada; todas nil ⇒ nil (nenhuma reescrita, comportamento byte-idêntico).
+func emCadeia(rws ...func(referencemonitor.Call) (referencemonitor.Call, error)) func(referencemonitor.Call) (referencemonitor.Call, error) {
+	var vivas []func(referencemonitor.Call) (referencemonitor.Call, error)
+	for _, rw := range rws {
+		if rw != nil {
+			vivas = append(vivas, rw)
+		}
+	}
+	switch len(vivas) {
+	case 0:
+		return nil
+	case 1:
+		return vivas[0]
+	}
+	return func(call referencemonitor.Call) (referencemonitor.Call, error) {
+		for _, rw := range vivas {
+			out, err := rw(call)
+			if err != nil {
+				return referencemonitor.Call{}, err
+			}
+			call = out
+		}
+		return call, nil
+	}
 }

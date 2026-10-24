@@ -222,9 +222,12 @@ func (l *ligacaoMedia) executar(_ context.Context, input []byte) ([]byte, error)
 }
 
 // recusar conta a recusa e devolve o erro da tool com a causa.
+//
+// AOS-550: o erro é construído por [erroDaTool], que recusa uma causa fora do vocabulário FECHADO
+// da tool (ver erro_de_tool.go).
 func (l *ligacaoMedia) recusar(causa string) ([]byte, error) {
 	l.recusadas.Add(1)
-	return nil, fmt.Errorf("%s: %s", mediaViewToolName, causa)
+	return nil, erroDaTool(mediaViewToolName, causa)
 }
 
 // semMediaView tira a `media_view` da lista das tools oferecidas sem executor: ligada, o executor

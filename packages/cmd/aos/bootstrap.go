@@ -495,6 +495,13 @@ type Config struct {
 	// MediaNoTurno é a `media_view` composta com `AOS_MEDIA_NO_TURNO=on` (AOS-546, ADR-043 §2.2):
 	// os runs novos ficam no layout 1.7.0 e a tool é registada no RM. nil ⇒ desligada.
 	MediaNoTurno *ligacaoMedia
+	// HandleDir e HandleMaxBytes ligam o ESPAÇO PRÓPRIO DE HANDLES e, com ele, as entradas por
+	// handle (AOS-550, ADR-043 §2.6): a pasta do volume onde o conteúdo em quarentena vive,
+	// cifrado por titular e com o run nos dados associados, e o tecto em bytes desse espaço.
+	// Pasta vazia ⇒ desligado, e o nó é o de sempre byte a byte. Exige o Event Store (o guarda
+	// (b) lê o `handle.created` do stream do run). Ver handle_store.go e handles.go.
+	HandleDir      string
+	HandleMaxBytes int64
 	// TaintEscala troca a NEGAÇÃO do gate de taint por ESCALADA para aprovação humana de quatro
 	// olhos (AOS-541, `AOS_TAINT_ESCALA=on`). Exige aprovadores ([Config.Approvers]); sem eles o
 	// Bootstrap recusa com [ErrTaintEscalaSemAprovadores]. false ⇒ o gate nega, como sempre. Ver
@@ -1120,6 +1127,8 @@ type Node struct {
 
 	// artefactos: o armazém de artefactos do run (AOS-548). nil ⇒ desligado. Ver artifact_store.go.
 	artefactos *armazemDeArtefactos
+	// handles: o espaço próprio de handles (AOS-550). nil ⇒ desligado. Ver handle_store.go.
+	handles *armazemDeHandles
 
 	// primeiroTurnoConfiavel (AOS-542): pedirAntesDeLer E o gate de taint armado com o conjunto
 	// composto. É o que o `GET /tools` anuncia ao `aos-orq` ([anuncioDoAdiamentoDoNo]).
@@ -1711,6 +1720,18 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	defer func() {
 		if !armazemEntregue {
 			armazem.fechar()
+		}
+	}()
+	// O ESPAÇO PRÓPRIO DE HANDLES (AOS-550): o MESMO cifrador por titular, e uma pasta, tectos e
+	// superfície de leitura PRÓPRIOS — ver handle_store.go para a medição que separou os dois.
+	espacoDeHandles, herr := abrirArmazemDeHandles(cfg.HandleDir, cfg.ArtifactDir, cfg.HandleMaxBytes, contentCipher)
+	if herr != nil {
+		return nil, herr
+	}
+	handlesEntregues := false
+	defer func() {
+		if !handlesEntregues {
+			espacoDeHandles.fechar()
 		}
 	}()
 
@@ -2615,8 +2636,24 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	}
 	runtimeOpts = append(runtimeOpts, agentruntime.WithModelAdmission(modelAdmission.port()))
 
+	// (7-ante-sexies) O PLANO DE HANDLES (AOS-550, ADR-043 §2.6). Compõe-se AQUI porque a
+	// resolução de uma referência é uma REESCRITA DO EFEITO, e a reescrita é um campo deste
+	// composition root: corre na construção da Call, ANTES da mediação, para que a preview da
+	// aprovação humana e o hash do span descrevam o efeito executado (`loop.go:1207-1216`). O
+	// `resource_value` é calculado antes disto, dos argumentos do MODELO (`modeltools.go`), e por
+	// isso a reescrita RECUSA uma referência num argumento que preencha um slot dele — ver
+	// handles.go. Espaço desligado ⇒ nil, e a reescrita é a de sempre.
+	specsDasTools, serr := readModelToolSpecs()
+	if serr != nil {
+		return nil, serr
+	}
+	planoHandles, perr := comporPlanoDeHandles(espacoDeHandles, es, specsDasTools)
+	if perr != nil {
+		return nil, perr
+	}
+
 	sec, err := integration.NewSecuredRuntime(integration.SecuredConfig{
-		EffectRewriter: reescritaDoEfeito(sandboxBindings, ocrRewriter, videoRewriter, armazem != nil), // AOS-005: args→ExecRequest; AOS-530/536: args→entrada da ocr_read/video_read; AOS-548: args→entrada da artifact_write; nil ⇒ sem reescrita
+		EffectRewriter: reescritaDoEfeito(sandboxBindings, ocrRewriter, videoRewriter, armazem != nil, planoHandles), // AOS-005: args→ExecRequest; AOS-530/536: args→entrada da ocr_read/video_read; AOS-548: args→entrada da artifact_write; AOS-550: handle→bytes antes da mediação; nil ⇒ sem reescrita
 		Model:          model,
 		Recorder:       agentruntime.NewTurnRecorder(es),
 		Catalog:        catalog,
@@ -2690,21 +2727,54 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		return nil, err
 	}
 	// (7-quinquies) A TOOL `media_view` (AOS-546): uma leitura local, sem custo de modelo.
+	//
+	// AOS-550 — as tools que o NÓ registra são as que têm de declarar o seu VOCABULÁRIO DE ERRO
+	// fechado, conferido no arranque mais abaixo. Ver erro_de_tool.go.
+	var toolsDoNo []string
 	if cfg.MediaNoTurno != nil {
 		if err := sec.Register(mediaViewToolName, cfg.MediaNoTurno.executar); err != nil {
 			return nil, fmt.Errorf("aos: registar a tool %s: %w", mediaViewToolName, err)
 		}
+		toolsDoNo = append(toolsDoNo, mediaViewToolName)
+	}
+	if ocrLigada != nil {
+		toolsDoNo = append(toolsDoNo, ocrToolName)
+	}
+	if videoLigada != nil {
+		toolsDoNo = append(toolsDoNo, videoToolName)
 	}
 	// (7-sexies) A TOOL `artifact_write` (AOS-548): grava no armazém do run, cifrado pelo MESMO
 	// cifrador por titular das capturas, e sela a proveniência no stream do run.
 	if armazem != nil {
 		armazem.registar = registoDeArtefacto(es)
+		armazem.handles = planoHandles
 		if err := sec.Register(artifactWriteToolName, armazem.executar); err != nil {
 			return nil, fmt.Errorf("aos: registar a tool %s: %w", artifactWriteToolName, err)
 		}
+		toolsDoNo = append(toolsDoNo, artifactWriteToolName)
 		for _, l := range artifactBanner(armazem) {
 			log("%s", l)
 		}
+	}
+	// (7-septies) O VOCABULÁRIO DE ERRO DAS TOOLS DO NÓ (AOS-550), conferido no arranque: uma tool
+	// que o nó registe e não declare o seu conjunto fechado de causas NÃO ARRANCA.
+	if err := conferirVocabularioDeErro(toolsDoNo); err != nil {
+		return nil, err
+	}
+	// A CONFERÊNCIA CORRE SEMPRE; a LINHA só sai com o espaço de handles ligado. O nó sem handles
+	// tem de ficar byte a byte como era, e uma linha de arranque nova é observável: é postura da
+	// fase R2 e sai com ela (achado das revisões do AOS-550). A conferência não muda
+	// comportamento nenhum — só falha para uma tool sem vocabulário declarado, que é um defeito.
+	if espacoDeHandles != nil {
+		for _, l := range erroDeToolBanner(toolsDoNo) {
+			log("%s", l)
+		}
+	}
+	for _, l := range handleStoreBanner(espacoDeHandles) {
+		log("%s", l)
+	}
+	for _, l := range handlesBanner(planoHandles) {
+		log("%s", l)
 	}
 
 	// (7b) SOBERANIA DE LEITURA (AOS-172, D7). A REGRA fail-closed board→região é FIXA (Carta
@@ -3452,6 +3522,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	arranqueOK = true // ... nem larga a posse dos ficheiros (AOS-285/284): passa a ser do Node.Close.
 	ocrEntregue = true
 	armazemEntregue = true
+	handlesEntregues = true
 	return &Node{
 		BackupExporter: backupExporter, // AOS-101: nil ⇒ o nó não exporta backups (por omissão)
 		Runtime:        sec,
@@ -3521,6 +3592,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		pedirAntesDeLer:         pedirAntesDeLer,               // ADR-034 §4: runs novos com plan_input no layout 1.6.0
 		media:                   cfg.MediaNoTurno,              // AOS-546: a media_view (nil ⇒ desligada); runs novos no layout 1.7.0
 		artefactos:              armazem,                       // AOS-548: o armazém de artefactos (nil ⇒ desligado)
+		handles:                 espacoDeHandles,               // AOS-550: o espaço próprio de handles (nil ⇒ desligado)
 		primeiroTurnoConfiavel:  primeiroTurno,                 // AOS-542: anunciado no GET /tools
 		stateGates:              stateGates,                    // AOS-218: fonte do StateGate durável por-run para o steer
 		breakers:                breakers,                      // AOS-080/081/251: disjuntores por-run (libertados no fim do run)
@@ -3573,6 +3645,7 @@ func (n *Node) Close() error {
 	n.video.fechar()      // AOS-536: a pasta da `video_read`, idem.
 	n.media.fechar()      // AOS-546: a pasta da `media_view`, idem.
 	n.artefactos.fechar() // AOS-548: a pasta do armazém de artefactos, idem.
+	n.handles.fechar()    // AOS-550: a pasta do espaço de handles, idem.
 	return firstErr
 }
 
