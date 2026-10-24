@@ -243,8 +243,21 @@ func TestAOS497_Diferencial_OReplayDesignaAOrigemDoLoop(t *testing.T) {
 							t.Fatalf("Run: %v", err)
 						}
 						evs := b.eventos(goal.RunID)
-						quer := &agentruntime.OutputSource{Tool: c.origem, Binding: vinculo, State: c.estado}
-						if c.estado == agentruntime.OutputSourceDesignated {
+						// AOS-551 (fatia 1b) — NUM LAYOUT QUE PÕE OS `tool_result` POR HANDLE, NENHUM
+						// RESULTADO DESIGNA. A regra ancora no digest dos BYTES do resultado, e na
+						// 1.8.0 esses bytes são a referência do handle, não o conteúdo: uma âncora
+						// assim descreveria o handle e não a saída.
+						//
+						// Resolve `missing`, e a FORMA importa — `missing` é bem formado com os
+						// campos vazios, logo a transição terminal SELA. Deixar `designated` com
+						// digest vazio seria a única combinação que `BemFormada` recusa, e o run
+						// ficava sem desfecho no log durável. A âncora é redefinida pela fatia 4.
+						estado := c.estado
+						if agentruntime.HasToolResultsByHandle(versao) && estado == agentruntime.OutputSourceDesignated {
+							estado = agentruntime.OutputSourceMissing
+						}
+						quer := &agentruntime.OutputSource{Tool: c.origem, Binding: vinculo, State: estado}
+						if estado == agentruntime.OutputSourceDesignated {
 							quer.StepID = agentruntime.ToolStepID(aos497PassoDoTurno(t, evs, c.turnoDaOrigem), c.indice)
 							quer.Digest = aos497DigestDe(c.bytesDaOrigem)
 							quer.Bytes = len(c.bytesDaOrigem)
@@ -281,10 +294,26 @@ func TestAOS497_Diferencial_OReplayDesignaAOrigemDoLoop(t *testing.T) {
 							t.Fatalf("referencia sem declaracao: ancora=%+v veredicto=%+v; queria sem ancora e a razao %q", ref.OutputSource, ref.Verdict, c.semDeclaracao)
 						}
 						if vincula {
-							negativo := c.vinculada != agentruntime.OutcomeFulfilled
-							if doLoop.Verdict == nil || doLoop.Verdict.Reason != c.vinculada || doLoop.Unfulfilled != negativo || doLoop.Terminated == negativo {
+							// AOS-551 (fatia 1b) — NA 1.8.0 UM RUN QUE VINCULE A SAÍDA NÃO SE
+							// CUMPRE, e é uma consequência que tem de ser visível e não contornada:
+							// se nenhum resultado designa, o `case vincula && State != designated`
+							// de [ConcludeRun] dá sempre `output_source_missing`.
+							//
+							// É mais uma razão por que a 1.8.0 fica inalcançável até a fatia 4
+							// redefinir a âncora. O que NÃO acontece — e é o que importa — é a
+							// âncora ficar inselável: `missing` sela, o run fecha `failed` com uma
+							// razão nomeada, a compensação dispara e a quota liberta-se.
+							// Só os casos que DESIGNAVAM mudam de razao: `truncated`, a razao do
+							// contrato e `ambiguous` tem precedencia no switch de ConcludeRun e
+							// ficam onde estavam.
+							vinculada := c.vinculada
+							if agentruntime.HasToolResultsByHandle(versao) && c.estado == agentruntime.OutputSourceDesignated {
+								vinculada = agentruntime.OutcomeOutputSourceMissing
+							}
+							negativo := vinculada != agentruntime.OutcomeFulfilled
+							if doLoop.Verdict == nil || doLoop.Verdict.Reason != vinculada || doLoop.Unfulfilled != negativo || doLoop.Terminated == negativo {
 								t.Fatalf("vinculativa em imposicao: veredicto=%+v Unfulfilled=%v Terminated=%v; queria a razao %q",
-									doLoop.Verdict, doLoop.Unfulfilled, doLoop.Terminated, c.vinculada)
+									doLoop.Verdict, doLoop.Unfulfilled, doLoop.Terminated, vinculada)
 							}
 						} else {
 							if !reflect.DeepEqual(doLoop.Verdict, ref.Verdict) || doLoop.Unfulfilled != ref.Unfulfilled ||

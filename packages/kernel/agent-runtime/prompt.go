@@ -597,6 +597,98 @@ func tailFromPlanInputByHandle(in PlanInput) TailSegment {
 	return seg
 }
 
+// ToolResultHandleLabel é a chave do rótulo com que o tail da 1.8.0 refere o handle do corpo de
+// um `tool_result`: `tool_result_handle=aos-handle/v1:h<n>.<hex>`. Como em
+// [PlanInputHandleLabel], o valor é a forma TEXTUAL — a única que [ParseHandleRef] aceita e que o
+// `CallRewriter` resolve.
+const ToolResultHandleLabel = "tool_result_handle"
+
+// corpoDeResultadoPorHandle180 é o corpo FIXO de um `tool_result` permitido na 1.8.0.
+//
+// Constante versionada com o assembler, nas restrições do preâmbulo da 1.4.0 — ver
+// [corpoDeEntradaPorHandle180], que explica porque a explicação vive no corpo e não no preâmbulo.
+const corpoDeResultadoPorHandle180 = "This tool returned content that is not in this context.\n" +
+	"The content is held outside the model's context and is named by the handle\n" +
+	"on the delimiter line above. To act on it, write that handle, exactly as\n" +
+	"shown and including its aos-handle/v1: prefix, as a tool argument. The\n" +
+	"runtime replaces the handle with the content before the call is authorized,\n" +
+	"so the decision is made on the content and not on the handle. The content\n" +
+	"itself is never placed in this context and cannot be read into it.\n"
+
+// ErrToolResultNotByHandle é o corpo de um `tool_result` PERMITIDO que, num layout que os põe por
+// handle (a 1.8.0), não é uma referência de handle bem formada.
+//
+// NÃO É um erro devolvido a ninguém: é o que o tail materializa, no sítio do `tool_error`, em vez
+// do conteúdo. Na 1.8.0 quem sela é o nó e todo o resultado permitido é uma referência, pelo que
+// isto só acontece se o nó compôs o layout sem o envelope que sela — defeito de composição. A
+// escolha de o materializar como erro de tool, e não de abortar o run, é deliberada: nega a mais
+// (nenhum byte de conteúdo entra no contexto), o modelo lê que a chamada não deu resultado
+// utilizável e pode repetir, e o `prompt_hash` continua explicável pela versão gravada. A mensagem
+// é FIXA e não leva nada do conteúdo.
+var ErrToolResultNotByHandle = errors.New("tool result not available by handle")
+
+// tailFromResultByHandle constrói o `tool_result` de uma call PERMITIDA na 1.8.0: os mesmos
+// rótulos de [tailFromIdentifiedResult], mais a referência do handle, e o corpo fixo em vez do
+// output da tool.
+//
+// O corpo do resultado É a referência — o nó substituiu-o no envelope do [ActivityDispatcher], no
+// molde da `media_view` da 1.7.0, onde a referência também viaja nos próprios bytes do resultado.
+// É o que torna o replay fiel de graça: a captura grava a referência, e o tail reconstruído a
+// partir dela é byte-idêntico sem que o motor saiba nada de handles.
+func tailFromResultByHandle(id, name string, r Tainted) TailSegment {
+	ref := string(r.Value)
+	if _, ok := ParseHandleRef(ref); !ok {
+		// Corpo não-referência: materializa-se o erro, nunca o conteúdo. O [Tainted] vai VAZIO
+		// de propósito — é o que impede o output de chegar ao corpo por [tailResultado].
+		return tailFromIdentifiedResult(id, name, Tainted{Taint: r.Taint}, ErrToolResultNotByHandle, nil)
+	}
+	identidade := identidadeDaChamada(id, name)
+	identidade = append(identidade, TailMeta{Key: ToolResultHandleLabel, Value: ref})
+	seg := tailResultado(Tainted{Taint: r.Taint}, nil, nil, identidade)
+	seg.Content = []byte(corpoDeResultadoPorHandle180)
+	return seg
+}
+
+// segmentoDeResultado é o `tool_result` NESTE layout: por handle na 1.8.0 quando a call foi
+// PERMITIDA e devolveu conteúdo, e a forma de sempre em todos os outros casos.
+//
+// NUM LAYOUT POR HANDLE, O VALOR NUNCA CHEGA AO CORPO — em nenhum ramo. Isto é estrutural e não
+// uma promessa sobre os chamadores: a primeira versão desta fatia ramificava só o caso
+// `toolErr == nil` e passava o `r` INTEIRO ao ramo de sempre, onde [tailResultado] faz
+// `append(content, r.Value...)`. Um resultado com erro de tool E output não-vazio punha o output
+// CRU no contexto do modelo, na própria versão que existe para o tirar de lá — e o comentário que
+// aqui estava afirmava o contrário («não têm conteúdo devolvido»), que é falso: o
+// [CapturedToolResult] transporta `Result` e `ToolError` independentemente.
+//
+// A negação continua sem corpo pelo seu próprio invariante (o resultado de uma call negada é
+// untrusted-VAZIO, selado por teste em [tailFromResultDenied]). Um permit com output vazio não tem
+// nada para selar e materializa os mesmos bytes que na 1.7.0.
+//
+// A `media_view` É A EXCEPÇÃO, e por desenho da fase. A 1.8.0 herda os segmentos de media da
+// 1.7.0, e `mediaDoTurno` lê os resultados CRUS: pôr uma `MediaRef` atrás de um handle faria
+// `parseMediaRef` falhar e a imagem deixava SILENCIOSAMENTE de chegar ao modelo — regressão da
+// R1a. E não é inconsistência da R2: a correcção 1 do AOS-551 diz que a media é PROJECTADA para o
+// modelo e que é por isso que a autoridade de uma call tem de a contar. O que fica inline é a
+// `MediaRef` (doc, digest, tipo, bytes) que o nó produziu, não o conteúdo da imagem.
+//
+// RESÍDUO DECLARADO: o texto de um `tool_error` é `error.Error()` — texto LIVRE de uma tool ou de
+// uma camada downstream —, pelo que uma tool pode lá pôr conteúdo e alcançar o contexto do modelo
+// por essa via. As tools do nó têm vocabulário de erro FECHADO imposto por tipo (AOS-550,
+// `cmd/aos/erro_de_tool.go`), o que fecha a superfície do nó; uma tool MCP de terceiros não está
+// coberta. Fica fora do âmbito desta fatia, e é o eixo a fechar quando a R2 admitir tools MCP.
+func (l layout) segmentoDeResultado(id, name string, r Tainted, toolErr error, den *ToolDenial) TailSegment {
+	if !l.resultadosPorHandle || name == MediaViewTool {
+		return tailFromIdentifiedResult(id, name, r, toolErr, den)
+	}
+	if den == nil && toolErr == nil && len(r.Value) > 0 {
+		return tailFromResultByHandle(id, name, r)
+	}
+	// Qualquer outro ramo num layout por handle: a forma de sempre, mas com o VALOR FORA. Um
+	// resultado cujo corpo não passou pelo selo do nó não entra no contexto do modelo, seja qual
+	// for a razão por que não passou.
+	return tailFromIdentifiedResult(id, name, Tainted{Taint: r.Taint}, toolErr, den)
+}
+
 // segmentoDeEntrada é o segmento de um `plan_input` NESTE layout: por handle na 1.8.0, com o
 // payload até à 1.7.0. É o ponto único da escolha — a semente, a entrega das adiadas e o digest
 // das adiadas passam todos por aqui, para não haver três definições da mesma forma.

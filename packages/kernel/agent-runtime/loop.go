@@ -526,6 +526,9 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		return Result{}, err
 	}
 	evidencia := NewRunEvidence()
+	// AOS-551: num layout que põe os `tool_result` por handle, nenhum resultado designa a origem da
+	// saída — os bytes que a regra digeriria são a referência, não o conteúdo.
+	evidencia.ResultsByHandle(lay.resultadosPorHandle)
 	if conclusao != nil {
 		// A evidência segue a tool declarada desde o início: os factos da designação e o digest
 		// tiram-se quando o primeiro turno com tools é observado (AOS-497).

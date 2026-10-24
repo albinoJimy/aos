@@ -62,7 +62,9 @@ const (
 	// ficam nela (o manifesto e a série de métricas dizem 1.7.0).
 	AssemblyVersion170 = "1.7.0"
 	// AssemblyVersion180 — a 1.7.0, byte a byte, mais o CONTEÚDO POR HANDLE (AOS-551, ADR-043
-	// §2.6, fase R2): um `plan_input` entra no tail com o corpo FIXO
+	// §2.6, fase R2), nas DUAS superfícies por onde conteúdo de fora entrava no contexto do
+	// modelo: os `plan_input` (o que outro nó do plano produziu) e os `tool_result` (o que uma
+	// tool devolveu). Um `plan_input` entra no tail com o corpo FIXO
 	// ([corpoDeEntradaPorHandle180]) e a REFERÊNCIA do handle no rótulo [PlanInputHandleLabel] — a
 	// forma `aos-handle/v1:h<n>.<hex>`, que é a única que [ParseHandleRef] aceita. O payload não
 	// entra no contexto do modelo: fica no espaço de handles do nó, e o modelo só o alcança
@@ -80,6 +82,15 @@ const (
 	// runs novos, e NÃO HÁ FORMA DE A ACCIONAR em produção: a autoridade por argumento que a
 	// torna segura é trabalho do mesmo ticket, e a política de fluxo de dados que a torna útil é
 	// o AOS-556. A separação sozinha nega a mais; é segura, e não compra nada.
+	//
+	// E um `tool_result` PERMITIDO entra com o corpo fixo [corpoDeResultadoPorHandle180] e a
+	// referência no rótulo [ToolResultHandleLabel]. Aqui o kernel NÃO FAREJA o conteúdo: exige-o.
+	// O corpo de um resultado vem de uma tool — untrusted —, pelo que «se parecer uma referência,
+	// trata como referência» deixaria uma tool forjar uma. Na 1.8.0 quem sela é o nó, pelo que
+	// TODO o resultado permitido e não-vazio é uma referência; um que não o seja é defeito de
+	// composição e materializa-se como ERRO DE TOOL ([ErrToolResultNotByHandle]), nunca inline —
+	// o modelo vê que a chamada não deu resultado utilizável e pode repetir, e nenhum byte de
+	// conteúdo entra no contexto. Negações e erros de tool não mudam: não têm conteúdo devolvido.
 	//
 	// FAIL-CLOSED: nela, um `plan_input` sem referência de handle bem formada é
 	// [ErrPlanInputWithoutHandle] no
@@ -115,6 +126,9 @@ type layout struct {
 	// entradasPorHandle: um `plan_input` entra no tail com o corpo fixo e o token do handle no
 	// rótulo, e não com o payload (1.8.0).
 	entradasPorHandle bool
+	// resultadosPorHandle: o corpo de um `tool_result` PERMITIDO é a referência do handle que o
+	// nó selou, e o tail materializa o corpo fixo com essa referência no rótulo (1.8.0).
+	resultadosPorHandle bool
 }
 
 func layout130() layout { return layout{version: AssemblyVersion130} }
@@ -166,6 +180,7 @@ func layout180() layout {
 	l := layout170()
 	l.version = AssemblyVersion180
 	l.entradasPorHandle = true
+	l.resultadosPorHandle = true
 	return l
 }
 
@@ -217,6 +232,15 @@ func DefersPlanInputs(assemblyVersion string) bool {
 func HasPlanInputsByHandle(assemblyVersion string) bool {
 	l, err := layoutFor(assemblyVersion)
 	return err == nil && l.entradasPorHandle
+}
+
+// HasToolResultsByHandle diz se o layout da versão dada põe o corpo de um `tool_result` no tail
+// por HANDLE (a 1.8.0). É a pergunta de quem compõe o nó: só nela é que o envelope do
+// [ActivityDispatcher] tem de selar o output de cada call permitida antes de o devolver ao loop.
+// Uma versão desconhecida responde false.
+func HasToolResultsByHandle(assemblyVersion string) bool {
+	l, err := layoutFor(assemblyVersion)
+	return err == nil && l.resultadosPorHandle
 }
 
 // ValidateAssemblyVersion diz se este assembler sabe montar a versão dada. É o que o motor de
@@ -1046,7 +1070,7 @@ func (s *TailSequence) turnoDoModelo(stepID, text, stateDigest string, results [
 		}
 		segs = append(segs,
 			tailFromToolCall(id, r.Invocation),
-			tailFromIdentifiedResult(id, r.Invocation.ToolID, r.Result, r.ToolError, r.Denial),
+			s.lay.segmentoDeResultado(id, r.Invocation.ToolID, r.Result, r.ToolError, r.Denial),
 		)
 		if s.lay.avisoDeRepeticao && vista.seguidas == RepeatNoticeAt {
 			segs = append(segs, tailFromRepeatNotice(vista.primeiroID))
