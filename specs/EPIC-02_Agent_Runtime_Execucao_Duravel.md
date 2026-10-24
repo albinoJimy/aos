@@ -2488,7 +2488,7 @@ dão divergência normal no turno 3, com amostra e alerta.
 
 ---
 
-## AOS-551 — A separação de planos ligada: layout 1.8.0, autoridade que conta a media e política de fluxo de dados (fase R2 do ADR-043; fecha o DEF-806)
+## AOS-551 — A separação de planos, o MECANISMO: layout 1.8.0, `plan_input` e `tool_result` por handle, autoridade por argumento que conta a media (fase R2 do ADR-043)
 
 | Campo | Valor |
 |---|---|
@@ -2497,16 +2497,29 @@ dão divergência normal no turno 3, com amostra e alerta.
 | Tipo | feat |
 | Prioridade | P1 |
 | Estimativa | L |
-| Dependências | AOS-550 (o handle e a sua resolução) e AOS-552 (a linhagem). **Cerimónia do dono: regras Cedar novas e re-assinatura do bundle.** Nasce com um ADR próprio (o ADR-038 §3 exigiu-o; o número atribui-se na emissão) |
+| Dependências | AOS-550 (o handle e a sua resolução) e AOS-552 (a linhagem), ambos fundidos. **Não depende da cerimónia do dono:** a política de fluxo de dados, o interruptor accionável e o ADR próprio são o AOS-556, e é ele que fecha o DEF-806 |
 | Responsável sugerido | Arquitecto de Plataforma |
 | Documentos de referência | `docs/reports/desenho-r2-entradas-por-handle-2026-10-23.md` (§3, §4 e §5) — **lê a §10, «o que a v1 dizia e caiu»**; `docs/adr/ADR-034-autorizacao-derivada-do-contexto.md` (§3 opção A e alternativa E, §5.4); `docs/governance/REGISTO-Deferimentos.md` (DEF-806) |
 
 ### Contexto
 
-Fecha o **DEF-806**, cujo registo nomeia o defeito: «a AUTORIZAÇÃO já é derivada do contexto (opção
-C) … mas o conteúdo untrusted continua a entrar **INLINE no tail que o modelo lê**, pelo que um
-efeito cujos argumentos venham desse conteúdo não tem separação». O código declara-o no mesmo sítio
-(`loop.go:766-775`, `prompt.go:622`).
+**PARTIDO EM DOIS a 2026-10-24.** O ticket original juntava o mecanismo e a política de fluxo de
+dados; a política exige regras Cedar novas, re-assinatura do bundle e **cerimónia da chave do dono**,
+e um ticket com uma dependência de cerimónia a meio é um ticket que ninguém pode fechar — a caixa
+fica por marcar sem que isso signifique trabalho por fazer. O mecanismo fica aqui, **desligado e com
+o interruptor fail-closed**; a política, o interruptor accionável, o ADR próprio e o fecho do
+**DEF-806** são o **AOS-556**.
+
+O que o mecanismo sozinho NÃO compra, e é honesto dizê-lo: sem as regras de fluxo, uma call que
+consome um handle untrusted continua negada pela regra binária que já existe. É seguro, e é
+exactamente a v1 que a revisão derrubou por «não comprar nada». **O ganho de produto chega com o
+AOS-556.** O que este ticket entrega é a máquina, provada e inacessível.
+
+O **DEF-806** nomeia o defeito que esta máquina existe para fechar: «a AUTORIZAÇÃO já é derivada do
+contexto (opção C) … mas o conteúdo untrusted continua a entrar **INLINE no tail que o modelo lê**,
+pelo que um efeito cujos argumentos venham desse conteúdo não tem separação». O código declara-o no
+mesmo sítio (`loop.go`, `prompt.go`). **O fecho do deferimento é do AOS-556**, porque só com a
+política ligada é que a separação muda alguma decisão.
 
 **Três correcções da v2, todas de revisão adversarial confirmada por leitura do código:**
 
@@ -2534,18 +2547,16 @@ efeito cujos argumentos venham desse conteúdo não tem separação». O código
       projectado no run)`, calculada **no `CallRewriter`**, sobre a mesma `Call` que o RM vê. Uma call
       sem handles e num run sem media é trusted mesmo depois de o run ter lido — é o limite que se
       levanta. **Num run com media, nada se levanta**, e isso tem guard-test.
-- [ ] **Política de fluxo de dados em Cedar assinado:** a decisão é por (capability, destino,
-      proveniência do que entra), e não por um binário. Um handle untrusted pode fluir para o gateway
-      de modelo e **não** para o `web_post`. O SA-ROC do ADR-013 **não muda** e continua a classificar
-      pela sensibilidade.
-- [ ] O gate `policy-taint` (`scripts/ci/policy-taint.py`) conhece a forma nova das regras de fluxo
-      (hoje só aceita a anotação de isenção para as capabilities que conhece, `:358-367`).
-- [ ] **O interruptor da 1.8.0 não fica accionável** sem a autoridade por argumento: ela é um
-      colaborador que o construtor do layout **exige**, de modo que `layoutFor("1.8.0")` sem ela seja
-      **erro de arranque** — no molde de `comporMediaNoTurno` (`media_turno.go:107-113`) —, mais uma
-      linha de banner e um guard-test. A restrição vale nos **dois** sentidos: autoridade por
-      argumento com o conteúdo ainda inline é um **downgrade** da protecção actual, porque o modelo
-      copia o que leu para um argumento literal e o `join` autoriza.
+- [ ] **O interruptor da 1.8.0 não fica accionável.** A restrição vale nos **dois** sentidos: a
+      separação sem a autoridade por argumento troca «negar a mais» por «permitir a mais», e a
+      autoridade por argumento com o conteúdo ainda inline é um **downgrade** da protecção actual —
+      o modelo copia o que leu para um argumento literal e o `join` autoriza. **Correcção de 2026-10-24,
+      por medição:** o ticket dizia que a exigência vive no construtor do layout, e não pode —
+      `layoutFor` é uma função PURA sem colaboradores, e o molde citado (`comporMediaNoTurno`) vive
+      no `cmd/aos`. A imposição pertence à **composição do nó**: o layout 1.8.0 não se escolhe para
+      um run novo sem o colaborador da autoridade composto, com erro de arranque nomeado, linha de
+      banner e guard-test. Enquanto o AOS-556 não ligar a política, o interruptor fica **sem forma de
+      ser accionado em produção**, e isso é declarado.
 - [ ] **Autoridade por call no replay.** `ReplayedTurn.Authority` é hoje **uma** string por turno
       (`replay/engine.go:611-621`) e `authorityDivergence` exige que todos os taints selados do turno
       sejam iguais a ela (`:841-848`): um turno misto dispararia `Reason="authority"` falso. Passa a
@@ -2564,7 +2575,9 @@ efeito cujos argumentos venham desse conteúdo não tem separação». O código
       registado sem efeito e sem mediação (`activity/contract.go:195-207`), pelo que uma call
       deduplicada nunca resolve nada.
 - [ ] A bateria de injecção continua verde e ganha dois casos: uma injecção dentro de um handle que
-      **é** consumido por uma call privilegiada; e uma injecção visual numa imagem num run em 1.8.0.
+      **é** consumido por uma call privilegiada — que com a regra binária de hoje continua NEGADA, e
+      é essa a afirmação que se fixa —; e uma injecção visual numa imagem num run em 1.8.0, que
+      prova que a autoridade a contar a media não levanta nada nesse run.
 - [ ] Desligado por omissão.
 
 ### Fora de âmbito
@@ -2577,6 +2590,70 @@ efeito cujos argumentos venham desse conteúdo não tem separação». O código
   contar a media.
 - A travessia da aresta do plano (AOS-553).
 - A retirada do AOS-540 e do AOS-542: não se aplica, porque a 1.8.0 herda o adiamento.
+
+---
+
+## AOS-556 — A política de fluxo de dados e o interruptor da 1.8.0 (fase R2 do ADR-043; fecha o DEF-806)
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-02 — Agent Runtime e Execução Durável |
+| Fase | Harness por capacidades (ADR-043), fase R2 |
+| Tipo | feat |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-551 (o mecanismo, desligado). **Cerimónia do dono: regras Cedar novas e re-assinatura do bundle.** Nasce com um **ADR próprio** — o ADR-038 §3 exigiu-o ao rejeitar «o nó consumidor resolve a referência», e o número atribui-se na emissão |
+| Responsável sugerido | Arquitecto de Plataforma + dono (assinatura) |
+| Documentos de referência | `docs/reports/desenho-r2-entradas-por-handle-2026-10-23.md` (§4.2 e §6); `docs/adr/ADR-034-autorizacao-derivada-do-contexto.md` (§3 alternativa E); `docs/governance/REGISTO-Deferimentos.md` (DEF-806) |
+
+### Contexto
+
+O AOS-551 entrega a separação de planos como **máquina desligada**: o conteúdo untrusted sai do tail
+e viaja por handle, e a autoridade de uma call calcula-se por argumento. Com isso sozinho, uma call
+que consome um handle untrusted continua **negada** pela regra binária que existe hoje
+(`allow_http_post`, a única que lê o taint) — ou seja, a separação não muda nenhuma decisão, e o
+motivo de existir da R2 («gerar a partir do que se viu sem uma pessoa a aprovar cada chamada») não
+se realiza.
+
+Este ticket é o que o realiza, e é o que fecha o **DEF-806**.
+
+**Duas incógnitas medidas a 2026-10-24, e que este ticket tem de resolver antes de escrever a regra:**
+
+1. **Pode não ser só política.** O `context` declarado no bundle é `{ taint : String, sensitivity :
+   String }`. Uma decisão por *(capability, destino, proveniência do que entra)* pode exigir campos
+   novos no `Input` do PDP — isto é, mudança de **motor**, não só do ficheiro assinado. Medir primeiro.
+2. **O gate `policy-taint.py` exige a cláusula do taint como conjunção de topo** e tem uma lista
+   FECHADA de isenções por capability. Uma condição composta cai no caminho «não cumpre» e precisa
+   ou de baseline (que só encolhe) ou de uma forma nova reconhecida pelo gate. A sintaxe da regra
+   desenha-se **com** o gate, não contra ele.
+
+### Critérios de Aceitação
+
+- [ ] **Política de fluxo de dados em Cedar assinado:** a decisão é por (capability, destino,
+      proveniência do que entra), e não por um binário. Um handle untrusted pode fluir para o gateway
+      de modelo e **não** para o `web_post`. O SA-ROC do ADR-013 **não muda** e continua a classificar
+      pela sensibilidade.
+- [ ] O gate `policy-taint` conhece a forma nova das regras de fluxo, e continua a recusar um
+      `permit` sem cláusula fora da baseline. A baseline **não cresce** para acomodar este ticket.
+- [ ] Se a decisão exigir campos novos no `Input` do PDP, a mudança de motor é declarada e tem
+      guard-test próprio; se não exigir, fica declarado que foi medido e não exigiu.
+- [ ] **O interruptor da 1.8.0 passa a accionável**: o colaborador da autoridade por argumento
+      compõe-se, o nó arranca com a política nova em vigor, e o banner declara a postura.
+- [ ] A bateria de injecção ganha o caso que o AOS-551 não pode ter: uma injecção dentro de um handle
+      consumido por uma call privilegiada **cujo destino a política permite** — e prova que o que
+      flui é o que a regra autoriza, não o que o modelo pede.
+- [ ] **O DEF-806 fecha**, com a entrada do registo actualizada e a prova nomeada.
+- [ ] Prova em produção: um plano em que o nó 2 usa uma tool protegida sobre o que o nó 1 leu, sem
+      aprovação humana por chamada.
+- [ ] Desligado por omissão até o bundle assinado estar em vigor.
+
+### Fora de âmbito
+
+- O mecanismo (AOS-551): layout, tail por handle, autoridade por argumento, replay, âncora da
+  designação de origem.
+- A travessia da aresta do plano (AOS-553).
+- **R7 do ADR-034**, a injecção visual e o fluxo de controlo dependente de dados, que o desenho
+  declara como classes abertas.
 
 ---
 
@@ -2601,3 +2678,4 @@ efeito cujos argumentos venham desse conteúdo não tem separação». O código
 | 1.14 | 2026-10-18 | +AOS-533 (o replay verificável de produção, `GET /runs/{id}/replay`): resíduo da sub-fase A5.1 — o replay de produção não recalculava os `prompt_hash` | Equipa AOS |
 | 1.15 | 2026-10-23 | +AOS-551 (a separação de planos ligada: layout 1.8.0 e a autoridade por argumento), fase R2 do ADR-043 — **fecha o DEF-806**. A autoridade de uma call passa a ser `join(trusted, taint de cada handle resolvido nos seus argumentos)`: a separação sozinha trocaria «negar a mais» por «permitir a mais». Nasce com um ADR próprio | Equipa AOS |
 | 1.16 | 2026-10-23 | AOS-551 reescrito para a v2 do desenho da R2: a premissa «o modelo que decide deixa de ver conteúdo untrusted» era **falsa** (a R1a projecta a imagem para ele, `projection_media.go:91-111`), logo a autoridade passa a contar também os segmentos de media e um run com media não ganha nada; a decisão passa a uma **política de fluxo de dados** em Cedar assinado, com cerimónia do dono, sem a qual a R2 não compra «gerar a partir do que se viu»; a 1.8.0 deriva da 1.7.0 e herda o adiamento, logo **não há ganho em turnos**; autoridade por call no replay e âncora nova da designação de origem | Equipa AOS |
+| 1.17 | 2026-10-24 | AOS-551 **partido em dois**: o mecanismo fica no AOS-551 (layout 1.8.0 derivado da 1.7.0, `plan_input` e `tool_result` por handle, `SeparatePlanes` com chamador, autoridade por argumento que conta a media, autoridade por call no replay, âncora da designação de origem, paridade das duas vias), **desligado e com o interruptor fail-closed**; a política de fluxo de dados em Cedar, o interruptor accionável, o ADR próprio e o fecho do DEF-806 passam a +AOS-556, que exige cerimónia da chave do dono. Razão: um ticket com uma dependência de cerimónia a meio não pode ser fechado por quem o implementa, e a caixa por marcar passa a significar duas coisas diferentes. Medições que acompanham a partição: a costura da autoridade por argumento já existe (a Call é construída com o `Context.Taint` ANTES de o `CallRewriter` correr, e o valor sobrevive até ao RM, pelo que é cablagem e não kernel novo); o `ToolStepID` por call JÁ está no envelope do `tool.call.mediated` (o motor do replay usa o `ParentStepID` e ignora-o), logo a autoridade por call no replay não precisa de schema novo; e a exigência do colaborador NÃO pode viver no `layoutFor`, que é função pura — pertence à composição do nó | Equipa AOS |
