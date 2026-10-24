@@ -157,13 +157,13 @@ func TestAOS548_Reescrita_RunPassoETitularDaCall(t *testing.T) {
 	t.Parallel()
 	rw := newArtifactRewriter()
 	outra := referencemonitor.Call{ToolID: "doc_read", Input: []byte(`{"doc_id":"x"}`)}
-	if got, err := rw(outra); err != nil || string(got.Input) != `{"doc_id":"x"}` {
+	if got, err := rw(outra, &bilheteDaCall{}); err != nil || string(got.Input) != `{"doc_id":"x"}` {
 		t.Fatalf("outra tool mexida: %v", err)
 	}
 	call := referencemonitor.Call{ToolID: artifactWriteToolName, RunID: "run-1", StepID: "step-1-tool-1",
 		Principal: referencemonitor.Principal{NHIID: "nhi:a", Subject: "titular-9"},
 		Input:     []byte(`{"name":"comodos.json","media_type":"application/json","content":"{}"}`)}
-	got, err := rw(call)
+	got, err := rw(call, &bilheteDaCall{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,13 +180,13 @@ func TestAOS548_Reescrita_RunPassoETitularDaCall(t *testing.T) {
 	} {
 		c := call
 		c.Input = []byte(mau)
-		if _, err := rw(c); err == nil {
+		if _, err := rw(c, &bilheteDaCall{}); err == nil {
 			t.Errorf("aceite: %s", mau)
 		}
 	}
 	sem := call
 	sem.RunID = ""
-	if _, err := rw(sem); err == nil {
+	if _, err := rw(sem, &bilheteDaCall{}); err == nil {
 		t.Error("aceite sem run")
 	}
 }
