@@ -120,6 +120,13 @@ package main
 // recusada — fail-closed, e é a mesma propriedade que a `media_view` já declara («uma RETOMA ao
 // vivo precisa dos bytes»).
 //
+// # A LINHAGEM (AOS-552)
+//
+// A reescrita é o único sítio do nó que sabe de que handles uma tool call se alimentou. Anota o par
+// `(argumento, digest)` no [bilheteDaCall] da construção desta Call, e quem produz o efeito sela o
+// que lhe interessa no evento de proveniência dele. Ver [bilheteDaCall] para o que isto substituiu
+// e porque é que a versão anterior — um mapa partilhado — perdia linhagens sob carga.
+//
 // # ENTRE RUNS, NÃO
 //
 // A quarentena é a de UM run. Um token de outro run não resolve, e o cifrado de outro run não abre:
@@ -384,11 +391,11 @@ func (p *planoDeHandles) selarEmQuarentenaComHandle(ctx context.Context, subject
 //
 // O CAMINHO DE SEMPRE É BYTE-IDÊNTICO: sem o prefixo de uma referência nos argumentos, a Call sai
 // tal como entrou, sem ser parseada nem re-serializada.
-func reescritaDeHandles(p *planoDeHandles) func(referencemonitor.Call) (referencemonitor.Call, error) {
+func reescritaDeHandles(p *planoDeHandles) reescritaDaCall {
 	if p == nil {
 		return nil
 	}
-	return func(call referencemonitor.Call) (referencemonitor.Call, error) {
+	return func(call referencemonitor.Call, bilhete *bilheteDaCall) (referencemonitor.Call, error) {
 		// OS ARGUMENTOS LÊEM-SE DESCODIFICADOS, SEMPRE QUE SÃO UM OBJECTO JSON. Decidir pela forma
 		// serializada era um diferencial de parser medido na revisão de segurança (achado M-2):
 		// `aos-handle\/v1:` é um escape JSON legal, não contém o prefixo em bytes, e fazia os
@@ -468,6 +475,9 @@ func reescritaDeHandles(p *planoDeHandles) func(referencemonitor.Call) (referenc
 		var q *agentruntime.Quarantine
 		// vistos memoiza por token: o mesmo handle em duas chaves resolve-se UMA vez.
 		vistos := map[string][]byte{}
+		// vistosDigest guarda o digest por token, para o anotar no bilhete também quando a
+		// resolução foi memoizada (AOS-552).
+		vistosDigest := map[string]string{}
 		total := 0
 		// SEGUNDA PASSAGEM — a resolução.
 		for _, nome := range aResolver {
@@ -510,6 +520,7 @@ func reescritaDeHandles(p *planoDeHandles) func(referencemonitor.Call) (referenc
 					return referencemonitor.Call{}, p.recusar(handleCausaNaoTextual)
 				}
 				vistos[token] = corpo
+				vistosDigest[token] = h.Digest()
 				total += len(corpo)
 				if total > handleMaxBytesPorCall {
 					return referencemonitor.Call{}, p.recusar(handleCausaBytesDaCall)
@@ -520,6 +531,12 @@ func reescritaDeHandles(p *planoDeHandles) func(referencemonitor.Call) (referenc
 				return referencemonitor.Call{}, p.recusar(handleCausaNaoTextual)
 			}
 			args[nome] = claro
+			// A LINHAGEM, POR ARGUMENTO (AOS-552). Quem sela a proveniência escolhe depois os
+			// argumentos que TRANSPORTAM CONTEÚDO, e não todos: uma referência resolvida num
+			// argumento que só nomeia o tipo de media não é uma derivação do conteúdo — a revisão
+			// adversarial mediu exactamente isso, um evento a afirmar uma derivação inexistente.
+			// O bilhete morre no fim desta cadeia: não há mapa, chave, tecto nem concorrência.
+			bilhete.anotarDigest(nome, vistosDigest[token])
 		}
 		raw, err := json.Marshal(args)
 		if err != nil {

@@ -45,6 +45,7 @@ import (
 	"unicode/utf8"
 
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
+	"github.com/aos-ref/kernel/reference-monitor/taint"
 	"github.com/aos-ref/substrate/eventstore"
 )
 
@@ -58,6 +59,15 @@ const artifactWriteCapability = referencemonitor.ArtifactWriteCapability
 // EventTypeArtifactCreated é o facto durável de um artefacto gravado. Constante junto do emissor
 // (disciplina do event-catalog, tecnica/13 §3.3).
 const EventTypeArtifactCreated = "artifact.created"
+
+// taintDoArtefacto é o rótulo que o evento de proveniência de um artefacto SELA (AOS-552).
+//
+// CONSTANTE DE COMPILAÇÃO, e não uma `var` com `taint.Untrusted.String()`: o valor é uma
+// invariante, não um cálculo, e uma `var` deixava o guard-test a comparar a definição consigo
+// mesma em vez de cruzar os dois vocabulários. [taint.StringUntrusted] é a forma textual que o
+// kernel publica — a mesma que o `context.taint` da mediação e os rótulos do tail usam —, para que
+// um leitor não tenha de traduzir entre dois vocabulários.
+const taintDoArtefacto = taint.StringUntrusted
 
 // artifactStepPrefix é o prefixo do `step_id` do envelope do evento: sem ele, o evento tinha a
 // chave de idempotência da `tool.call.mediated` do mesmo passo e era engolido como duplicado.
@@ -285,6 +295,47 @@ func (a *armazemDeArtefactos) abrir(ctx context.Context, subject, runID, digest 
 }
 
 // artefactoCriado é o corpo do evento [EventTypeArtifactCreated]. Sem o conteúdo.
+//
+// # A LINHAGEM E O TAINT (AOS-552, ADR-043 §2.3)
+//
+// O ADR-043 §2.3 exige que o evento de proveniência leve «os digests das entradas». Até ao AOS-552
+// este corpo tinha sete campos e NENHUM de linhagem: um artefacto derivado de outro não era
+// rastreável. Ganha dois, e nenhum deles leva conteúdo:
+//
+//   - [artefactoCriado.Inputs] — os digests dos handles de que esta gravação se alimentou, pela
+//     ordem dos argumentos. Quem os sabe é a reescrita, que resolveu as referências antes da
+//     mediação ([planoDeHandles.linhagemDaCall]); a partir dela a informação estava perdida.
+//     Vazio quando o modelo escreveu o conteúdo inline, que é o caso de toda a R1b.
+//   - [artefactoCriado.Taint] — o rótulo HERDADO, SELADO no evento e não recalculado por quem o
+//     lê. Vale sempre `untrusted`, e isso não é redundância: é o que torna a herança uma
+//     AFIRMAÇÃO verificável em vez de uma convenção.
+//
+// # PROVENIÊNCIA REGISTADA, NÃO DESCLASSIFICAÇÃO
+//
+// «Todo o artefacto é untrusted, seja qual for o produtor» (ADR-043 §2.3) FICA. A linhagem não
+// promove nada e não existe caminho neste código que escreva outro valor em [artefactoCriado.Taint]:
+// as entradas são handles, um handle é sempre untrusted ([agentruntime.Quarantine], que nunca
+// promove), o join de untrusted com qualquer coisa é untrusted, e sem entradas o artefacto é
+// untrusted porque foi o modelo que o escreveu. Quem decide o que pode fluir para onde é a política
+// de fluxo de dados do AOS-551, que decide SOBRE untrusted e não precisa de promover nada.
+//
+// O HANDLE DESTE ARTEFACTO não leva campo de linhagem próprio, e é deliberado: ele é o MESMO
+// conteúdo, selado no mesmo passo, pelo que a sua linhagem é a que este evento declara — procura-se
+// pelo par `(run, step_id)`, que os dois eventos partilham.
+//
+// # UM EVENTO POR GRAVAÇÃO, NÃO POR ARTEFACTO
+//
+// O armazém deduplica o CONTEÚDO dentro de um run, mas sela um evento por CHAMADA. Logo o mesmo
+// digest pode ter dois eventos — por exemplo, o conteúdo escrito inline e depois reescrito a partir
+// do handle dele —, com linhagens diferentes, e um deles pode nomear-se a si mesmo como entrada (a
+// derivação-identidade: os bytes são os mesmos). Nenhum dos dois é falso; o que seria falso é ler
+// este evento como «a» proveniência de um digest. A rota de leitura resolve um digest pelo PRIMEIRO
+// evento que casa, o que é indiferente para servir o conteúdo e não serve para construir um grafo
+// de derivação sem considerar o `step_id`.
+//
+// A ORDEM de [artefactoCriado.Inputs] é a dos argumentos que a reescrita percorre — alfabética
+// pelo nome, porque é assim que a recusa dela é determinista. Com o produtor de hoje a lista tem no
+// máximo um elemento: só o `content` transporta conteúdo.
 type artefactoCriado struct {
 	Digest        string `json:"digest"`
 	MediaType     string `json:"media_type"`
@@ -293,6 +344,18 @@ type artefactoCriado struct {
 	Tool          string `json:"tool"`
 	StepID        string `json:"step_id"`
 	SealedSubject string `json:"sealed_subject"`
+	// Inputs são os digests das entradas em quarentena que produziram este artefacto (AOS-552).
+	// Omitido quando não houve nenhuma.
+	Inputs []string `json:"inputs,omitempty"`
+	// Taint é o rótulo herdado, selado. Ver o comentário do tipo: vale sempre `untrusted`.
+	//
+	// SEM `omitempty`, de propósito: o único produtor escreve-o sempre, e com `omitempty` a
+	// AUSÊNCIA ficava indistinguível de «sem rótulo» — quem lesse teria de tratar a ausência como
+	// untrusted por convenção, que é precisamente o recálculo por quem lê que este campo existe
+	// para eliminar. REGRA PARA OS EVENTOS ANTERIORES AO AOS-552 (em produção desde a v0.1.69): não
+	// têm o campo, e leem-se como `untrusted` — era o que o ADR-043 §2.3 já afirmava para todo o
+	// artefacto, e não havia nenhum outro valor possível.
+	Taint string `json:"taint"`
 }
 
 // registoDeArtefacto constrói a escrita durável do evento sobre o Event Store do nó. nil com store nil.
@@ -329,6 +392,14 @@ type entradaDoArtefacto struct {
 	Name      string `json:"name"`
 	MediaType string `json:"media_type"`
 	Content   string `json:"content"`
+	// Inputs são os digests das entradas em quarentena que produziram este conteúdo (AOS-552): os
+	// handles que a reescrita resolveu nos argumentos que TRANSPORTAM CONTEÚDO. Vem do
+	// [bilheteDaCall] da mesma cadeia, e não do modelo — o [pedidoDoModelo] tem três campos e
+	// `DisallowUnknownFields`, pelo que o modelo não consegue declarar uma linhagem que não teve.
+	//
+	// A LINHAGEM VIAJA NO EFEITO, e é isso que a torna parte do que o Reference Monitor medeia,
+	// aprova e sela — o que o ADR-043 §2.3 pede.
+	Inputs []string `json:"inputs,omitempty"`
 }
 
 // pedidoDoModelo é o que o modelo escreve: três campos, nenhum a mais.
@@ -341,8 +412,8 @@ type pedidoDoModelo struct {
 // newArtifactRewriter devolve a reescrita do efeito da `artifact_write`: os argumentos do modelo
 // passam a [entradaDoArtefacto] com o run, o passo e o titular da Call. Não toca na decisão; um
 // erro vira Deny fail-closed. Uma Call de outra tool passa inalterada.
-func newArtifactRewriter() func(referencemonitor.Call) (referencemonitor.Call, error) {
-	return func(call referencemonitor.Call) (referencemonitor.Call, error) {
+func newArtifactRewriter() reescritaDaCall {
+	return func(call referencemonitor.Call, bilhete *bilheteDaCall) (referencemonitor.Call, error) {
 		if call.ToolID != artifactWriteToolName {
 			return call, nil
 		}
@@ -359,8 +430,17 @@ func newArtifactRewriter() func(referencemonitor.Call) (referencemonitor.Call, e
 		if call.RunID == "" || call.StepID == "" || subject == "" {
 			return referencemonitor.Call{}, errors.New(artifactWriteToolName + ": tool call sem run, passo ou titular")
 		}
+		// A LINHAGEM (AOS-552): só o digest do handle resolvido no argumento que TRANSPORTA O
+		// CONTEÚDO. O `name` e o `media_type` podem levar uma referência resolvida — o `name` não,
+		// que é slot do `resource_value` e a reescrita dos handles recusa-o — e uma referência no
+		// `media_type` dava ao modelo uma forma de fazer o evento afirmar uma derivação que não
+		// existe: o conteúdo viria inline e o `inputs` nomearia um handle que só forneceu o tipo.
+		var entradas []string
+		if d := bilhete.digestDoArgumento("content"); d != "" {
+			entradas = []string{d}
+		}
 		raw, err := json.Marshal(entradaDoArtefacto{Schema: artifactInputSchema, RunID: call.RunID, StepID: call.StepID, Subject: subject,
-			Name: p.Name, MediaType: p.MediaType, Content: p.Content})
+			Name: p.Name, MediaType: p.MediaType, Content: p.Content, Inputs: entradas})
 		if err != nil {
 			return referencemonitor.Call{}, err
 		}
@@ -421,8 +501,13 @@ func (a *armazemDeArtefactos) executar(ctx context.Context, input []byte) ([]byt
 	if causa != "" {
 		return a.recusar(causa)
 	}
+	// AOS-552 — A LINHAGEM E O TAINT HERDADO, selados no evento. A linhagem chega NA ENTRADA, posta
+	// pela reescrita que resolveu as referências — logo viajou dentro do efeito que o RM mediou. O
+	// rótulo é `untrusted` sempre, e é uma AFIRMAÇÃO selada, não um recálculo de quem lê — ver
+	// [artefactoCriado].
 	if err := a.registar(ctx, in.RunID, artefactoCriado{Digest: digest, MediaType: in.MediaType, Bytes: len(conteudo), Name: in.Name,
-		Tool: artifactWriteToolName, StepID: in.StepID, SealedSubject: in.Subject}); err != nil {
+		Tool: artifactWriteToolName, StepID: in.StepID, SealedSubject: in.Subject,
+		Inputs: in.Inputs, Taint: taintDoArtefacto}); err != nil {
 		return a.recusar(artCausaRegisto)
 	}
 	a.gravados.Add(1)

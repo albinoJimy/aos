@@ -277,32 +277,101 @@ func declararSemExecutor(semExecutor []string, log func(string, ...any)) {
 // (`ExecRequest`, `entradaDoArtefacto`) — procurar referências nesse envelope seria procurá-las
 // numa estrutura que o modelo não escreveu.
 func reescritaDoEfeito(bindings map[string]sandbox.SandboxBinding, ocrRw, videoRw func(referencemonitor.Call) (referencemonitor.Call, error), artefactos bool, handles *planoDeHandles) func(referencemonitor.Call) (referencemonitor.Call, error) {
-	var artRw func(referencemonitor.Call) (referencemonitor.Call, error)
+	var artRw reescritaDaCall
 	if artefactos {
 		artRw = newArtifactRewriter()
 	}
-	return emCadeia(reescritaDeHandles(handles),
-		comporReescritas(newSandboxEffectRewriter(bindings), juntarReescritasDeModelo(ocrRw, videoRw, artRw)))
+	// A `artifact_write` sai da cadeia das tools de modelo e passa a ser um elo PRÓPRIO, porque é a
+	// única que lê o bilhete (a linhagem). O routing do [comporReescritas] continua a mandar-lhe a
+	// call, e as reescritas das tools de modelo deixam-na inalterada — cada uma só toca na sua.
+	return emCadeia(
+		reescritaDeHandles(handles),
+		semBilhete(comporReescritas(newSandboxEffectRewriter(bindings), juntarReescritasDeModelo(ocrRw, videoRw))),
+		artRw,
+	)
 }
 
-// emCadeia aplica as reescritas pela ordem dada, parando na primeira que recuse. Uma reescrita nil
-// é saltada; todas nil ⇒ nil (nenhuma reescrita, comportamento byte-idêntico).
-func emCadeia(rws ...func(referencemonitor.Call) (referencemonitor.Call, error)) func(referencemonitor.Call) (referencemonitor.Call, error) {
-	var vivas []func(referencemonitor.Call) (referencemonitor.Call, error)
+// bilheteDaCall é o estado de UMA construção de Call, partilhado pelas reescritas da cadeia e por
+// mais ninguém: nasce quando a cadeia começa e morre quando ela acaba.
+//
+// # PORQUE EXISTE (AOS-552)
+//
+// A linhagem de um artefacto — de que handles ele se alimentou — só é sabida pela reescrita dos
+// HANDLES, que resolve as referências; e só é selável por quem produz o efeito, a reescrita da
+// `artifact_write`. As duas correm na MESMA cadeia, sobre a MESMA Call e na MESMA goroutine, pelo
+// que a informação passa aqui, por valor, de uma para a outra.
+//
+// # O QUE ISTO SUBSTITUIU, E PORQUE O ANTERIOR ESTAVA ERRADO
+//
+// A primeira versão deste ticket passava a linhagem por um mapa no plano de handles, escrito pela
+// reescrita e consumido pelo executor da tool. O comentário que a justificava dizia que não havia
+// corrida porque os dois corriam «no mesmo instante»: é FALSO, e a revisão adversarial mediu-o.
+// Entre a reescrita e o executor corre a mediação inteira do Reference Monitor (política, selo no
+// WORM), a selagem do handle e a gravação do artefacto — dezenas de ms, com um mutex do nó pelo
+// meio. Com o tecto de 64 entradas do mapa e os 512 runs em voo que o nó admite, **100 calls
+// concorrentes perdiam 36 linhagens**, e os eventos saíam sem `inputs`, indistinguíveis de uma
+// gravação inline e sem contador que o dissesse.
+//
+// Aqui não há mapa, chave, tecto nem concorrência — e a linhagem passa a fazer parte do efeito que
+// o RM medeia, aprova e sela, que é o que o ADR-043 §2.3 pede.
+type bilheteDaCall struct {
+	// digestPorArgumento é, por nome de argumento DO MODELO, o digest do handle que a reescrita dos
+	// handles resolveu nele. Quem sela a linhagem escolhe os argumentos que lhe interessam — os que
+	// TRANSPORTAM CONTEÚDO —, e não todos: uma referência resolvida num argumento que só nomeia o
+	// tipo de media não é uma derivação do conteúdo.
+	digestPorArgumento map[string]string
+}
+
+// digestDoArgumento devolve o digest do handle resolvido no argumento dado, ou vazio. nil-safe.
+func (b *bilheteDaCall) digestDoArgumento(nome string) string {
+	if b == nil {
+		return ""
+	}
+	return b.digestPorArgumento[nome]
+}
+
+// anotarDigest registra o digest do handle resolvido num argumento.
+func (b *bilheteDaCall) anotarDigest(nome, digest string) {
+	if b == nil || nome == "" || digest == "" {
+		return
+	}
+	if b.digestPorArgumento == nil {
+		b.digestPorArgumento = map[string]string{}
+	}
+	b.digestPorArgumento[nome] = digest
+}
+
+// reescritaDaCall é uma reescrita do efeito do nó que participa no [bilheteDaCall].
+type reescritaDaCall func(referencemonitor.Call, *bilheteDaCall) (referencemonitor.Call, error)
+
+// semBilhete adapta uma reescrita que não precisa do bilhete (a da sandbox, as das tools de
+// modelo). nil ⇒ nil.
+func semBilhete(rw func(referencemonitor.Call) (referencemonitor.Call, error)) reescritaDaCall {
+	if rw == nil {
+		return nil
+	}
+	return func(call referencemonitor.Call, _ *bilheteDaCall) (referencemonitor.Call, error) {
+		return rw(call)
+	}
+}
+
+// emCadeia aplica as reescritas pela ordem dada, parando na primeira que recuse, com UM bilhete por
+// construção de Call. Uma reescrita nil é saltada; todas nil ⇒ nil (nenhuma reescrita,
+// comportamento byte-idêntico).
+func emCadeia(rws ...reescritaDaCall) func(referencemonitor.Call) (referencemonitor.Call, error) {
+	var vivas []reescritaDaCall
 	for _, rw := range rws {
 		if rw != nil {
 			vivas = append(vivas, rw)
 		}
 	}
-	switch len(vivas) {
-	case 0:
+	if len(vivas) == 0 {
 		return nil
-	case 1:
-		return vivas[0]
 	}
 	return func(call referencemonitor.Call) (referencemonitor.Call, error) {
+		bilhete := &bilheteDaCall{}
 		for _, rw := range vivas {
-			out, err := rw(call)
+			out, err := rw(call, bilhete)
 			if err != nil {
 				return referencemonitor.Call{}, err
 			}
