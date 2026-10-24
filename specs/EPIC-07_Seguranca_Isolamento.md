@@ -1876,6 +1876,120 @@ entradas» conviver com «o artefacto é sempre untrusted» no mesmo ticket.
 
 ---
 
+## AOS-554 — O espaço de handles liberta bytes: reaper por run e remoção do que a retenção já tornou ilegível
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-07 — Segurança e Isolamento |
+| Fase | Harness por capacidades (ADR-043), resíduo da fase R2 |
+| Tipo | feat |
+| Prioridade | P2 |
+| Estimativa | S |
+| Dependências | AOS-550 |
+| Responsável sugerido | Engenheiro de Plataforma |
+| Documentos de referência | `packages/cmd/aos/handle_store.go` (o espaço, os tectos e o banner que declara este resíduo); `packages/cmd/aos/retention.go` (`subjectOf`, que já alcança o `handle.created`); `packages/cmd/aos/artifact_store.go:25-26` (o mesmo resíduo no armazém de artefactos) |
+
+### Contexto
+
+O AOS-550 entregou o espaço próprio de handles com tectos próprios — 256 KiB por handle, 64
+handles e 16 MiB por run, e `AOS_HANDLE_MAX_BYTES` no volume — e **nada que apague ficheiros**. O
+que existe é o inverso: o `usado` do volume só soma, e o `WalkDir` do arranque recontabiliza o que
+lá ficou.
+
+As consequências estão medidas e declaradas no banner de arranque, e são duas:
+
+- **o crypto-shredding torna o conteúdo ilegível, não liberta bytes.** A retenção e a DSAR alcançam
+  o titular (`retention.go`, desde o AOS-550), destroem a KEK e o conteúdo deixa de abrir — mas os
+  blobs cifrados continuam a ocupar o tecto do volume para sempre;
+- **o volume cheio para um run para todos.** Com 64 handles × 256 KiB por run, ~64 runs enchem o
+  1 GiB de omissão. A partir daí a `artifact_write` recusa em **todos** os runs com
+  `volume_de_handles_cheio` (o handle é selado antes do artefacto), até alguém apagar a pasta à
+  mão. É fail-closed, e é indisponibilidade por acumulação.
+
+Acresce que, na R2, o conteúdo de um artefacto fica gravado **duas vezes** no volume — na pasta dos
+artefactos e na dos handles —, com dois orçamentos a encher ao mesmo ritmo.
+
+### Critérios de Aceitação
+
+- [ ] Um run terminado tem a sua pasta de handles **apagada**, por um varrimento que o nó faz sem
+      intervenção: o conteúdo em quarentena serve a execução do run, e não sobrevive a ela.
+      Decide-se no ticket o gatilho (desfecho terminal selado, TTL por run, ou ambos) e **declara-se
+      a escolha**.
+- [ ] O que a retenção já tornou ilegível é **removido do disco**: um titular cuja KEK foi destruída
+      não deixa blobs a ocupar o tecto do volume. A ordem é a segura — primeiro o facto da
+      destruição, depois os bytes —, e um apagamento que falhe não finge que aconteceu.
+- [ ] O `usado` do volume **desce** quando se apaga, e o contador do `/metrics` acompanha: hoje é
+      monótono dentro do processo e um operador não distingue «cheio» de «cheio e já libertado».
+- [ ] Um ficheiro **órfão** — gravado com o evento de proveniência a falhar — já é removido na
+      gravação (AOS-550); o reaper apanha o que um processo morto tenha deixado antes de o conseguir
+      remover.
+- [ ] O banner de arranque deixa de declarar este resíduo, porque deixa de existir; o que sobrar
+      declara-se com precisão.
+- [ ] Nada do que o DONO pode descarregar é apagado por este ticket: o armazém de artefactos tem o
+      seu próprio ciclo de vida e não se toca nele.
+
+### Fora de âmbito
+
+- A deduplicação entre os dois espaços (o conteúdo gravado duas vezes). Decidir se o handle passa a
+  referenciar o blob do artefacto é uma mudança de desenho, não de limpeza: mudaria a chave, a
+  cifra com dados associados e a superfície de leitura, que é precisamente o que a §3.1 do desenho
+  da R2 separou.
+- O ciclo de vida dos artefactos do armazém da R1b, que tem o seu resíduo próprio declarado
+  (`artifact_store.go:25-26`).
+
+---
+
+## AOS-555 — Paridade dos contadores do armazém de artefactos: a rota de leitura também conta recusas
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-07 — Segurança e Isolamento |
+| Fase | Resíduo do AOS-550 (observabilidade do armazém) |
+| Tipo | fix |
+| Prioridade | P3 |
+| Estimativa | S |
+| Dependências | AOS-550 |
+| Responsável sugerido | Engenheiro de Plataforma |
+| Documentos de referência | `packages/cmd/aos/artifact_store.go:136` (os três contadores); `packages/cmd/aos/artifact_api.go` (a rota que serve e as suas recusas); `packages/cmd/aos/api.go` (a família `aos_artifact_store_total` e o seu help, onde a lacuna está declarada) |
+
+### Contexto
+
+O AOS-550 passou a publicar os três contadores do armazém de artefactos em `/metrics`
+(`aos_artifact_store_total{resultado="gravados|recusados|servidos"}`), e mediu — e declarou no help
+da métrica — que **os dois planos não têm paridade**:
+
+- `servidos` só se move na **rota HTTP** (`artifact_api.go`), depois das portas da leitura soberana;
+- `recusados` conta só recusas da **tool** `artifact_write`, pelo vocabulário fechado dela.
+
+Logo, **um 404 ou um 410 da leitura soberana não aparece em contador nenhum**. Um operador que veja
+`servidos` parado não distingue «ninguém descarregou» de «todas as tentativas foram recusadas» — e
+as causas da rota são as que interessam a quem opera: o leitor sem soberania, o digest que o run não
+declara, o titular apagado (410), o selo da leitura que não foi possível gravar (503).
+
+O help da métrica declara a lacuna desde o AOS-550. Este ticket fecha-a.
+
+### Critérios de Aceitação
+
+- [ ] As recusas da ROTA de leitura passam a ser contadas, por causa, num vocabulário **fechado** —
+      e não misturadas com as recusas da tool, que medem outra coisa. Decide-se no ticket se é uma
+      família própria ou um rótulo novo na existente, e **declara-se porquê**.
+- [ ] As causas cobrem o que a rota já distingue: soberania do leitor, composição ausente (501),
+      posse do stream, digest não declarado pelo run (404), conteúdo apagado (410) e selo da leitura
+      indisponível (503).
+- [ ] Nenhum rótulo leva titular, run, digest, nome de ficheiro ou qualquer byte de conteúdo: o
+      `/metrics` do nó é não-autenticado.
+- [ ] O vocabulário é sempre presente (o zero é um zero verdadeiro), como o resto da família.
+- [ ] O help da métrica deixa de declarar a lacuna, porque deixa de existir.
+- [ ] A declaração equivalente para o espaço de HANDLES é conferida: ali não há rota, logo não há
+      lacuna — e isso fica dito em vez de presumido.
+
+### Fora de âmbito
+
+- Alargar o mesmo tratamento às outras rotas da leitura de conteúdo (`/reconstruct`, `/replay`), que
+  têm as suas próprias famílias e o seu próprio histórico.
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -1902,3 +2016,4 @@ entradas» conviver com «o artefacto é sempre untrusted» no mesmo ticket.
 | 1.19 | 2026-10-23 | +AOS-550 (o handle resolve-se a jusante do RM: a quarentena sobre o armazém e os metadados de nível-esquema) e +AOS-552 (o taint e a linhagem do artefacto, com o guard-test que o ADR-043 §8 exige e que não existia), fase R2 do ADR-043. Decisões do dono de 2026-10-23: o handle é híbrido (tipo opaco ao modelo, armazém por baixo) e o modelo que decide vê só factos de nível-esquema — emenda ao ADR-043 §2.4 | Equipa AOS |
 | 1.20 | 2026-10-23 | AOS-550 e AOS-552 reescritos para a v2 do desenho da R2, após duas revisões adversariais independentes: a resolução do handle passa para o `CallRewriter` **antes** da mediação (a jusante do RM repunha o defeito observado ao vivo em `loop.go:1207-1216`), o handle ganha **espaço próprio** em vez da via da `artifact_write` (tectos partilhados, vocabulário fechado, superfície de leitura não declarada), o nome que o planeador vê passa a ser cunhado pelo nó, e a linhagem do artefacto é proveniência registada e **não** desclassificação | Equipa AOS |
 | 1.21 | 2026-10-23 | AOS-550 implementado no ramo `claude/aos550-handle-jusante-rm-7bb457`: o espaço PRÓPRIO de handles (`AOS_HANDLE_DIR`, tectos próprios, vocabulário aberto, emissor `nhi:aos-node/handle`, nenhuma rota HTTP para o conteúdo e recusa de arranque se a pasta for a do `AOS_ARTIFACT_DIR`), selagem com os dados associados do run (`handle:`+sha256 do run autenticado com os bytes: um blob copiado para outro run não abre), token `h<ordinal>.<selo de (run, digest, ordinal)>` — determinista, escopado ao run, ligado à posição, sem relógio e sem `rand` —, factos de nível-esquema cunhados pelo nó e devolvidos pela PORTA (o handle vivo e o reconstruído levam os mesmos), resolução no `CallRewriter` ANTES da mediação só nos escalares de topo do documento DESCODIFICADO (recusa aninhada, parcial, em chave, em chave repetida e no slot do `resource_value`; tectos de 4 referências e 256 KiB por call, com memoização por token), `MaxToolResultBytes` = 256 KiB imposto nos dois sentidos, vocabulário de erro das tools do nó fechado por TIPO e conferido no arranque, `handle.created` alcançado pela retenção, e `aos_handle_total`/`aos_artifact_store_total` no `/metrics`. Desligado por omissão (smoke 10/10 e teste de nó composto sem a variável). **Duas revisões adversariais independentes correram sobre a implementação**: fecharam-se o fan-out sem tecto (8,5 KB de saída do modelo davam 40,9 MB de `Call.Input` antes da mediação), o diferencial de parser (`aos-handle\/v1:` escapado tornava os guardas cegos), a colisão de pastas, os factos vazios no handle vivo, o selo independente do ordinal, o ficheiro órfão sem evento, o contador de calls recusadas e o tecto efectivo do artefacto no banner. **Resíduos declarados:** as duas conferências do handle forjado saem da mesma fonte durável (defesa em profundidade, não independência) e a proveniência do TEXTO que nomeia um token não é verificável nesta porta — quem a governa é a política de fluxo do AOS-551; o selo é um hash sem chave (a protecção é o índice, e um MAC com chave do nó só é necessário quando um handle carregar conteúdo lido de fora, na R3); a resolução não deixa facto selado por leitura; o `CallRewriter` não recebe ctx (prazo de 10 s, sem propagação de cancelamento); o conteúdo fica gravado nos dois espaços e nada o apaga; o ordinal é read-then-write sem fence entre processos (fail-closed, com contador próprio); e o decorador do erro fechado não cobre as tools de sandbox |
+| 1.22 | 2026-10-24 | AOS-550 fundido (`d1e76166`). +AOS-554 (o espaço de handles liberta bytes: reaper por run e remoção do que a retenção já tornou ilegível) e +AOS-555 (paridade dos contadores do armazém: a rota de leitura também conta recusas), os dois resíduos que o AOS-550 declarou em vez de fechar | Equipa AOS |
