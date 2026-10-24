@@ -45,6 +45,15 @@ inline enche a janela com excertos que não vais reler.
 Agent(subagent_type: "Explore", prompt: "...")
 ```
 
+Quando o alvo é um pacote que ninguém da sessão conhece, ou a pergunta é «o que está mal
+aqui?», junta à varredura a auditoria do ponytail. É read-only e devolve achados ordenados
+(correcto, seguro, aguenta carga, testado, rápido, enxuto); entram como **riscos e
+hipóteses** da discovery, não como trabalho a fazer:
+
+```
+Skill(skill: "ponytail:ponytail-audit", args: "packages/<modulo>")
+```
+
 O que tem de sair de aqui, explicitamente:
 
 ```text
@@ -177,6 +186,24 @@ HIPÓTESE
 Uma hipótese declarada é engenharia. Uma hipótese silenciosa é o defeito que ninguém encontra
 até estar em produção.
 
+**Implementa no modo ponytail.** Activa-o no início da fase (`/ponytail`, nível `full`; `ultra`
+quando o pedido ainda merece ser questionado antes de construir). Ele dá a ordem de escolha que
+este repositório já quer: não construir o que ninguém pediu, reutilizar o que já existe no
+código, depois a stdlib, depois uma dependência já instalada, e só por fim código novo — o mais
+curto que fecha a tarefa inteira, incluindo chamadores, testes e fixtures que a mudança parte.
+
+```
+Skill(skill: "ponytail:ponytail", args: "full")
+```
+
+Onde o ponytail e este repositório divergem, **ganha o repositório**:
+
+- *Mínimo* nunca é retirar uma barreira. Um gate, um fail-closed, uma verificação de assinatura,
+  identidade ou taint não são «código a mais» — são o produto (AGENTS.md §7).
+- Não uses o marcador `shortcut:`. Um atalho deliberado neste repositório é um **deferimento
+  registado** (`DEFERIDO` com eixo e ticket, que o gate `deferrals` conta) ou um ticket novo.
+- A resposta curta do ponytail não substitui o relatório com evidência da §8.
+
 **Não alargues o escopo em silêncio.** Nada de refactoring oportunista, limpeza não
 relacionada, ou mudança cosmética. Uma alteração fora de `FILES_IN_SCOPE` só passa se for
 tecnicamente necessária, justificada e registada. Bug fora de escopo abre ticket novo
@@ -227,6 +254,18 @@ Usa a skill de revisão do repositório, que já sabe olhar para o diff:
 ```
 Skill(skill: "code-review", args: "high")
 ```
+
+Acrescenta a revisão do ponytail, que lê também o código ligado ao diff (chamadores, funções
+chamadas, testes) e diz, por achado, o que corre mal e como corrigir — com «o que cortar» como
+último eixo, depois de correcto, seguro, carga e testes:
+
+```
+Skill(skill: "ponytail:ponytail-review")
+```
+
+As duas revisões não se substituem: o `code-review` procura defeitos, o `ponytail-review` também
+procura o que não devia existir. Um achado de «cortar» que retire uma barreira de governação
+rejeita-se (ver §4).
 
 Para alterações que toquem em identidade, política, segredos, sandbox, auditoria ou o read-path
 soberano, acrescenta:
@@ -304,6 +343,19 @@ EVIDÊNCIA:  TestAOS263_CLIDecisaoExigeOsCamposQueAmarram cobre o corpo enviado;
 
 Sem evidência, escreve `NÃO VERIFICADO`. É informação útil. "Provavelmente funciona" não é.
 
+### Dívida deixada pelo caminho
+
+Antes de fechar, faz o livro da dívida com o `ponytail-debt`, apontado aos marcadores **deste**
+repositório — não ao `shortcut:` dele:
+
+```
+Skill(skill: "ponytail:ponytail-debt", args: "DEFERIDO")
+```
+
+Um marcador novo sem eixo nem gatilho de revisão sai `no-trigger`: é dívida que apodrece em
+silêncio e não fecha a auditoria. O gate `deferrals` é quem decide; isto é a leitura humana
+antes dele. (Lembra-te de que o gate conta marcadores em MAIÚSCULAS também em prosa.)
+
 ### Conhecimento persistente
 
 Uma decisão arquitectural nova vira **ADR** em `docs/adr/ADR-NNN-slug.md` (formato MADR) — não
@@ -340,6 +392,17 @@ estado transitório, não fonte de verdade.
 8. **Não trocar qualidade por velocidade** — velocidade só vale enquanto preserva confiança.
 9. **Não concluir sem auditoria** — execução complexa passa pelo completeness audit.
 10. **Preservar conhecimento** — o que se descobriu tem de sobreviver a esta execução.
+
+## Ponytail nas fases
+
+| Fase | Skill | Para quê |
+|---|---|---|
+| 1. Discovery | `ponytail:ponytail-audit` | Riscos e hipóteses de um pacote que não conheces (read-only) |
+| 4. Implementação | `ponytail:ponytail` (`full`/`ultra`) | A mudança mais pequena que fecha a tarefa inteira |
+| 6. Revisão adversarial | `ponytail:ponytail-review` | Defeitos no diff e no código ligado, e o que cortar |
+| 8. Auditoria de completude | `ponytail:ponytail-debt` `DEFERIDO` | Livro da dívida antes do gate `deferrals` |
+
+`ponytail-gain` e `ponytail-help` são ecrãs de consulta e não entram no fluxo.
 
 ## Referências
 
