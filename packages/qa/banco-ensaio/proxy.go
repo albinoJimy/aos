@@ -98,6 +98,9 @@ type PedidoDeProxy struct {
 	// FormaDoFalso é a forma do estado no wire de chat do falso do estado ([FormaOpenRouter] ou
 	// vazio). Só com Estado.
 	FormaDoFalso string
+	// ImagemDeSaida faz o falso do estado responder com uma imagem gerada na forma da OpenRouter
+	// ([FalsoDeEstado.ImagemDeSaida], AOS-558). Só com Estado.
+	ImagemDeSaida bool
 	// Conselheiro, quando presente, é a SEGUNDA rota do proxy (AOS-528): a do modelo conselheiro,
 	// com o seu alias, o seu adaptador, a sua chave e a sua base — eventualmente de outro
 	// fornecedor. nil ⇒ uma rota só, e a configuração de sempre, byte a byte. Não vale com
@@ -630,6 +633,9 @@ func argumentosDoContentorDoFalso(contentor, rede string, p PedidoDeProxy, chave
 		args = append(args, "--estado", p.Estado, "--turnos-do-falso", fmt.Sprint(p.TurnosDoFalso))
 		if p.FormaDoFalso != "" {
 			args = append(args, "--forma-do-falso", p.FormaDoFalso)
+		}
+		if p.ImagemDeSaida {
+			args = append(args, "--imagem-de-saida")
 		}
 	} else {
 		args = append(args, "--roteiro", EscreverRoteiro(p.Roteiro))

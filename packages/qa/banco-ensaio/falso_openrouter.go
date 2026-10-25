@@ -252,7 +252,14 @@ func (f *FalsoDeEstado) servirOpenRouter(w http.ResponseWriter, corpo []byte, to
 		_, _ = w.Write(cru)
 	}
 	if len(pedido.Tools) == 0 || turnos >= f.turnos() {
-		resposta("stop", map[string]any{"role": "assistant", "content": SentinelaDeTexto + " resposta final do provider falso do estado"})
+		mensagem := map[string]any{"role": "assistant", "content": SentinelaDeTexto + " resposta final do provider falso do estado"}
+		if f.ImagemDeSaida && len(pedido.Tools) == 0 {
+			// AOS-558: a imagem gerada, na forma em que a OpenRouter a devolve. Vai só num
+			// pedido sem tools — um pedido de geração de imagem nunca as traz —, para não mudar
+			// o que os cenários do estado opaco medem.
+			mensagem["images"] = imagensDaResposta()
+		}
+		resposta("stop", mensagem)
 		return
 	}
 	tool, args := chamadaDoFalso(corpo, pedido.Tools[0].Function.Name, pedido.Tools[0].Function.Parameters.Properties)

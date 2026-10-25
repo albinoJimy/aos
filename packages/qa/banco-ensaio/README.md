@@ -1196,6 +1196,42 @@ por tamanho se a parte chegou `intacta`, `alterada_pelo_proxy`, `recusada_pelo_p
 AOS_BANCO_PROXY=1 AOS_BANCO_FALSO_BIN=<binário linux do banco> go test -run '^TestAOS534_ProxyReal_VideoPeloProxy$' -v -count=1 .
 ```
 
+### O caminho, as chaves do topo e as APIs de imagem e de vídeo (AOS-558)
+
+O falso do estado registra também, de **cada** pedido, o **caminho** por que lhe chegou
+(`caminhos_pedidos` na forma) e as **chaves do topo** do corpo (`chaves_do_topo`). O caminho vai
+por uma lista fechada — `chat_completions`, `messages`, `images_generations`, `images_edits`,
+`videos`, `videos_id`, `videos_id_content`, `outro` (`ClassificarCaminho`) — e o caminho em bruto
+**nunca se grava**. As chaves do topo vão por outra lista fechada (as do chat, as da geração de
+imagem da OpenAI, o `image_config` da OpenRouter e as de roteamento dela — `provider`, `plugins`,
+`transforms`); uma chave fora da lista conta como `outra`, e nenhum valor se grava.
+
+E o falso sabe responder em duas formas novas, para se poder medir o **sentido de volta**:
+
+- com `--imagem-de-saida` (só do subcomando interno `falso-provider`), uma resposta de chat **sem
+  tools** leva um `images` na forma da OpenRouter, com uma data URL de um PNG de 4×4 gerado em
+  memória (`PNGDoFalso`). É o que o adaptador `openrouter` do proxy lê para montar a resposta de
+  `images/generations`. Num pedido COM tools nada muda: os cenários do estado opaco não são
+  contaminados;
+- um pedido a um caminho da família do vídeo é servido na forma da **API de vídeo da OpenAI** (um
+  job com `id` e `status`), que é a que o adaptador `openai` do proxy espera. Esses caminhos são
+  servidos **antes** de o falso exigir JSON, porque um GET de estado não tem corpo.
+
+O spike da pré-condição da fase R3 do ADR-043, `TestAOS558_ProxyReal_ImagemEVideoPeloProxy`, manda
+directamente ao proxy real, pelas rotas `openrouter/…` e `openai/…`, seis pedidos — controlo só com
+texto, `images/generations`, chat com `modalities`+`provider`+`plugins`+`transforms`, e os três
+passos do ciclo assíncrono de vídeo (criar, sondar com o id que o proxy devolveu, descarregar) — e
+diz, por rota e por caso, o **encaminhamento** (o caminho a que chegou ao fornecedor, ou
+`recusado_pelo_proxy`) e a **saída** (`intacta`, `alterada_ou_perdida`, `nao_aplicavel`), em
+`AOS_BANCO_ENDPOINTS_REPORT`. Mede, não julga; não corre no gate `banco-ensaio-proxy.sh`:
+
+```bash
+AOS_BANCO_PROXY=1 AOS_BANCO_FALSO_BIN=<binário linux do banco> go test -run '^TestAOS558_ProxyReal_ImagemEVideoPeloProxy$' -v -count=1 .
+```
+
+O resultado da medição de 2026-10-25 está em
+`docs/reports/spike-litellm-imagem-video-2026-10-25.md`.
+
 ## A qualificação do modelo (AOS-518)
 
 A experiência `qualificacao` é a única em que o banco dá um **veredicto**: `qualificado`,
