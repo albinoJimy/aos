@@ -33,6 +33,7 @@
     "resource_region": "eu-west",
     "egress": "none",
     "mutation": "none",
+    "reversibility": "reversible",
     "sandbox": { "command": "read", "path_arg": "doc_id" }
   }
 ]

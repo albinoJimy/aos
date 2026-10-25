@@ -1689,6 +1689,88 @@ PY
   fi
 done
 
+# X8 — AS DUAS FORMAS NOVAS DA POLÍTICA DE FLUXO (AOS-556, ADR-044 §2.8). A base é a política
+# 1.2.0 CANDIDATA (`docs/governance/politica-1.2.0-candidata.cedar`), que não está em vigor: é
+# sobre ela que as formas novas existem, e usá-la aqui prova de uma vez que o gate as aceita e que
+# a candidata é válida contra o gate — antes da cerimónia, e não nela.
+#
+# Cada caso DEGRADA a candidata de uma maneira e exige VERMELHO. A anotação não pode ser a licença:
+# o que a torna verdadeira é a cláusula do destino, e sem ela a excepção valia para toda a
+# capability — incluindo a leitura com egress externo, que é o que a partição separa.
+PT_CAND="$REPO_ROOT/docs/governance/politica-1.2.0-candidata.cedar"
+if [ ! -f "$PT_CAND" ]; then
+  bad "X8: a política candidata não existe em docs/governance/ — o self-test das formas novas não mediu nada"
+else
+  for caso in X8 X8b X8c X8d X8e; do
+    if ensure_python && python3 - "$PT_CAND" "$PT_FIX" "$caso" <<'PY'
+import sys
+src, dst, caso = sys.argv[1], sys.argv[2], sys.argv[3]
+t = open(src, encoding="utf-8").read()
+if caso == "X8":
+    # A anotação de fluxo numa capability de EFEITO: a excepção não se estende ao web_post.
+    t = t.replace('@id("allow_http_post")', '@id("allow_http_post")\n@flow_from_handle("external_read")', 1)
+    t = t.replace('    resource.region == "eu" &&\n    context.taint != "untrusted"', '    resource.region == "eu"', 1)
+elif caso == "X8b":
+    # Regra de fluxo SEM a cláusula do destino: a anotação sozinha não isenta.
+    t = t.replace('    context.destination == "external_read" &&\n', "", 1)
+elif caso == "X8c":
+    # A disjunção noutra forma: `provenance != "context"` admite proveniências que ninguém reviu.
+    t = t.replace('(context.taint != "untrusted" || context.provenance == "handle_argument")',
+                  '(context.taint != "untrusted" || context.provenance != "context")', 1)
+elif caso == "X8d":
+    # A isenção de leitura local SEM a cláusula do destino: isentava toda a cap:fs.read.
+    t = t.replace('    principal.authority.contains("cap:fs.read") &&\n    context.destination == "local_read"',
+                  '    principal.authority.contains("cap:fs.read")', 1)
+else:
+    # X8e — a anotação de fluxo com outro valor: o vocabulário é fechado.
+    t = t.replace('@flow_from_handle("external_read")', '@flow_from_handle("qualquer")', 1)
+open(dst, "w", encoding="utf-8").write(t)
+PY
+    then
+      if AOS_POLICY_TAINT_POLICY="$PT_FIX" AOS_POLICY_TAINT_BASELINE="$PT_EMPTY" bash "$CI_DIR/policy-taint.sh" >/dev/null 2>&1; then
+        bad "$caso: policy-taint aceitou uma forma de fluxo degradada — a excepção é mais larga do que o ADR-044 §2.8 declara"
+      else
+        pass "$caso: policy-taint recusa a forma de fluxo degradada (na cópia)"
+      fi
+    else
+      bad "$caso: não foi possível gerar a .cedar-fixture da forma degradada"
+    fi
+  done
+
+  # X8f — CONTROLO POSITIVO das formas novas: a candidata INTACTA, com baseline vazia, fica VERDE.
+  # Sem ele os cinco vermelhos acima passariam com um gate que recusasse a candidata por qualquer
+  # razão — incluindo por não reconhecer nenhuma das duas formas.
+  if AOS_POLICY_TAINT_POLICY="$PT_CAND" AOS_POLICY_TAINT_BASELINE="$PT_EMPTY" bash "$CI_DIR/policy-taint.sh" >/dev/null 2>&1; then
+    pass "X8f: controlo — a política 1.2.0 candidata passa o gate com a baseline VAZIA (é o estado final da cerimónia)"
+  else
+    bad "X8f: o gate recusa a política candidata intacta — ou o gate não aprendeu as formas novas, ou a candidata tem um permit a descoberto"
+  fi
+
+  # X8g — A FRONTEIRA DO CORPO DE UM PERMIT (defeito que o AOS-556 encontrou no gate). O corpo de
+  # cada permit tem de acabar no `;` DELE: enquanto absorvia as regras seguintes, um `||` de uma
+  # vetava a excepção de outra, e a excepção da escrita local do run só funcionava por ser a
+  # ÚLTIMA regra do ficheiro. Aqui põe-se uma regra com disjunção DEPOIS dela: tem de ficar verde.
+  if ensure_python && python3 - "$PT_CAND" "$PT_FIX" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+t = open(src, encoding="utf-8").read()
+assert '@taint_exempt("local_run_write")' in t, "a candidata nao tem a excepcao da escrita local do run"
+extra = ('@id("depois_com_disjuncao")\npermit (principal, action == Action::"cap:fs.read", resource)\n'
+         'when {\n    context.taint != "untrusted" &&\n'
+         '    (resource.region == "eu" || resource.region == "eu-west")\n};\n')
+open(dst, "w", encoding="utf-8").write(t.rstrip("\n") + "\n\n" + extra)
+PY
+  then
+    if AOS_POLICY_TAINT_POLICY="$PT_FIX" AOS_POLICY_TAINT_BASELINE="$PT_EMPTY" bash "$CI_DIR/policy-taint.sh" >/dev/null 2>&1; then
+      pass "X8g: o corpo de um permit acaba no `;` dele — um `||` numa regra seguinte não veta a excepção de outra"
+    else
+      bad "X8g: uma regra com disjunção DEPOIS de uma anotada avermelhou o gate — a fronteira do corpo do permit voltou a absorver as regras seguintes"
+    fi
+  else
+    bad "X8g: não foi possível gerar a .cedar-fixture da regra posterior com disjunção"
+  fi
+fi
+
 # X3 — CONTROLO POSITIVO (o molde do P3/Q4/R3/V4): baseline REAL + política REAL ⇒
 # verde. Sem isto, um gate «sempre vermelho» passaria X1/X2 sem distinguir nada.
 if bash "$CI_DIR/policy-taint.sh" >/dev/null 2>&1; then

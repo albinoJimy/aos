@@ -409,7 +409,7 @@ func (e *cedarEngine) smokeProbeRule(id string) error {
 	// `action in [...]` e um atributo mau atrás de um `&&` sobre valor não-semeado passariam
 	// por verde e fariam deny-all silencioso em runtime (achado da revisão adversarial).
 	if fora := attrRefsForaDoMapa(marshaled); len(fora) > 0 {
-		return fmt.Errorf("%w: avaliacao de fumo (estatica) da regra %q: referencia atributo(s) fora do mapa fixo do motor (%s) — so principal.authority, resource.region, context.taint e context.sensitivity existem em runtime; a regra compila e assina mas em producao da ErrMalformedRequest (deny-all da capability)",
+		return fmt.Errorf("%w: avaliacao de fumo (estatica) da regra %q: referencia atributo(s) fora do mapa fixo do motor (%s) — so os atributos de smokeAttrMapaFixo existem em runtime; a regra compila e assina mas em producao da ErrMalformedRequest (deny-all da capability)",
 			ErrMalformedRequest, id, strings.Join(fora, ", "))
 	}
 
@@ -439,6 +439,15 @@ func (e *cedarEngine) smokeProbeRule(id string) error {
 		Context: cedar.NewRecord(cedar.RecordMap{
 			"taint":       cedar.String("trusted"),
 			"sensitivity": cedar.String("public"),
+			// AOS-556: a sonda monta o SEU proprio contexto, e um atributo que o
+			// [cedarEngine.evaluate] monte e ela nao semeie da «record does not have the
+			// attribute» em TODA a regra que o leia — um falso vermelho que faria a cerimonia
+			// parecer impossivel. Os dois mapas tem de crescer juntos, e e o
+			// [smokeAttrMapaFixo] que diz quais sao.
+			// Literais, como o `taint` e a `sensitivity` ao lado: este motor e PURO e nao
+			// depende do Reference Monitor (ver [Input]), que e quem define o vocabulario.
+			"destination": cedar.String("local_read"),
+			"provenance":  cedar.String("clean"),
 		}),
 	}
 
