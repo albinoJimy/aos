@@ -1214,3 +1214,41 @@ func TestAOS550_No_HandleNoArgumentoPeloRMInteiro(t *testing.T) {
 		}
 	}
 }
+
+// AOS-556: NUM LAYOUT POR HANDLE A `artifact_write` NÃO SELA. Quem sela o resultado é o produtor
+// do `tool_result`, e selar nos dois dava ao modelo a referência de um documento que CONTÉM a
+// referência do artefacto — a de dentro nunca se resolve — e gastava DUAS posições do tecto de
+// handles por escrita.
+//
+// A contagem de artefactos gravados é a NÃO-VACUIDADE: sem ela, uma tool que simplesmente
+// falhasse na 1.8.0 dava o mesmo verde.
+func TestAOS556_ArtifactWriteNaoSelaDuasVezes(t *testing.T) {
+	a, plano := aos550ArmazemComHandles(t)
+	// FORA de um layout por handle nada muda: a tool sela e devolve a referência.
+	out, err := a.executar(context.Background(), aos550Entrada("run-1", "s1", "a.json", "application/json", `{"a":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref := aos550Ref(t, out); ref == "" {
+		t.Fatal("fora de um layout por handle a tool tem de selar")
+	}
+	// NA 1.8.0 não sela: o resultado não leva handle e o espaço do run fica sem nada.
+	ctx180 := agentruntime.ContextWithAssemblyVersion(context.Background(), agentruntime.AssemblyVersion180)
+	out, err = a.executar(ctx180, aos550Entrada("run-2", "s1", "b.json", "application/json", `{"b":2}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref := aos550Ref(t, out); ref != "" {
+		t.Fatalf("na 1.8.0 a tool selou (%q): o produtor sela outra vez e a referencia de dentro nunca resolve", ref)
+	}
+	q, qerr := plano.quarentenaDoRun(ctx180, "titular-550", "run-2", "", "")
+	if qerr != nil {
+		t.Fatal(qerr)
+	}
+	if q.Len() != 0 {
+		t.Fatalf("a 1.8.0 deixou %d handles no espaco do run", q.Len())
+	}
+	if n := a.gravados.Load(); n != 2 {
+		t.Fatalf("artefactos gravados = %d; quero 2 — nos dois layouts o artefacto e escrito", n)
+	}
+}

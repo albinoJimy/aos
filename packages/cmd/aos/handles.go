@@ -429,20 +429,18 @@ var (
 // que não conhece. Resíduo declarado — o facto é lido por quem atravessa a aresta do plano
 // (AOS-553), e dentro de um run ninguém o consulta.
 //
-// # RESÍDUO MEDIDO: A `artifact_write` NUMA 1.8.0 SELA DUAS VEZES
+// # A `artifact_write` NÃO SELA DUAS VEZES (AOS-556, resíduo fechado)
 //
-// A `artifact_write` já sela o artefacto por si e devolve `{"handle":"…"}`
-// ([armazemDeArtefactos.gravar]). Numa 1.8.0 esse JSON é SELADO OUTRA VEZ por este produtor, e a
-// consequência é concreta: o modelo recebe a referência de um documento que CONTÉM a referência do
-// artefacto, e resolver a de fora entrega a uma tool o texto do documento — não o artefacto. A
-// referência de dentro nunca se resolve: a recusa de referência aninhada
-// ([handleCausaAninhado]) olha para os ARGUMENTOS que o modelo emitiu, não para os bytes
-// resolvidos, pelo que isto não é recusado — é inerte.
+// A `artifact_write` sela o artefacto por si e devolve `{"handle":"…"}`. Numa 1.8.0 esse JSON era
+// SELADO OUTRA VEZ aqui, e o modelo recebia a referência de um documento que CONTÉM a referência
+// do artefacto — a de dentro nunca se resolve, e cada escrita gastava duas posições do tecto.
 //
-// Não é um defeito vivo: a 1.8.0 não é alcançável em produção. Mas é o que o AOS-556 tem de
-// resolver ANTES de ligar o interruptor, e a forma de o resolver NÃO é um discriminador por
-// `ToolID` neste produtor (a linha 1.19 do epic mediu que esse discriminador não generaliza): é
-// decidir se uma tool que já devolve uma referência a declara, e isso é contrato de tool.
+// FECHOU-SE DO LADO DA TOOL, não com um discriminador por `ToolID` neste produtor (a linha 1.19 do
+// epic mediu que esse não generaliza): a tool pergunta pela MESMA função que este produtor e o
+// tail usam ([agentruntime.SealsToolResult], sobre a versão do contexto) e não sela quando o
+// produtor vai selar. Este produtor continua a selar TODO o resultado que lhe chega, sem conhecer
+// tool nenhuma. A consequência declarada está no sítio da decisão, em
+// [armazemDeArtefactos.gravar].
 func seloDoResultado(p *planoDeHandles) activity.ResultSealer {
 	if p == nil {
 		return nil
@@ -469,7 +467,8 @@ func seloDoResultado(p *planoDeHandles) activity.ResultSealer {
 // Corre na HOSPEDAGEM do run, depois de o layout estar fixado e ANTES do registo de retoma — que
 // leva os `Inputs` e por isso guarda as referências. Fail-closed: uma entrada que não sele recusa
 // a hospedagem, em vez de deixar o run morrer no primeiro tail com
-// [agentruntime.ErrPlanInputWithoutHandle].
+// [agentruntime.ErrPlanInputWithoutHandle]. E a recusa DESFAZ os bytes que esta chamada já selou
+// (AOS-556) — ver o `desfazer` no corpo, que diz o que fica e porquê.
 //
 // UMA ENTRADA QUE JÁ TRAZ HANDLE NÃO SE RE-SELA. É o caso da RETOMA: o handle veio do registo, e
 // uma segunda selagem cunhava um token com OUTRO ordinal — outro rótulo no tail, outro
@@ -486,6 +485,48 @@ func selarEntradasDoPlano(ctx context.Context, p *planoDeHandles, goal agentrunt
 	// Cópia: o Goal do chamador não fica meio-selado se uma entrada a seguir recusar.
 	entradas := make([]agentruntime.PlanInput, len(goal.Inputs))
 	copy(entradas, goal.Inputs)
+	// O QUE ESTA CHAMADA SELAR DESFAZ-SE SE UMA ENTRADA A SEGUIR RECUSAR (AOS-556). Sem isto,
+	// uma recusa na entrada k deixava no espaço os bytes das k-1 anteriores — de um run que
+	// nunca arranca, que ninguém consegue resolver (o guarda da resolução exige o par
+	// (titular, run, digest) de um run que existe) nem apagar (nada apaga ficheiros deste
+	// espaço). É o dano do achado M-4 pelo outro lado, e o alcance é o tecto do VOLUME, que
+	// cheio recusa a selagem em TODOS os runs. Por hospedagem falhada o alcance é o tecto
+	// AGREGADO do canal de entrada — `maxPlanInputsBytes`, 512 KiB, conferido antes de o run
+	// existir —, e NÃO 16 × o tecto de um handle: nenhuma entrada chega lá, porque
+	// `maxPlanInputBytes` (128 KiB) é mais apertado. Repetível por quem submete.
+	// [armazemDeHandles.selar] já o desfaz quando é o evento que falha; aqui é a entrada seguinte.
+	//
+	// O `handle.created` de cada uma FICA: o stream é append-only e não há evento de
+	// compensação. Uma declaração de um run que nunca corre é inofensiva — o que ela
+	// declarava deixou de existir, e nenhum run a pode usar.
+	//
+	// DUAS JANELAS CONTINUAM ABERTAS, declaradas em [NodeService.hostRun]: o processo morrer entre
+	// os selos e o registo de retoma, e os portões fail-closed do [agentruntime.Runtime.Run], que
+	// recusam DEPOIS deste selo e sem um único efeito — essa é o **AOS-557**.
+	//
+	// CORRE SEM `a.mu`, ao contrário do desfazer de dentro de [armazemDeHandles.selar]: o
+	// concorrente seria outra hospedagem do mesmo run, que o guarda de duplicados recusa.
+	seladas := map[string]struct{}{}
+	// A GUARDA MEDE O GOAL, e a mistura que importaria é com as declarações do STREAM — não são a
+	// mesma coisa, e fica dito. Um Goal em que alguma entrada já traz handle desarma o desfazer
+	// por inteiro: [armazemDeHandles.gravar] reaproveita o ficheiro do mesmo conteúdo no mesmo
+	// run, pelo que apagar podia tirar o chão a uma entrada que veio do registo de retoma. Nenhum
+	// dos dois casos é alcançável hoje — o wire do submit não transporta handles, o registo leva-os
+	// todos, a re-submissão do mesmo `run_id` é recusada (AOS-457), e dentro de uma hospedagem as
+	// entradas selam ANTES de qualquer turno, pelo que o run ainda não escreveu artefacto nenhum
+	// com que pudesse colidir.
+	jaSelada := false
+	for i := range entradas {
+		jaSelada = jaSelada || entradas[i].Handle != ""
+	}
+	desfazer := func() {
+		if jaSelada {
+			return
+		}
+		for hexd := range seladas {
+			p.armazem.apagar(goal.RunID, hexd)
+		}
+	}
 	for i := range entradas {
 		if entradas[i].Handle != "" {
 			continue
@@ -497,8 +538,14 @@ func selarEntradasDoPlano(ctx context.Context, p *planoDeHandles, goal agentrunt
 		// que a etiqueta não decide nada.
 		ref, causa := p.selarEmQuarentena(ctx, goal.Titular(), goal.RunID, planInputHandleStep, planInputHandleTool, "", entradas[i].Content)
 		if causa != "" {
+			desfazer()
 			return goal, fmt.Errorf("%w: entrada %d (%s>%s) do run %q: %s", errEntradaNaoSelada, i, entradas[i].From, entradas[i].Output, goal.RunID, causa)
 		}
+		// Pela MESMA função com que o espaço nomeia o ficheiro ([digestHex] em
+		// [armazemDeHandles.selar]), e não pelo digest do handle sem o prefixo do algoritmo: uma
+		// segunda derivação do nome do ficheiro fazia o desfazer deixar de encontrar o que apagar
+		// — e [armazemDeHandles.apagar] é best-effort, pelo que falharia em SILÊNCIO.
+		seladas[digestHex(entradas[i].Content)] = struct{}{}
 		entradas[i].Handle = ref
 	}
 	goal.Inputs = entradas
@@ -765,7 +812,7 @@ func handlesBanner(p *planoDeHandles) []string {
 	if p == nil {
 		return nil
 	}
-	return []string{fmt.Sprintf("entradas por handle (AOS-550, ADR-043 §2.6): um argumento de tool pode ser uma referencia %s<token> e o no troca-a pelos bytes NO CallRewriter, ANTES da mediacao — a Call que o RM decide, audita e sela e a que ja tem os bytes (a preview da aprovacao e o hash do span descrevem o efeito executado; o resource_value e calculado dos argumentos do MODELO, antes da reescrita, e por isso uma referencia num argumento que preencha um slot dele RECUSA a call). Procura-se SO nos escalares de topo do documento DESCODIFICADO: uma referencia aninhada, parcial, numa chave, ou numa chave repetida, RECUSA a call; ate %d referencias e %d bytes resolvidos por call. Um token que nao resolve recusa a call (E_EFFECT_REWRITE), nunca passa como literal. Handle forjado: so codigo do no CRIA um handle (emissor %s) e so o que o stream do run declara se RESOLVE — duas conferencias sobre a MESMA fonte duravel, defesa em profundidade e nao independencia; o texto que NOMEIA um token nao tem proveniencia verificavel nesta porta, e quem governa esse fluxo e a politica de dados do AOS-556. NENHUM dos dois guardas decide o taint: um handle e sempre untrusted. Tokens cunhados pelo no, escopados ao run, ligados a posicao e NAO ESCRIVEIS por quem nao conhece os bytes (hash sem chave de run+digest+ordinal, nao um segredo), com a sequencia pela ordem dos eventos (sem relogio, sem rand). PRODUTORES DE HANDLES neste no: a tool %s, que valida o conteudo antes de selar (exige AOS_ARTIFACT_DIR); e, do AOS-551, o selo do resultado de cada tool call permitida e o selo das entradas do plano, os dois SO num run num layout por handle (a %s) e declarados na linha do selo, a seguir",
+	return []string{fmt.Sprintf("entradas por handle (AOS-550, ADR-043 §2.6): um argumento de tool pode ser uma referencia %s<token> e o no troca-a pelos bytes NO CallRewriter, ANTES da mediacao — a Call que o RM decide, audita e sela e a que ja tem os bytes (a preview da aprovacao e o hash do span descrevem o efeito executado; o resource_value e calculado dos argumentos do MODELO, antes da reescrita, e por isso uma referencia num argumento que preencha um slot dele RECUSA a call). Procura-se SO nos escalares de topo do documento DESCODIFICADO: uma referencia aninhada, parcial, numa chave, ou numa chave repetida, RECUSA a call; ate %d referencias e %d bytes resolvidos por call. Um token que nao resolve recusa a call (E_EFFECT_REWRITE), nunca passa como literal. Handle forjado: so codigo do no CRIA um handle (emissor %s) e so o que o stream do run declara se RESOLVE — duas conferencias sobre a MESMA fonte duravel, defesa em profundidade e nao independencia; o texto que NOMEIA um token nao tem proveniencia verificavel nesta porta, e quem governa esse fluxo e a politica de dados do AOS-556. NENHUM dos dois guardas decide o taint: um handle e sempre untrusted. Tokens cunhados pelo no, escopados ao run, ligados a posicao e NAO ESCRIVEIS por quem nao conhece os bytes (hash sem chave de run+digest+ordinal, nao um segredo), com a sequencia pela ordem dos eventos (sem relogio, sem rand). PRODUTORES DE HANDLES neste no: a tool %s, que valida o conteudo antes de selar (exige AOS_ARTIFACT_DIR) e que desde o AOS-556 sela SO FORA de um layout por handle — num layout por handle quem sela o resultado dela e o produtor, e selar nas duas dava ao modelo uma referencia para um documento que contem a referencia do artefacto; e, do AOS-551, o selo do resultado de cada tool call permitida e o selo das entradas do plano, os dois SO num run num layout por handle (a %s) e declarados na linha do selo, a seguir",
 		agentruntime.HandleRefPrefix, handleMaxRefsPorCall, handleMaxBytesPorCall, handleNHI, artifactWriteToolName, agentruntime.AssemblyVersion180)}
 }
 

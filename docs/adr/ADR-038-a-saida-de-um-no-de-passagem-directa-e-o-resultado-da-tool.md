@@ -364,6 +364,7 @@ do `aos-orq`:
 | `origem_nao_transportavel` | Acima do tecto, não é texto válido, ou stdout binário |
 | `origem_tool_falhou` | Envelope com `exit_code` diferente de zero |
 | `origem_vazia` | O que se entregaria está vazio |
+| `origem_por_handle` | Os bytes designados NOMEIAM um handle em vez de serem conteúdo (**AOS-556**). Num layout por handle o kernel sela o resultado da tool e designa a própria referência: os dois lados hasheiam-na, logo `origem_nao_confere` não dispara e o que se entregaria é um token que o consumidor não abre. A travessia da aresta por handle é o **AOS-553**; até ela, falha com causa |
 
 Com o nó em imposição, um run sem origem designável já fecha `failed` no kernel, e a causa é a
 razão do kernel (`output_source_missing`, `output_source_ambiguous`). Em todos os casos o

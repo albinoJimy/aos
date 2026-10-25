@@ -1204,7 +1204,16 @@ func TestAOS501_EntregaDoRun(t *testing.T) {
 		"envelope que falhou": {envelopeFalhou, causaOrigemToolFalhou},
 		"envelope vazio":      {envelopeVazio, causaOrigemVazia},
 		"envelope binario":    {envelopeBinario, causaOrigemNaoTransportavel},
-		"so espacos":          {soEspacos, causaOrigemVazia},
+		// AOS-556: num layout por handle o selo do kernel designa a PRÓPRIA referência, pelo que a
+		// âncora dos próprios bytes confere e o passo do digest passa. Sem esta causa, o que se
+		// entregava ao consumidor era um token que ele nunca abre.
+		"referencia de handle": {agentruntime.HandleRefPrefix + agentruntime.MintHandleToken(aos501RunDoLeitor, "sha256:aa", 1), causaOrigemPorHandle},
+		// E O CONTROLO NEGATIVO DA MESMA DECISÃO: a causa é pela FORMA COMPLETA, nunca pelo
+		// prefixo — «o prefixo não é autoridade», e um documento lido pode começar por aqueles
+		// bytes. Num layout sem handles isto é conteúdo legítimo e ENTREGA-SE (causa vazia). Com um
+		// teste de prefixo, este caso fechava o nó do plano.
+		"documento que comeca pelo prefixo": {agentruntime.HandleRefPrefix + "isto nao e um token", ""},
+		"so espacos":                        {soEspacos, causaOrigemVazia},
 	} {
 		servido := c.servido
 		a := ancora(func(a *agentruntime.OutputSource) { a.Digest, a.Bytes = digestDoConteudo(servido), len(servido) })

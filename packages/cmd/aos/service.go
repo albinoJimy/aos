@@ -723,9 +723,14 @@ func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resumi
 // ([promptDaTentativaDifere] → [hashDaSementeCom] → `SeedTail`, que recusa entradas sem handle):
 // ela lê «não consegui recalcular» como DIFERE, nunca como igual, pelo que o efeito é um
 // `prompt_diferente` espúrio num run da 1.8.0 com entradas E aviso de nova tentativa — nunca uma
-// diferença escondida. É residuo do AOS-551 e tem de ser fechado pelo AOS-556, que é quem torna a
-// 1.8.0 accionável; mover o selo para cá exigia fixar o layout antes da escolha do modelo, e
-// chamar `aoHospedar` de dentro do `hostRun` corre com quem lê a semente depois do retorno. Não
+// diferença escondida.
+//
+// O AOS-556 FECHOU-O ONDE A MEDIÇÃO SE LÊ, e não aqui: a contagem continua a ser a conservadora
+// (o que não se consegue comparar conta como diferente), e o LOG passa a dizer que não se
+// conseguiu comparar, em vez de acusar a tentativa de ter mudado o pedido —
+// [sementeSemReferencias]. O que NÃO se fez, e porquê: mover o selo para cá obrigava a fixar o
+// layout antes da escolha do modelo, e chamar `aoHospedar` de dentro do `hostRun` corre com quem
+// lê a semente depois do retorno. Não
 // é chamado quando a submissão é recusada. Quem precisa de saber o que o run semeou (a medição do
 // prompt de uma nova tentativa) lê-o daqui, e não do Goal que submeteu: os dois diferem sempre
 // que o objectivo tem dados que a ingestão redige.
@@ -1273,15 +1278,32 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	// `Inputs` e é por isso que as referências sobrevivem à retoma sem serem re-seladas. Fora de
 	// um layout por handle não toca em nada. Fail-closed: sem selo o run morria no primeiro tail.
 	//
-	// DEPOIS do observador do Goal hospedado, e isso é um resíduo declarado — ver
-	// [NodeService.SubmitObservando], que explica o que o observador deixa de ver e qual o efeito
-	// medido.
+	// DEPOIS do observador do Goal hospedado, e deliberadamente — mas não pela razão que esta linha
+	// dizia primeiro. O selo precisa do LAYOUT fixado, e o layout é fixado aqui, depois da escolha
+	// do modelo; é essa a razão estrutural de ele não poder subir para o observador, que corre
+	// noutra goroutine antes desta. O argumento «uma recusa da fixação do modelo deixaria handles
+	// selados de um run que nunca arranca» NÃO distingue as duas posições, e dizê-lo era medir um
+	// custo que as duas têm por igual: essa mesma janela já existe aqui, pelos portões do
+	// [agentruntime.Runtime.Run] logo a seguir — ver o bloco do selo, abaixo, e o AOS-557. O que o
+	// observador deixa de ver está fechado onde a medição se lê — ver
+	// [NodeService.SubmitObservando] e [sementeSemReferencias].
 	//
-	// E DEPOIS DE CADA SELO HAVER UM `handle.created`: se a entrada k recusar com k-1 já seladas,
-	// ou se o processo morrer entre os selos e o registo de retoma, o stream fica com declarações
-	// de um run que nunca vai correr e os bytes ficam no espaço de handles até alguém limpar a
-	// pasta (nada apaga ficheiros deste espaço — está declarado no banner). A cópia defensiva do
-	// Goal protege o chamador, não o stream. Resíduo declarado; o alcance é o tecto do volume.
+	// E DEPOIS DE CADA SELO HAVER UM `handle.created`: uma entrada que recuse com as anteriores já
+	// seladas DESFAZ os bytes delas (AOS-556, em [selarEntradasDoPlano]), mas o `handle.created`
+	// de cada uma fica — o stream é append-only e não há evento de compensação. Uma declaração de
+	// um run que nunca corre é inofensiva: o que ela declarava deixou de existir e nenhum run a
+	// pode usar.
+	//
+	// O QUE CONTINUA EM ABERTO SÃO DUAS COISAS, e a segunda é o **AOS-557**. A primeira é o
+	// processo morrer entre os selos e o registo de retoma: não há `defer` que sobreviva. A segunda
+	// é a janela entre ESTE selo e o primeiro efeito do run: o [agentruntime.Runtime.Run] tem
+	// portões fail-closed que recusam sem um único efeito, e dois deles são accionáveis por quem
+	// submete (`contratoPossivel` e `origemPossivel` — a porta aceita um contrato de conclusão que
+	// o nó não pode cumprir, e di-lo em [validarContratoDeConclusao]). Aí as entradas foram todas
+	// seladas, o run fecha sem turno, e nada apaga os bytes. NÃO se desfaz aqui, e a razão é
+	// dirimente: o registo de retoma já foi gravado, pelo que apagar deixaria um run RETOMÁVEL cujas
+	// entradas não têm bytes — perda silenciosa de capacidade em vez de bytes a mais, que é a troca
+	// errada. Fechá-lo é correr esses portões ANTES do selo, e isso é o AOS-557.
 	var herr error
 	if goal, herr = selarEntradasDoPlano(ctx, s.node.planoHandles, goal); herr != nil {
 		err = fmt.Errorf("aos: run %q: %w", rs.runID, herr)

@@ -221,6 +221,39 @@ func TestAOS551_SelarEntradasDoPlano_SemEspacoRecusa(t *testing.T) {
 	}
 }
 
+// UMA RECUSA A MEIO DESFAZ OS BYTES QUE ESTA CHAMADA JÁ SELOU (AOS-556). Sem isto as k-1 entradas
+// anteriores ficavam no espaço, de um run que nunca arranca: ninguém as resolve (o guarda exige o
+// par (titular, run, digest) de um run que existe) e nada as apaga, e o tecto do VOLUME cheio faz
+// a selagem recusar em TODOS os runs — por hospedagem falhada o alcance é o tecto AGREGADO do canal
+// de entrada (`maxPlanInputsBytes`, 512 KiB), repetível por quem submete.
+//
+// E FIXA O QUE FICA: o `handle.created` da primeira entrada permanece, porque o stream é
+// append-only e não há evento de compensação. A contagem de eventos é também a NÃO-VACUIDADE deste
+// teste — sem ela, uma primeira entrada que também recusasse dava o mesmo verde sem nada ter sido
+// selado nem desfeito.
+func TestAOS556_RecusaAMeioDesfazOsBytesJaSelados(t *testing.T) {
+	plano, esp, es, _ := aos550Plano(t)
+	ctx := context.Background()
+	entradas := append(aos551Entradas(), agentruntime.PlanInput{
+		From: "no-b", Output: "grande",
+		Content: []byte(strings.Repeat("x", handleMaxBytes+1)),
+	})
+	goal := aos551Goal(agentruntime.AssemblyVersion180, entradas)
+	if _, err := selarEntradasDoPlano(ctx, plano, goal); !errors.Is(err, errEntradaNaoSelada) {
+		t.Fatalf("erro = %v; quero errEntradaNaoSelada", err)
+	}
+	if usado := esp.usado.Load(); usado != 0 {
+		t.Fatalf("a recusa deixou %d bytes no espaco de handles", usado)
+	}
+	eventos, err := es.Read(ctx, goal.RunID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(eventos) != 1 {
+		t.Fatalf("eventos = %d; quero exactamente o handle.created da 1.ª entrada", len(eventos))
+	}
+}
+
 // O SELO CORRE ANTES DO REGISTO DE RETOMA, e é isso que faz a referência sobreviver a uma retoma
 // sem ser re-selada. A ordem está no `hostRun`; o que este teste fixa é a CONSEQUÊNCIA, que é o
 // que importa: o registo que o nó grava leva o `Handle`.

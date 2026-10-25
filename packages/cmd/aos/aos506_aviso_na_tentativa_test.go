@@ -446,6 +446,42 @@ func TestAOS506_On_AMedicaoDetectaOutraDiferenca(t *testing.T) {
 	}
 }
 
+// AOS-556: A SEMENTE HOSPEDADA NÃO É RECALCULÁVEL NUM LAYOUT POR HANDLE, e a medição passa a
+// dizê-lo em vez de acusar a tentativa de ter mudado o pedido. O selo das entradas corre DEPOIS do
+// observador do Goal ([NodeService.SubmitObservando]), pelo que a semente leva os `Inputs` sem
+// `Handle` e o recálculo recusa ([agentruntime.SeedTail]).
+//
+// A contagem não muda — o que não se consegue comparar continua a contar como diferente. O que
+// este teste fixa é a PRÉ-CONDIÇÃO, e que ela não se estende a mais nenhum caso: sem layout por
+// handle, com as entradas já seladas, ou sem entradas, a medição faz-se como sempre.
+func TestAOS556_SementeSemReferenciasSoNumLayoutPorHandle(t *testing.T) {
+	ref := agentruntime.HandleRefPrefix + agentruntime.MintHandleToken("run-556", "sha256:aa", 1)
+	entrada := func(handle string) []agentruntime.PlanInput {
+		return []agentruntime.PlanInput{{From: "no-a", Output: "relatorio", Content: []byte("x"), Handle: handle}}
+	}
+	for nome, c := range map[string]struct {
+		versao string
+		inputs []agentruntime.PlanInput
+		quero  bool
+	}{
+		"1.8.0 com entrada sem handle": {agentruntime.AssemblyVersion180, entrada(""), true},
+		"1.8.0 com entrada selada":     {agentruntime.AssemblyVersion180, entrada(ref), false},
+		// Malformada conta como ausente, porque é o que o portão do kernel faz: com duas cópias da
+		// regra, esta entrada fazia o recálculo falhar e a pré-condição dizer que estava tudo bem.
+		"1.8.0 com handle malformado":  {agentruntime.AssemblyVersion180, entrada(agentruntime.HandleRefPrefix + "h1.nao-e-hex"), true},
+		"1.8.0 sem entradas":           {agentruntime.AssemblyVersion180, nil, false},
+		"1.7.0 com entrada sem handle": {agentruntime.AssemblyVersion170, entrada(""), false},
+		"1.6.0 com entrada sem handle": {agentruntime.AssemblyVersion160, entrada(""), false},
+		"layout ilegivel":              {"9.9.9", entrada(""), false},
+	} {
+		var tr turnoDaProva
+		tr.Manifest.AssemblyVersion = c.versao
+		if got := sementeSemReferencias(sementeDaTentativa{inputs: c.inputs}, tr); got != c.quero {
+			t.Errorf("%s: sementeSemReferencias = %v; quero %v", nome, got, c.quero)
+		}
+	}
+}
+
 // O AVISO SOBREVIVE À RETOMA: o registo de retoma leva-o, e o Goal reconstruído semeia o tail
 // com o mesmo aviso — a retoma reproduz o turno 1 com os mesmos bytes.
 func TestAOS506_RegistoDeRetoma_LevaOAviso(t *testing.T) {
