@@ -211,6 +211,12 @@ func TestAOS454_AuditoriaCampoACampoCallActivityCall(t *testing.T) {
 	// a própria tool: a call continua permitida, e um campo que se perca continua a ver-se
 	// (chegaria nil em vez desta lista).
 	enviado.AllowedTools = []string{enviado.ToolID}
+	// AOS-556: a proveniência é VOCABULÁRIO FECHADO, e a via durável valida-a
+	// ([activity.ErrBadAuthorizationProvenance]) desde que uma isenção do gate de taint depende
+	// dela. A sentinela genérica de string era recusada na validação, e a recusa é o que se quer
+	// — o campo leva um valor DO vocabulário, que continua a distinguir-se do zero: um campo que
+	// se perca chega vazio e vê-se.
+	enviado.Context.TaintProvenance = referencemonitor.ProvenanceHandleArgument
 	dec, err := newDurableDispatcher(t, store, rm).Dispatch(context.Background(), enviado)
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)

@@ -11,25 +11,22 @@
 // decisões, par allow+deny por regra; e o self-test do gate `policy-taint` corre o gate sobre ele.
 // Nenhum dos dois toca no bundle assinado nem na âncora.
 //
-// ======================================================================================
-// NÃO ASSINAR AINDA. Há uma decisão ANTES desta cerimónia, e ela é do dono.
-// ======================================================================================
+// A DECISÃO QUE BLOQUEAVA ESTA CERIMÓNIA FOI TOMADA (dono, 2026-10-25).
 //
-// Achado da revisão adversarial de 2026-10-25, MEDIDO em
-// `TestAOS556_Bateria_ACadeiaRealDecideOQue`: com esta política em vigor e o
-// `AOS_PRIVILEGED_CAPS` armado como em produção, a cadeia do nó decide
-// `politica=permit · taint=DENY`. A `allow_fs_read_external` permite, e o **TaintGate nega a
-// seguir** — a `ocr_read` declara `egress: external`, logo é privilegiada, e o gate corre
-// DEPOIS da política.
+// A revisão adversarial mediu que esta política, sozinha, não mudava nenhuma decisão: a
+// `allow_fs_read_external` permitia e o **TaintGate negava a seguir**, porque a `ocr_read` declara
+// `egress: external` e o gate corre DEPOIS da política. O dono decidiu ensinar a mesma coordenada
+// ao gate — a terceira isenção, `fluxo_por_handle` —, o que RELAXA a invariante P0 do ADR-005 para
+// a classe `external_read`. Está em ADR-044 §2.10 e emendado no ADR-034.
 //
-// Assinar isto como está: esvazia a baseline do `policy-taint`, aperta `cap:fs.read` para quem
-// não sela o destino (ponto 4 abaixo), e **NÃO entrega ganho nenhum**. O resíduo 1 do ADR-044
-// tem a decisão e o que ela custa — relaxar a invariante P0 do ADR-005 para uma classe de
-// destino.
+// **O QUE ISSO MUDA NO VALOR DESTA ASSINATURA, e é honesto saber antes de a fazer:** com a isenção
+// no gate, o ganho da fase já existe com a política 1.1.0 em vigor, porque a `allow_fs_read` dela
+// permite `cap:fs.read` sem olhar ao taint. Assinar a 1.2.0 deixa de ser o que DESBLOQUEIA e passa a
+// ser o que torna a decisão **explícita e assinada** — e o que fecha a dívida do critério 6 do
+// AOS-363, que é a última entrada da baseline do `policy-taint`. Continua a valer a pena, e por
+// razões de governação em vez de capacidade.
 //
-// ======================================================================================
-//
-// A CERIMÓNIA, quando a decisão estiver tomada:
+// A CERIMÓNIA:
 //
 //   cp docs/governance/politica-1.2.0-candidata.cedar \
 //      packages/control-plane/pdp/policies/aos_authz.cedar

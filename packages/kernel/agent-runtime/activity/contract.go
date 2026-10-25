@@ -2,6 +2,7 @@ package activity
 
 import (
 	"context"
+	"fmt"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/kernel/agent-runtime/durable"
@@ -172,6 +173,17 @@ type Activity struct {
 func (a Activity) validate() error {
 	if a.RunID == "" {
 		return ErrEmptyRunID
+	}
+	// AOS-556: a proveniência é vocabulário FECHADO, e desde a decisão do dono de 2026-10-25
+	// uma decisão de segurança depende dela (a terceira isenção do gate de taint). Vazia é o
+	// valor-zero e vale — significa «sem isenção de fluxo». Qualquer outro valor é recusado
+	// AQUI, e não lido como «não isenta»: um valor que ninguém reconhece não deve chegar a um
+	// classificador que decide por igualdade de strings.
+	switch a.AuthorizationProvenance {
+	case "", referencemonitor.ProvenanceClean, referencemonitor.ProvenanceHandleArgument,
+		referencemonitor.ProvenanceContext:
+	default:
+		return fmt.Errorf("%w: %q", ErrBadAuthorizationProvenance, a.AuthorizationProvenance)
 	}
 	if a.StepID == "" {
 		return ErrEmptyStepID

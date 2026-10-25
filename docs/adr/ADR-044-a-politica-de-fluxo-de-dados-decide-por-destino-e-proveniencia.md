@@ -3,8 +3,11 @@
 - **Estado:** Proposto (2026-10-25, AOS-556) — ratificação e assinatura do bundle são do dono (§7)
 - **Decisores:** dono do produto; Arquitecto de Plataforma
 - **Contexto técnico:** fase R2 do ADR-043; materializa a opção A do ADR-034 (§3 A, §5.4)
-- **Supersessões:** nenhuma. **Emenda** o ADR-034 (§2.3, resíduo 3) e o ADR-011 (o `context` do bundle
-  ganha dois atributos)
+- **Supersessões:** nenhuma. **Emenda** o ADR-034 (§2.3, resíduo 3, e a emenda de 2026-10-25 que
+  relaxa a P0 para uma classe de destino) e o ADR-011 (o `context` do bundle ganha dois
+  atributos). O **ADR-005** não está materializado como ficheiro (o catálogo di-lo: «a semântica
+  de enforcement com que o nó a cumpre hoje está materializada no ADR-034»), pelo que a emenda à
+  P0 vive no ADR-034 e aqui
 
 ---
 
@@ -237,6 +240,48 @@ sempre —, recusa o pedido com 400, e o banner diz qual das duas metades falta.
 E a linha de postura declara o estado das duas no arranque, porque neste repositório postura
 anunciada é postura ligada.
 
+### 2.10 A barreira estrutural aprende a MESMA coordenada (decisão do dono, 2026-10-25)
+
+A política não decide sozinha, e a revisão adversarial mediu-o: a cadeia é
+`… risk-classify → POLÍTICA → TAINT → …` e pára no primeiro não-permit, pelo que a regra de
+fluxo permitia e o TaintGate negava a seguir. **As duas camadas aprendem a mesma coordenada**,
+e o gate ganha uma terceira isenção — a primeira que RELAXA a invariante **P0 do ADR-005**.
+
+**As três condições, e nenhuma é dispensável:**
+
+1. **o destino declarado é `external_read`** — o operador declarou, no registo trusted, que a
+   tool sai para fora e não muda nada, com os três eixos explícitos. Um eixo implícito dá
+   `unknown` e não isenta;
+2. **a capability e o recurso da call NÃO denunciam rede** (`!derivesEgress`). É esta a condição
+   que torna a isenção segura, e a que a formulação ingénua esquecia: uma tool `cap:http.post`
+   com `mutation: none` e reversível **também** classifica `external_read`, e isentá-la deixava
+   uma injecção exfiltrar para um host que **ela** nomeia. Com esta condição o destino é fixado
+   pelo **código** da tool — o Model Gateway do nó, na `ocr_read` e na `video_read` — e não por
+   um argumento do modelo. É a diferença entre «os dados saem» e «os dados saem para onde o
+   atacante disser»;
+3. **a proveniência é `handle_argument`** — o untrusted é o handle que esta call consome, e não
+   outra coisa que o modelo já viu. Num run com media o piso já é untrusted, a proveniência é
+   `context`, e nada se isenta: **o controlo negativo do dono vem de graça desta condição.**
+
+**O rótulo NÃO muda.** A call continua `untrusted` no registo e no evento de mediação; o que a
+liberta é a proveniência e o destino, não uma reetiquetagem. «Um só rótulo para todos os
+leitores» (ADR-034 §2.3) fica de pé, e o classificador de risco continua a elevar a
+sensibilidade.
+
+**A CONSEQUÊNCIA QUE ISTO TEM NO VALOR DA CERIMÓNIA, e tem de estar escrita.** Com a isenção no
+gate, o ganho da fase existe **com a política 1.1.0 em vigor**, porque a `allow_fs_read` dela já
+permite `cap:fs.read` sem olhar ao taint. A 1.2.0 deixa de ser o que DESBLOQUEIA e passa a ser o
+que torna a decisão **explícita e assinada** — e o que fecha a dívida do critério 6 do AOS-363.
+Isto está em tensão com a §3(E) deste ADR («não uma classificação em código que muda com um
+deploy»), e a tensão é real: o ganho passa a vir de código. O que a torna aceitável é que as
+duas afirmações que importam continuam impostas pelo gate e não pela política — o controlo
+negativo (proveniência `context` não isenta) e a assimetria (o `web_post` denuncia egress pela
+capability) —, e as duas estão medidas em `TestAOS556_IsencaoDoFluxoNaoSeEstende`.
+
+**E o interruptor continua a ser o que governa o alcance:** a proveniência `handle_argument` só
+existe num layout por handle, que só se alcança a pedido e num nó que o habilite. Com o
+interruptor desligado — a omissão — a isenção nunca dispara.
+
 ---
 
 ## 3. Alternativas consideradas
@@ -299,8 +344,12 @@ anunciada é postura ligada.
 
 ## 5. Resíduos declarados
 
-1. **BLOQUEANTE — a barreira ESTRUTURAL nega o que a política passa a permitir, e fechá-la é
-   uma decisão do dono.** Achado da revisão adversarial desta fatia, e medido em
+1. **RESOLVIDO — decisão do dono, 2026-10-25: «aceito a decisão, ensina a coordenada ao gate».**
+   O que segue é o registo do problema e do que a decisão custa; a implementação é a terceira
+   isenção em `DestinationPrivileged.ClassifyCall`, com as três condições da §2.10.
+
+   **O problema que foi resolvido — a barreira ESTRUTURAL negava o que a política passa a
+   permitir.** Achado da revisão adversarial desta fatia, e medido em
    `TestAOS556_Bateria_ACadeiaRealDecideOQue`: com a 1.2.0 em vigor e o
    `AOS_PRIVILEGED_CAPS` armado como em produção, a política PERMITE a leitura com egress
    externo sobre um handle untrusted e o **TaintGate nega-a a seguir** — a `ocr_read` declara

@@ -223,6 +223,11 @@ const (
 	// TaintPrivilegeDeclaredEffect — privilegiada pelo efeito que a tool declara (egress, mutação
 	// ou irreversibilidade), com a capability fora de AOS_PRIVILEGED_CAPS.
 	TaintPrivilegeDeclaredEffect = "declared_effect"
+	// TaintPrivilegeFlowByHandle — a call NÃO é privilegiada porque o que a suja é o handle
+	// que ela própria consome, e o destino declarado é uma leitura com egress externo cujo
+	// alvo o modelo não escolhe (AOS-556; decisão do dono de 2026-10-25). Ver a terceira
+	// isenção em [DestinationPrivileged.ClassifyCall].
+	TaintPrivilegeFlowByHandle = "fluxo_por_handle"
 )
 
 // ToolPrivilegeClassifier é a extensão OPCIONAL de [PrivilegedAuthorizer] que classifica a CALL
@@ -288,6 +293,48 @@ func (d DestinationPrivileged) ClassifyCall(call *Call) (bool, string) {
 	// privilegiado — não sai do nó, não muda estado de terceiros, e apaga-se com o titular.
 	if known && dest.IsLocalRunWrite() && !derivesEgress(call) {
 		return false, TaintPrivilegeLocalRunWrite
+	}
+	// AOS-556 — A TERCEIRA ISENÇÃO, E A ÚNICA QUE RELAXA A P0 DO ADR-005. Decisão do dono de
+	// 2026-10-25, depois de a revisão adversarial medir que sem ela a política de fluxo de
+	// dados não muda nenhuma decisão: a regra permitia e este gate negava a seguir.
+	//
+	// O QUE ELA DIZ: uma call cujo untrusted vem do handle que ela PRÓPRIA consome, para uma
+	// tool que o operador declarou leitura com egress externo, não é privilegiada. É a forma
+	// forte do ADR-034 (a opção A, dual-LLM/CaMeL) a pagar-se: o modelo que ESCOLHEU esta call
+	// só viu o prefixo confiável e handles OPACOS, pelo que a injecção não escolheu a acção —
+	// apenas viaja dentro dela.
+	//
+	// AS TRÊS CONDIÇÕES, e nenhuma é dispensável:
+	//
+	//  1. `Class() == DestinationExternalRead` — o OPERADOR declarou, no registo trusted, que
+	//     esta tool sai para fora e não muda nada (`egress: external`, `mutation: none`,
+	//     `reversibility: reversible`, os três explícitos). Um eixo implícito dá `unknown` e
+	//     não isenta.
+	//  2. `!derivesEgress(call)` — a capability e o recurso da call NÃO denunciam rede. É esta
+	//     a condição que faz a isenção segura, e a que a formulação ingénua esquecia: uma tool
+	//     `cap:http.post` com `mutation: none` e reversível TAMBÉM classifica `external_read`,
+	//     e isentá-la deixava uma injecção exfiltrar para um host que ELA nomeia. Com esta
+	//     condição, o destino é fixado pelo CÓDIGO da tool (o Model Gateway do nó, na
+	//     `ocr_read` e na `video_read`) e não por um argumento do modelo. É a diferença entre
+	//     «os dados saem» e «os dados saem para onde o atacante disser».
+	//  3. `TaintProvenance == ProvenanceHandleArgument` — o untrusted é o handle desta call, e
+	//     não outra coisa que o modelo já viu. Num run com media o piso já é untrusted, a
+	//     proveniência é `context`, e NADA se isenta: é o controlo negativo da fase, e vem de
+	//     graça desta condição.
+	//
+	// O QUE ISTO CUSTA, por escrito: a invariante P0 do ADR-005 («só dados trusted podem
+	// ORIGINAR uma acção privilegiada») deixa de ser absoluta para esta classe de destino. O
+	// argumento contra, que vale registar porque é o do próprio ADR-034 na emenda de
+	// 2026-10-19, é que ENVIAR é agir. A decisão foi tomada por quem decidiu a invariante, e
+	// está emendada nos dois ADRs.
+	//
+	// A PROVENIÊNCIA É DERIVADA PELO KERNEL e nunca auto-declarada, mas o contrato do RM é o
+	// mesmo do rótulo de taint: quem constrói a [Call] pode escrevê-la (resíduo 5 do ADR-034).
+	// A fronteira de confiança desta isenção é, por construção, a MESMA que a do rótulo que o
+	// gate já lê — não é mais larga, e não é mais estreita.
+	if known && dest.Class() == DestinationExternalRead && !derivesEgress(call) &&
+		call.Context.TaintProvenance == ProvenanceHandleArgument {
+		return false, TaintPrivilegeFlowByHandle
 	}
 	if d.base.IsPrivileged(call.Capability) {
 		return true, TaintPrivilegeCapability

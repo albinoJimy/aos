@@ -80,6 +80,10 @@ func aos556Destinos() referencemonitor.ToolDestinations {
 		"doc_read": {Capability: "cap:fs.read", Egress: "none", Mutation: "none", Reversibility: "reversible"},
 		"ocr_read": {Capability: "cap:fs.read", Egress: "external", Mutation: "none", Reversibility: "reversible"},
 		"web_post": {Capability: "cap:http.post", Egress: "external", Mutation: "mutates", Reversibility: "irreversible"},
+		// E a armadilha que a condição (2) da isenção fecha: uma tool de REDE que o operador
+		// declara como leitura externa. A classe dá `external_read`, e a isenção NÃO a apanha,
+		// porque a capability denuncia egress e o destino seria nomeado pelo modelo.
+		"web_post_fake": {Capability: "cap:http.post", Egress: "external", Mutation: "none", Reversibility: "reversible"},
 	})
 }
 
@@ -183,7 +187,7 @@ func TestAOS556_Bateria_InjeccaoNumHandleComDestinoQueAPoliticaPermite(t *testin
 // E A PROVA DE QUE A REGRA EM VIGOR AINDA NEGA — isto é, de que o ganho do caso 1 vem da política
 // CANDIDATA e não de qualquer outra coisa que esta bateria tenha composto. Sem este controlo, o
 // caso 1 passaria se o PDP estivesse a permitir por uma razão alheia à regra nova.
-func TestAOS556_Bateria_ComAPoliticaEmVigorALeituraExternaAindaENegada(t *testing.T) {
+func TestAOS556_Bateria_OGanhoVemDoGateENaoSoDaPolitica(t *testing.T) {
 	ctx := context.Background()
 	emVigor, err := pdp.Open(pdpPoliciesDir)
 	if err != nil {
@@ -211,13 +215,95 @@ func TestAOS556_Bateria_ComAPoliticaEmVigorALeituraExternaAindaENegada(t *testin
 	if res.Decision != referencemonitor.HookAllow {
 		t.Fatalf("a 1.1.0 nega cap:fs.read? veio %v (%s) — a medicao do ADR-044 §1.1 F2 mudou", res.Decision, res.Reason)
 	}
+	// E DESDE A DECISÃO DO DONO DE 2026-10-25, O GATE TAMBÉM PERMITE. É a consequência que tem de
+	// estar escrita: com a terceira isenção, o ganho da fase existe com a política 1.1.0 em vigor,
+	// porque a `allow_fs_read` dela já permite `cap:fs.read` sem olhar ao taint.
+	//
+	// O QUE ISSO MUDA NO VALOR DA CERIMÓNIA, e é honesto dizê-lo: a 1.2.0 deixa de ser o que
+	// DESBLOQUEIA e passa a ser o que torna a decisão EXPLÍCITA e ASSINADA, e o que fecha a dívida
+	// do critério 6 do AOS-363. O ganho passa a vir de uma mudança de CÓDIGO — exactamente o que o
+	// ADR-044 §3(E) diz que não devia acontecer («não uma classificação em código que muda com um
+	// deploy»). A tensão é real e está declarada no resíduo 1.
+	//
+	// O QUE NÃO SE PERDE, e é o que torna isto defensável: as duas afirmações que importam
+	// continuam impostas pelo GATE, sem precisar da política nova — o controlo negativo (um run com
+	// media tem proveniência `context`, logo não isenta) e a assimetria (o `web_post` denuncia
+	// egress pela capability, logo não isenta). Os dois casos estão medidos no teste seguinte.
 	gate := referencemonitor.NewTaintGate(privilegedComDestinos(referencemonitor.NewStaticPrivilegedSet("cap:fs.read"), aos556Destinos()))
 	resGate, err := gate.Evaluate(ctx, &call)
 	if err != nil {
 		t.Fatalf("gate de taint: %v", err)
 	}
-	if resGate.Decision != referencemonitor.HookDeny {
-		t.Fatalf("com a 1.1.0 quem nega a leitura externa e o TaintGate; veio %v", resGate.Decision)
+	if resGate.Decision != referencemonitor.HookAllow {
+		t.Fatalf("com a isencao do fluxo o gate permite; veio %v (%s)", resGate.Decision, resGate.Reason)
+	}
+}
+
+// A ISENÇÃO DO FLUXO NÃO SE ESTENDE, e cada condição tem o seu controlo negativo (AOS-556).
+//
+// Três condições, três maneiras de a perder. Sem estes casos a isenção era uma afirmação com uma
+// prova só — a do caminho felizo —, e é precisamente assim que uma isenção cresce sem ninguém dar
+// por isso (o molde das recusas X7 do gate `policy-taint`).
+func TestAOS556_IsencaoDoFluxoNaoSeEstende(t *testing.T) {
+	ctx := context.Background()
+	gate := referencemonitor.NewTaintGate(privilegedComDestinos(
+		referencemonitor.NewStaticPrivilegedSet("cap:http.post", "cap:fs.read"), aos556Destinos()))
+
+	base := func(tool, cap, prov string) referencemonitor.Call {
+		return referencemonitor.Call{
+			RunID: "run-556-isencao", StepID: "s1", ToolID: tool, Capability: cap,
+			Resource:  referencemonitor.Resource{Type: "file", Value: "doc://x", Region: "eu"},
+			Principal: referencemonitor.Principal{NHIID: "nhi:a", Authority: []string{cap}},
+			Context: referencemonitor.CallContext{
+				Taint: taint.Untrusted.String(), TaintProvenance: prov,
+			},
+		}
+	}
+
+	for nome, c := range map[string]struct {
+		call  referencemonitor.Call
+		quero referencemonitor.HookDecision
+		razao string
+	}{
+		// O CAMINHO QUE A DECISÃO ABRE.
+		"leitura externa, proveniencia do handle": {
+			base("ocr_read", "cap:fs.read", referencemonitor.ProvenanceHandleArgument),
+			referencemonitor.HookAllow, referencemonitor.TaintPrivilegeFlowByHandle},
+		// (3) O CONTROLO NEGATIVO DO DONO: num run com media o piso já era untrusted, a
+		// proveniência é `context`, e a isenção não existe. Vem de graça da condição.
+		"leitura externa, proveniencia do contexto": {
+			base("ocr_read", "cap:fs.read", referencemonitor.ProvenanceContext),
+			referencemonitor.HookDeny, referencemonitor.TaintPrivilegeCapability},
+		"leitura externa, proveniencia vazia": {
+			base("ocr_read", "cap:fs.read", ""),
+			referencemonitor.HookDeny, referencemonitor.TaintPrivilegeCapability},
+		// (2) A CONDIÇÃO QUE TORNA A ISENÇÃO SEGURA: uma tool de rede não isenta, mesmo que o
+		// operador a declare `external_read` e a proveniência seja a do handle. Sem esta condição,
+		// uma injecção exfiltrava para um host que ELA nomeia.
+		"tool de rede declarada leitura externa": {
+			base("web_post_fake", "cap:http.post", referencemonitor.ProvenanceHandleArgument),
+			referencemonitor.HookDeny, referencemonitor.TaintPrivilegeCapability},
+		// (1) O DESTINO TEM DE SER O DECLARADO: uma tool de efeito não isenta.
+		"tool de efeito": {
+			base("web_post", "cap:http.post", referencemonitor.ProvenanceHandleArgument),
+			referencemonitor.HookDeny, referencemonitor.TaintPrivilegeCapability},
+		// E uma leitura LOCAL continua a isentar pela razão de SEMPRE (AOS-538), não por esta.
+		"leitura local": {
+			base("doc_read", "cap:fs.read", referencemonitor.ProvenanceHandleArgument),
+			referencemonitor.HookAllow, referencemonitor.TaintPrivilegeLocalRead},
+	} {
+		call := c.call
+		res, err := gate.Evaluate(ctx, &call)
+		if err != nil {
+			t.Errorf("%s: %v", nome, err)
+			continue
+		}
+		if res.Decision != c.quero {
+			t.Errorf("%s: decisao=%v (%s), quero %v", nome, res.Decision, res.Reason, c.quero)
+		}
+		if call.Context.TaintPrivilege != c.razao {
+			t.Errorf("%s: razao carimbada=%q, quero %q", nome, call.Context.TaintPrivilege, c.razao)
+		}
 	}
 }
 
@@ -298,7 +384,21 @@ func TestAOS556_Bateria_ACadeiaRealDecideOQue(t *testing.T) {
 	if resPol.Decision != referencemonitor.HookAllow {
 		t.Fatalf("a politica tinha de PERMITIR pela regra de fluxo, veio %v (%s)", resPol.Decision, resPol.Reason)
 	}
-	if resTaint.Decision == referencemonitor.HookAllow {
-		t.Fatal("o gate de taint PERMITIU: a invariante P0 do ADR-005 foi relaxada — se foi por decisao do dono, reescreve esta afirmacao e o residuo 1 do ADR-044")
+	// E O GATE DE TAINT TAMBÉM PERMITE, desde a decisão do dono de 2026-10-25: as duas camadas
+	// aprenderam a MESMA coordenada, e é isso que faz a fase comprar alguma coisa. Até essa decisão
+	// este teste afirmava o contrário, e era essa afirmação que dizia que a cerimónia não valia a
+	// pena.
+	if resTaint.Decision != referencemonitor.HookAllow {
+		t.Fatalf("o gate de taint NEGOU o que a politica permite: %v (%s) — as duas camadas voltaram a divergir, e a regra de fluxo deixa de comprar nada", resTaint.Decision, resTaint.Reason)
+	}
+	if reescrita.Context.TaintPrivilege != referencemonitor.TaintPrivilegeFlowByHandle {
+		t.Fatalf("a razao carimbada = %q; quero %q — a isencao tem de ser a do FLUXO, nao outra qualquer",
+			reescrita.Context.TaintPrivilege, referencemonitor.TaintPrivilegeFlowByHandle)
+	}
+	// E O RÓTULO NÃO MUDOU: a call continua untrusted no registo. O que a liberta é a proveniência
+	// e o destino, não uma reetiquetagem — a invariante «um só rótulo para todos os leitores»
+	// (ADR-034 §2.3) fica de pé.
+	if !taint.ParseLabel(reescrita.Context.Taint).IsUntrusted() {
+		t.Fatalf("o rotulo da call mudou para %q: a isencao nao pode reetiquetar", reescrita.Context.Taint)
 	}
 }
