@@ -60,6 +60,7 @@ type Dispatcher struct {
 	registry  CompensationRegistrar
 	tracer    agentruntime.Tracer
 	obs       Observer
+	sealer    ResultSealer
 }
 
 // Option configura o [Dispatcher].
@@ -76,6 +77,129 @@ func WithObserver(o Observer) Option { return func(d *Dispatcher) { d.obs = o } 
 // é recusada ([ErrNoRegistry]) em vez de perder a acção inversa.
 func WithCompensationRegistry(r CompensationRegistrar) Option {
 	return func(d *Dispatcher) { d.registry = r }
+}
+
+// ResultSealer sela em QUARENTENA o corpo do resultado de uma call permitida e devolve a
+// REFERÊNCIA NUA que fica no lugar dele (`aos-handle/v1:` + token) — o PRODUTOR do `tool_result`
+// por handle do layout 1.8.0 (AOS-551, fase R2 do ADR-043).
+//
+// Os parâmetros são os da quarentena do nó, pela mesma ordem: o titular dos dados, o run, o passo
+// da call, a tool, e o conteúdo. O erro é do vocabulário de quem sela e NÃO chega ao modelo: o
+// despacho materializa-o como [ErrResultSeal].
+//
+// O CORPO QUE DEVOLVE É A REFERÊNCIA NUA, e não um documento que a embrulhe. É a forma que
+// [agentruntime.ParseHandleRef] aceita, a única que o `CallRewriter` resolve e a que o tail já
+// espera. Dentro de um run um documento não compra nada sobre ela; quem precisa do digest é a
+// travessia da aresta do plano, que é outro ticket.
+type ResultSealer func(ctx context.Context, subject, runID, stepID, toolID string, content []byte) ([]byte, error)
+
+// WithResultSealer injecta o PRODUTOR do `tool_result` por handle. Default: nenhum — nada é
+// selado e o corpo do resultado é o que a tool devolveu, em qualquer layout.
+//
+// # Porque o selo vive DENTRO do efeito do ledger, e só aqui
+//
+// O assento é único, e foi medido. É o único ponto que é, ao mesmo tempo:
+//
+//   - DEPOIS da decisão do Reference Monitor, pelo que não há caminho novo para uma tool e o
+//     invariante de fronteira do AOS-003 fica intacto;
+//   - ANTES da escrita no step-ledger, pelo que o ledger, o loop, a captura, o replay e a rota
+//     que serve os bytes designados vêem TODOS os mesmos bytes — e a âncora da origem da saída,
+//     que os seus dois verificadores confirmam re-hasheando o payload do ledger, continua a
+//     conferir;
+//   - com contexto POR RUN: o titular já viaja no `ctx` ([durable.ContextWithTitular]) e a versão
+//     do layout também ([agentruntime.ContextWithAssemblyVersion]).
+//
+// Um envelope que CHAMASSE [Dispatcher.Dispatch] corre DEPOIS da escrita no ledger: o ledger
+// ficava com o conteúdo e o loop com a referência, a âncora deixava de conferir, e cada dedup
+// re-selava com outro ordinal — logo outro token, logo outro `prompt_hash` numa retoma.
+func WithResultSealer(s ResultSealer) Option { return func(d *Dispatcher) { d.sealer = s } }
+
+// Erros do PRODUTOR do `tool_result` por handle. Os dois são FAIL-CLOSED: nada é memorizado no
+// ledger, pelo que nem o conteúdo nem uma referência inválida chegam ao loop, ao tail ou à
+// âncora. O preço é o do [ErrToolExecution] que já existe — o efeito correu e uma nova tentativa
+// volta a correr —, e é o preço certo: a alternativa é gravar conteúdo untrusted no log de um run
+// cujo layout promete que ele não existe.
+var (
+	// ErrResultSeal — a selagem recusou por uma causa OPERACIONAL do espaço de handles: o tecto
+	// de handles do run, o tecto de bytes, o volume cheio, a cifra ou o disco indisponíveis.
+	//
+	// LEVA UM [ToolError] NA CADEIA, e isso é deliberado: o adaptador da via durável converte um
+	// `*ToolError` em `Decision{Permit, ToolErr}` (`integration/runtime_ports.go`), pelo que o
+	// loop materializa `tool_error=` no tail, o modelo lê que a chamada não deu resultado
+	// utilizável, e o RUN CONTINUA. Sem isso o erro subia até ao loop e matava o run inteiro —
+	// e com o tecto de handles por run (64 no nó de referência) isso é ALCANÇÁVEL: a 65.ª tool
+	// call de um run da 1.8.0 mataria o run com 64 passos já aplicados. A designação da origem
+	// vê `ToolError != nil`, logo a chamada não é efectiva e a âncora resolve `missing`.
+	//
+	// O QUE CONTINUAR CUSTA, declarado: um `tool_error` é um `tool_result` SEM o rótulo do handle,
+	// pelo que o piso do run cai para untrusted e — porque o acumulador é monótono — NUNCA volta
+	// a subir ([agentruntime.SegmentFloor]). Daí em diante toda a call do run chega ao Reference
+	// Monitor untrusted. É a semântica que um `tool_error` já tem num layout por handle, e não uma
+	// excepção do selo; o que o selo acrescenta é que a CAPACIDADE do espaço de handles passa a
+	// poder decidi-la. E o tecto repete-se: nada é memorizado, o `step_id` é posicional, logo a
+	// tool call seguinte re-executa o efeito. O backstop é o detector de acções repetidas e o
+	// disjuntor de no-progress, que só agarram argumentos iguais. Dimensionar o tecto de handles
+	// por run contra o `MaxTurns` é do AOS-556, que é quem torna a 1.8.0 accionável.
+	ErrResultSeal = errors.New("activity: a selagem do resultado em handle recusou")
+	// ErrSealedResultNotRef — o selo devolveu um corpo que não é uma referência de handle bem
+	// formada. É defeito de quem o compôs, e não se deixa passar: o tail materializá-lo-ia como
+	// erro de tool (negando a mais, que é seguro) mas a designação da origem digeria-o e o
+	// `aos-orq` entregá-lo-ia a jusante como saída do run.
+	ErrSealedResultNotRef = errors.New("activity: o selo do resultado nao devolveu uma referencia de handle bem formada")
+	// ErrSealWithoutAssemblyVersion — há selo composto mas o contexto não traz a versão do
+	// layout do run. Recusa, nunca «assume o layout antigo»: assumir é o fail-open exacto que
+	// este ticket existe para não ter.
+	ErrSealWithoutAssemblyVersion = errors.New("activity: selo do resultado composto sem a versao do layout no contexto (agentruntime.ContextWithAssemblyVersion)")
+)
+
+// seloDescartouEfeito diz se o erro é de um dos caminhos do SELO.
+//
+// OS TRÊS SÓ PODEM OCORRER DEPOIS DE O EFEITO TER CORRIDO COM ÊXITO: o [Dispatcher.selar] é
+// chamado com `dec.Output`, que só existe depois de o Reference Monitor ter devolvido permit SEM
+// `ToolErr` — isto é, com a tool já executada. Em todos eles o resultado é DESCARTADO e nada é
+// memorizado no ledger, pelo que a acção inversa tem de ser registada ainda que o passo não tenha
+// desfecho durável.
+//
+// É A ENUMERAÇÃO ÚNICA. Um erro novo no caminho do selo entra aqui, ou a sua compensação cai em
+// silêncio — e um efeito irreversível aplicado sem inversa registada não dá erro em sítio nenhum.
+func seloDescartouEfeito(err error) bool {
+	return errors.Is(err, ErrResultSeal) ||
+		errors.Is(err, ErrSealedResultNotRef) ||
+		errors.Is(err, ErrSealWithoutAssemblyVersion)
+}
+
+// selar aplica o PRODUTOR ao output de uma call permitida e devolve o payload que o ledger vai
+// gravar. Sem selo composto, ou num layout que não põe os resultados por handle, devolve o output
+// TAL COMO ENTROU — byte-idêntico, sem o olhar.
+//
+// A DECISÃO É DO LAYOUT E DA TOOL, pela MESMA função que o tail pergunta
+// ([agentruntime.SealsToolResult]): é ela que guarda a excepção da `media_view`, cujo resultado o
+// tail resolve CRU para anexar a imagem.
+//
+// Um output VAZIO não se sela: não há nada para selar, o espaço de handles recusaria, e o tail de
+// um permit vazio materializa os mesmos bytes que no layout anterior.
+// Devolve o payload, se ele É uma referência (para o ledger o marcar), e o erro.
+func (d *Dispatcher) selar(ctx context.Context, act Activity, output []byte) ([]byte, bool, error) {
+	if d.sealer == nil || len(output) == 0 {
+		return output, false, nil
+	}
+	versao := agentruntime.AssemblyVersionFromContext(ctx)
+	if versao == "" {
+		return nil, false, ErrSealWithoutAssemblyVersion
+	}
+	if !agentruntime.SealsToolResult(versao, act.ToolID) {
+		return output, false, nil
+	}
+	ref, err := d.sealer(ctx, act.Principal.Titular(), act.RunID, act.StepID, act.ToolID, output)
+	if err != nil {
+		// O [ToolError] na cadeia é o que faz o run CONTINUAR em vez de morrer — ver
+		// [ErrResultSeal].
+		return nil, false, fmt.Errorf("%w: %w", ErrResultSeal, &ToolError{Err: err})
+	}
+	if _, ok := agentruntime.ParseHandleRef(string(ref)); !ok {
+		return nil, false, ErrSealedResultNotRef
+	}
+	return ref, true, nil
 }
 
 // NewDispatcher constrói um dispatcher em [ModeNormal] sobre o Reference Monitor
@@ -305,11 +429,23 @@ func (d *Dispatcher) dispatchNormal(ctx context.Context, act Activity, key, keyH
 		// Canal lateral: capta o custo MEDIDO do efeito que ACABOU de correr. Só aqui —
 		// nunca no durable.Result devolvido, que é o que o ledger grava e o replay relê.
 		effectCostMicroUSD = dec.CostMicroUSD
+		// O PRODUTOR do `tool_result` por handle (AOS-551), no único assento que existe: depois
+		// do permit, antes da escrita no ledger. Ver [WithResultSealer].
+		payload, referencia, sErr := d.selar(ctx, act, dec.Output)
+		if sErr != nil {
+			return durable.Result{}, sErr
+		}
 		status := act.Status
 		if status == "" {
 			status = StatusOK
 		}
-		return durable.Result{Status: status, Payload: dec.Output}, nil
+		// `Reference` é o vocabulário do PRÓPRIO ledger para «este payload é uma referência e não
+		// bytes de conteúdo» ([durable.Result.Reference]). Não é persistido e não altera a cifra:
+		// é a guarda de escrita do modo sensível, que RECUSA um payload não-vazio não marcado
+		// quando não há cifrador ([durable.ErrClearResultInSensitiveMode]). Sem esta marca, um nó
+		// em modo sensível sem o cifrador por-titular recusava TODA a tool call de um run da
+		// 1.8.0 — por não saber que o payload já é uma referência.
+		return durable.Result{Status: status, Payload: payload, Reference: referencia}, nil
 	}, durable.WithActionFingerprint(fingerprint), durable.WithEffectProducer(func() eventstore.Producer { return autor }))
 	if err != nil {
 		if errors.Is(err, ErrMediationDenied) {
@@ -317,6 +453,28 @@ func (d *Dispatcher) dispatchNormal(ctx context.Context, act Activity, key, keyH
 			d.obs.Denied(keyHash)
 		} else {
 			span.SetAttribute(AttrDecision, "error")
+		}
+		// A COMPENSAÇÃO DE UM EFEITO QUE CORREU E FOI DESCARTADO (AOS-551).
+		//
+		// Numa recusa do SELO o efeito CORREU — o RM permitiu e a tool executou —, nada foi
+		// memorizado, e a acção inversa ficava sem ser registada porque o registo normal vive
+		// depois deste return. Com a recusa a materializar-se como `tool_error` (ver
+		// [ErrResultSeal]) o run CONTINUA e pode fechar cumprido: um efeito irreversível
+		// aplicado, cujo resultado ninguém tem, e que nenhuma saga sabe reverter.
+		//
+		// A CONDIÇÃO MEDE A PROPRIEDADE — «o efeito correu e o resultado foi descartado» — e não
+		// um proxy dela. Vale para os TRÊS erros do selo ([seloDescartouEfeito]), fatais
+		// incluídos: nos fatais o run fecha `failed` e a saga corre, mas corria sobre um registry
+		// sem este passo, pelo que o efeito ficava igualmente irreversível. Não vale num
+		// deny/escalate (nenhum efeito ocorreu) nem num [ErrToolExecution] (o efeito FALHOU) —
+		// registar a inversa de algo que não aconteceu seria pior.
+		//
+		// O registry é idempotente por `step_id`, pelo que uma nova tentativa não duplica nem
+		// muda a ordem LIFO. As pré-condições (registry composto, Action não-nil) foram validadas
+		// no topo desta função, logo este Register é infalível e o seu erro não pode esconder o
+		// do selo.
+		if act.Compensation != nil && seloDescartouEfeito(err) {
+			_ = d.registry.Register(saga.Compensation{StepID: act.StepID, Action: act.Compensation.Action, Reason: act.Compensation.Reason})
 		}
 		return Result{}, err
 	}

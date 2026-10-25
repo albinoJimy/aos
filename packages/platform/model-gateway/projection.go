@@ -150,9 +150,15 @@ func ParseProjection(mode string) (string, error) {
 // A 1.7.0 (AOS-546) é a 1.6.0 com segmentos `media` a seguir aos resultados de um turno. Cada um
 // sai na mensagem `user` seguinte, com o seu cabeçalho, e leva a imagem que referencia — só por
 // [ProjectNativeVersionWithMedia], que resolve os bytes.
+//
+// A 1.8.0 (AOS-551) é a 1.7.0 com o CORPO dos `plan_input` e dos `tool_result` substituído por
+// texto fixo e a referência do handle no cabeçalho do segmento. Os kinds são os mesmos, e as
+// mensagens que saem para o wire têm a forma da 1.7.0 — o que muda é o que vai DENTRO do
+// segmento, que a projecção copia sem interpretar. O cabeçalho com a referência é o que o modelo
+// TEM de ver para a poder emitir num argumento, pelo que a projecção não o pode omitir.
 func projecaoNativaSuporta(assemblyVersion string) bool {
 	switch assemblyVersion {
-	case agentruntime.AssemblyVersion140, agentruntime.AssemblyVersion150, agentruntime.AssemblyVersion160, agentruntime.AssemblyVersion170:
+	case agentruntime.AssemblyVersion140, agentruntime.AssemblyVersion150, agentruntime.AssemblyVersion160, agentruntime.AssemblyVersion170, agentruntime.AssemblyVersion180:
 		return true
 	default:
 		return false

@@ -2,6 +2,7 @@ package agentruntime
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -235,12 +236,71 @@ func HasPlanInputsByHandle(assemblyVersion string) bool {
 }
 
 // HasToolResultsByHandle diz se o layout da versão dada põe o corpo de um `tool_result` no tail
-// por HANDLE (a 1.8.0). É a pergunta de quem compõe o nó: só nela é que o envelope do
-// [ActivityDispatcher] tem de selar o output de cada call permitida antes de o devolver ao loop.
+// por HANDLE (a 1.8.0). É a pergunta de quem RECONSTRÓI um tail sem ter o layout na mão — o motor
+// de replay.
+//
+// QUEM SELA NÃO PERGUNTA A ESTA, mas a [SealsToolResult], que acrescenta a excepção da
+// `media_view`. E não é um «envelope do ActivityDispatcher», como esta linha dizia até 2026-10-25:
+// é o [activity.WithResultSealer], DENTRO do efeito do step-ledger. Um envelope corre depois da
+// escrita no log e a âncora da origem da saída deixa de conferir.
+//
 // Uma versão desconhecida responde false.
 func HasToolResultsByHandle(assemblyVersion string) bool {
 	l, err := layoutFor(assemblyVersion)
 	return err == nil && l.resultadosPorHandle
+}
+
+// SealsToolResult diz se, NESTE layout e para ESTA tool, o corpo do resultado de uma call
+// permitida é selado em handle — a pergunta que o PRODUTOR faz antes de selar e a que o LEITOR
+// faz antes de materializar o segmento ([layout.segmentoDeResultado]).
+//
+// É UMA SÓ FUNÇÃO PARA OS DOIS LADOS, e tem de ser. A `media_view` é EXCEPÇÃO ao caminho dos
+// handles (ver [layout.segmentoDeResultado]): `mediaDoTurno` lê os resultados CRUS para resolver
+// a `MediaRef`, pelo que um produtor que a selasse fazia a imagem deixar SILENCIOSAMENTE de
+// chegar ao modelo — regressão da R1a. Duas cópias da excepção divergiam sem ninguém dar por
+// isso, e a divergência não dá erro: dá um resultado que o tail esconde e que a âncora digere.
+//
+// Uma versão desconhecida responde false.
+func SealsToolResult(assemblyVersion, toolID string) bool {
+	l, err := layoutFor(assemblyVersion)
+	return err == nil && l.selaResultado(toolID)
+}
+
+// selaResultado é [SealsToolResult] com o layout já resolvido.
+func (l layout) selaResultado(toolID string) bool {
+	return l.resultadosPorHandle && toolID != MediaViewTool
+}
+
+// chaveDoLayoutNoCtx é a chave do [AssemblyVersionFromContext]. Tipo próprio e não-exportado: não
+// colide com nenhuma outra chave de contexto.
+type chaveDoLayoutNoCtx struct{}
+
+// ContextWithAssemblyVersion anexa ao contexto a VERSÃO DO LAYOUT em que o run está fixado.
+//
+// PORQUE O CONTEXTO, e porque é o [Runtime.Run] que o põe. A versão do layout não chega à
+// fronteira do despacho: não há campo que a transporte na [referencemonitor.Call], na Activity
+// nem na Decision. Mas o produtor do `tool_result` — que vive DENTRO do efeito do step-ledger,
+// o único ponto depois da decisão do RM e antes da escrita no log — tem de saber se este run
+// sela, e a resposta é POR RUN.
+//
+// Quem a põe é o [Runtime.Run], no mesmo sítio em que resolve o layout do run. É isso que torna
+// o gate do produtor IDÊNTICO POR CONSTRUÇÃO ao do tail: a mesma `layout`, resolvida uma vez.
+// Uma segunda derivação no nó (ou no composition-root, a partir do `Goal.AssemblyVersion`, que
+// pode vir vazio e cair no default do runtime) seria uma promessa sobre os chamadores — o padrão
+// que já derrubou duas versões desta fase.
+//
+// O molde é o [durable.ContextWithTitular], que leva o titular por-run pelo mesmo caminho até ao
+// mesmo sítio.
+func ContextWithAssemblyVersion(ctx context.Context, version string) context.Context {
+	return context.WithValue(ctx, chaveDoLayoutNoCtx{}, version)
+}
+
+// AssemblyVersionFromContext devolve a versão anexada por [ContextWithAssemblyVersion] ("" se
+// ausente). Quem a lê para decidir sobre conteúdo trata a ausência como RECUSA, nunca como «o
+// layout antigo»: assumir o antigo é o fail-open que a fase existe para não ter.
+func AssemblyVersionFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(chaveDoLayoutNoCtx{}).(string)
+	return v
 }
 
 // ValidateAssemblyVersion diz se este assembler sabe montar a versão dada. É o que o motor de

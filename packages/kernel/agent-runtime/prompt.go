@@ -620,7 +620,8 @@ const corpoDeResultadoPorHandle180 = "This tool returned content that is not in 
 //
 // NÃO É um erro devolvido a ninguém: é o que o tail materializa, no sítio do `tool_error`, em vez
 // do conteúdo. Na 1.8.0 quem sela é o nó e todo o resultado permitido é uma referência, pelo que
-// isto só acontece se o nó compôs o layout sem o envelope que sela — defeito de composição. A
+// isto só acontece se o nó compôs o layout sem o PRODUTOR ([activity.WithResultSealer]) — defeito
+// de composição, declarado no banner de arranque. A
 // escolha de o materializar como erro de tool, e não de abortar o run, é deliberada: nega a mais
 // (nenhum byte de conteúdo entra no contexto), o modelo lê que a chamada não deu resultado
 // utilizável e pode repetir, e o `prompt_hash` continua explicável pela versão gravada. A mensagem
@@ -631,10 +632,17 @@ var ErrToolResultNotByHandle = errors.New("tool result not available by handle")
 // rótulos de [tailFromIdentifiedResult], mais a referência do handle, e o corpo fixo em vez do
 // output da tool.
 //
-// O corpo do resultado É a referência — o nó substituiu-o no envelope do [ActivityDispatcher], no
-// molde da `media_view` da 1.7.0, onde a referência também viaja nos próprios bytes do resultado.
-// É o que torna o replay fiel de graça: a captura grava a referência, e o tail reconstruído a
-// partir dela é byte-idêntico sem que o motor saiba nada de handles.
+// O corpo do resultado É a referência, no molde da `media_view` da 1.7.0, onde a referência
+// também viaja nos próprios bytes do resultado. É o que torna o replay fiel de graça: a captura
+// grava a referência, e o tail reconstruído a partir dela é byte-idêntico sem que o motor saiba
+// nada de handles.
+//
+// QUEM A SUBSTITUI é o selo que corre DENTRO do efeito do step-ledger
+// ([activity.WithResultSealer]), entre a decisão do RM e a escrita no log. NÃO é um envelope que
+// CHAME `Dispatch`, que é o que este comentário dizia até 2026-10-25 e que está errado: esse
+// corre DEPOIS da escrita, pelo que o ledger ficaria com o conteúdo e o loop com a referência —
+// e a âncora da origem da saída, que os seus dois verificadores confirmam re-hasheando o payload
+// do step-ledger, deixava de conferir.
 func tailFromResultByHandle(id, name string, r Tainted) TailSegment {
 	ref := string(r.Value)
 	if _, ok := ParseHandleRef(ref); !ok {
@@ -664,7 +672,9 @@ func tailFromResultByHandle(id, name string, r Tainted) TailSegment {
 // untrusted-VAZIO, selado por teste em [tailFromResultDenied]). Um permit com output vazio não tem
 // nada para selar e materializa os mesmos bytes que na 1.7.0.
 //
-// A `media_view` É A EXCEPÇÃO, e por desenho da fase. A 1.8.0 herda os segmentos de media da
+// A `media_view` É A EXCEPÇÃO, e por desenho da fase. A excepção vive em [layout.selaResultado],
+// que é a MESMA função que o PRODUTOR do selo pergunta ([SealsToolResult]): duas cópias dela
+// divergiam para um resultado que o tail esconde e que a âncora digere. A 1.8.0 herda os segmentos de media da
 // 1.7.0, e `mediaDoTurno` lê os resultados CRUS: pôr uma `MediaRef` atrás de um handle faria
 // `parseMediaRef` falhar e a imagem deixava SILENCIOSAMENTE de chegar ao modelo — regressão da
 // R1a. E não é inconsistência da R2: a correcção 1 do AOS-551 diz que a media é PROJECTADA para o
@@ -677,7 +687,7 @@ func tailFromResultByHandle(id, name string, r Tainted) TailSegment {
 // `cmd/aos/erro_de_tool.go`), o que fecha a superfície do nó; uma tool MCP de terceiros não está
 // coberta. Fica fora do âmbito desta fatia, e é o eixo a fechar quando a R2 admitir tools MCP.
 func (l layout) segmentoDeResultado(id, name string, r Tainted, toolErr error, den *ToolDenial) TailSegment {
-	if !l.resultadosPorHandle || name == MediaViewTool {
+	if !l.selaResultado(name) {
 		return tailFromIdentifiedResult(id, name, r, toolErr, den)
 	}
 	if den == nil && toolErr == nil && len(r.Value) > 0 {

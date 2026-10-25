@@ -51,6 +51,11 @@ var (
 	// revalidador selado NOUTRO store recusa o arranque, em vez de mediar com um trilho de
 	// supply-chain que se evapora sem que nada o diga.
 	ErrRevalidatorNotSealedToWORM = errors.New("integration: revalidator audit store != cfg.WORM (a revalidação por chamada tem de selar no MESMO store que cfg.WORM — AOS-381)")
+	// ErrResultSealerSemLedger — pediu-se o selo do `tool_result` por handle
+	// ([SecuredConfig.ResultSealer]) sem execução durável ([SecuredConfig.Ledger]). O selo corre
+	// dentro do efeito do step-ledger; sem ledger não há efeito, e um selo inerte num nó que
+	// componha um layout por handle grava conteúdo cru no log. Fail-closed na construção.
+	ErrResultSealerSemLedger = errors.New("integration: SecuredConfig.ResultSealer exige SecuredConfig.Ledger (o selo corre dentro do efeito do step-ledger)")
 	// ErrTaintEscalateSemAprovacao — pediu-se o gate de taint a ESCALAR ([SecuredConfig.TaintEscalate],
 	// AOS-541) sem o ciclo de aprovação composto: o verificador dentro da cadeia, a fonte de
 	// evidência da retoma e o destino das escaladas. Sem os três uma escalada nunca teria quem a
@@ -291,6 +296,25 @@ type SecuredConfig struct {
 	// Declará-la NÃO é a garantia: o kernel re-junta o piso depois da reescrita, pelo que uma
 	// reescrita errada só consegue SUBIR. Ver [agentruntime.WithPerArgumentAuthority].
 	PerArgumentAuthority bool
+
+	// ResultSealer é o PRODUTOR do `tool_result` por handle (AOS-551): sela o corpo do resultado
+	// de cada call PERMITIDA e devolve a referência que fica no lugar dele.
+	//
+	// PORQUE UM CAMPO, e não um decorator em [SecuredConfig.RuntimeOptions]. Um
+	// [agentruntime.WithActivityDispatcher] entregue lá é SILENCIOSAMENTE SOBREPOSTO: a opção é
+	// uma atribuição simples e o append do dispatcher durável vem depois, neste construtor. E um
+	// envelope que decorasse o dispatcher pelo lado de fora selaria DEPOIS da escrita no
+	// step-ledger — o ledger com o conteúdo e o loop com a referência, e a âncora da origem da
+	// saída a deixar de conferir. O assento é dentro do efeito do ledger, e a única porta para
+	// lá é esta ([activity.WithResultSealer]).
+	//
+	// EXIGE [SecuredConfig.Ledger]: sem execução durável não há efeito de ledger onde selar, e
+	// um selo entregue sem ledger é recusado na construção ([ErrResultSealerSemLedger]) em vez de
+	// ficar inerte — um nó que compusesse um layout por handle com o selo caído produzia
+	// resultados de conteúdo cru no log.
+	//
+	// nil ⇒ nada é selado, em nenhum layout (o estado de todos os nós até AOS-556).
+	ResultSealer activity.ResultSealer
 
 	// Tracer é a VIA EXPLÍCITA de observabilidade dos colaboradores que este
 	// composition root constrói INTERNAMENTE — hoje, o dispatcher durável de AOS-021
@@ -607,6 +631,11 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 	if cfg.ApprovalEvidence != nil {
 		runtimeOpts = append(runtimeOpts, agentruntime.WithApprovalEvidence(cfg.ApprovalEvidence))
 	}
+	// AOS-551: o selo do resultado vive DENTRO do efeito do step-ledger. Sem ledger não há onde
+	// o pôr, e deixá-lo inerte seria o fail-open que a fase existe para não ter.
+	if cfg.ResultSealer != nil && cfg.Ledger == nil {
+		return nil, ErrResultSealerSemLedger
+	}
 	var durDisp agentruntime.ActivityDispatcher // nil quando a execução durável está desligada
 	if cfg.Ledger != nil {
 		// OBSERVABILIDADE do escopo durável (AOS-210). Sem esta opção o dispatcher fica
@@ -631,6 +660,10 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 		// e a idempotência das compensações assenta nesse mesmo ledger (AOS-014).
 		if cfg.CompensationRegistry != nil {
 			actOpts = append(actOpts, activity.WithCompensationRegistry(cfg.CompensationRegistry))
+		}
+		// AOS-551: o PRODUTOR do `tool_result` por handle. Ver [SecuredConfig.ResultSealer].
+		if cfg.ResultSealer != nil {
+			actOpts = append(actOpts, activity.WithResultSealer(cfg.ResultSealer))
 		}
 		actDisp, err := activity.NewDispatcher(rm, cfg.Ledger, actOpts...)
 		if err != nil {

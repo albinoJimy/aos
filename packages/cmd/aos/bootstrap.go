@@ -55,6 +55,7 @@ import (
 	integration "github.com/aos-ref/integration"
 	oidc "github.com/aos-ref/integration/oidc"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	"github.com/aos-ref/kernel/agent-runtime/activity"
 	control "github.com/aos-ref/kernel/agent-runtime/control"
 	"github.com/aos-ref/kernel/agent-runtime/durable"
 	"github.com/aos-ref/kernel/agent-runtime/replay"
@@ -1129,6 +1130,10 @@ type Node struct {
 	artefactos *armazemDeArtefactos
 	// handles: o espaço próprio de handles (AOS-550). nil ⇒ desligado. Ver handle_store.go.
 	handles *armazemDeHandles
+	// planoHandles: o espaço de handles MAIS os slots de `resource_value` de cada tool (AOS-550),
+	// que é a forma com que o nó sela e resolve. Distinto do `handles` acima — que é só o espaço,
+	// e é o que a métrica e o fecho da pasta usam. nil ⇒ desligado. Ver handles.go.
+	planoHandles *planoDeHandles
 
 	// primeiroTurnoConfiavel (AOS-542): pedirAntesDeLer E o gate de taint armado com o conjunto
 	// composto. É o que o `GET /tools` anuncia ao `aos-orq` ([anuncioDoAdiamentoDoNo]).
@@ -2651,12 +2656,21 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	if perr != nil {
 		return nil, perr
 	}
+	// AOS-551: o PRODUTOR do `tool_result` por handle. SÓ com o ledger composto — o selo corre
+	// dentro do efeito do step-ledger, e [integration.NewSecuredRuntime] recusa um selo sem
+	// ledger em vez de o deixar inerte. Um nó com handles e sem execução durável fica sem
+	// produtor, o que é seguro (a 1.8.0 não é alcançável nele) e é declarado no banner.
+	var seloDeResultado activity.ResultSealer
+	if ledger != nil {
+		seloDeResultado = seloDoResultado(planoHandles)
+	}
 
 	sec, err := integration.NewSecuredRuntime(integration.SecuredConfig{
 		EffectRewriter: reescritaDoEfeito(sandboxBindings, ocrRewriter, videoRewriter, armazem != nil, planoHandles), // AOS-005: args→ExecRequest; AOS-530/536: args→entrada da ocr_read/video_read; AOS-548: args→entrada da artifact_write; AOS-550: handle→bytes antes da mediação; nil ⇒ sem reescrita
 		// AOS-551: a cadeia acima inclui SEMPRE a [reescritaDaAutoridade], logo o nó declara-o. É
 		// o que permite a um run correr num layout por handle; nos outros layouts não muda nada.
 		PerArgumentAuthority: true,
+		ResultSealer:         seloDeResultado, // AOS-551: o PRODUTOR do `tool_result` por handle; nil sem espaço de handles ou sem ledger (ver acima e [integration.SecuredConfig.ResultSealer])
 		Model:                model,
 		Recorder:             agentruntime.NewTurnRecorder(es),
 		Catalog:              catalog,
@@ -2777,6 +2791,9 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		log("%s", l)
 	}
 	for _, l := range handlesBanner(planoHandles) {
+		log("%s", l)
+	}
+	for _, l := range seloDoResultadoBanner(planoHandles, seloDeResultado != nil) {
 		log("%s", l)
 	}
 	for _, l := range autoridadeBanner(planoHandles) {
@@ -3599,6 +3616,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		media:                   cfg.MediaNoTurno,              // AOS-546: a media_view (nil ⇒ desligada); runs novos no layout 1.7.0
 		artefactos:              armazem,                       // AOS-548: o armazém de artefactos (nil ⇒ desligado)
 		handles:                 espacoDeHandles,               // AOS-550: o espaço próprio de handles (nil ⇒ desligado)
+		planoHandles:            planoHandles,                  // AOS-550/551: o espaço + os slots; é por ele que o nó sela (nil ⇒ desligado)
 		primeiroTurnoConfiavel:  primeiroTurno,                 // AOS-542: anunciado no GET /tools
 		stateGates:              stateGates,                    // AOS-218: fonte do StateGate durável por-run para o steer
 		breakers:                breakers,                      // AOS-080/081/251: disjuntores por-run (libertados no fim do run)

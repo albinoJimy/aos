@@ -146,6 +146,7 @@ import (
 	"unicode/utf8"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	"github.com/aos-ref/kernel/agent-runtime/activity"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 	"github.com/aos-ref/kernel/reference-monitor/taint"
 	"github.com/aos-ref/substrate/eventstore"
@@ -386,6 +387,124 @@ func (p *planoDeHandles) selarEmQuarentenaComHandle(ctx context.Context, subject
 	return h, ""
 }
 
+// planInputHandleTool é o nome que a PROVENIÊNCIA de um handle de `plan_input` leva no
+// `handle.created` e no [agentruntime.HandleFacts.Name] que o nó cunha (`<tool>-<ordinal>`).
+//
+// É UM RÓTULO, e nenhum guarda depende dele — seguido até ao fim: a resolução confere o par
+// `(digest, titular selador)` contra os `handle.created` do run ([quarentenaDoArmazem.OpenQuarantined],
+// [planoDeHandles.quarentenaDoRun]); o token é cunhado de `(run, digest, ordinal)`
+// ([agentruntime.MintHandleToken]); e `handleCriado.Tool` não tem leitor nenhum. Por isso NÃO se
+// afirma aqui que o nó não oferece uma tool com este nome: as tools vêm de um ficheiro do
+// operador (`AOS_MODEL_TOOLS`) e uma colisão é possível. O que uma colisão produz é proveniência
+// AMBÍGUA num evento de auditoria — nunca um handle resolvível por quem não devia.
+const planInputHandleTool = "plan_input"
+
+// planInputHandleStep é o passo que a proveniência de um handle de `plan_input` leva. As entradas
+// do plano são seladas ANTES do primeiro turno, logo não há passo de tool call a nomear; o que as
+// distingue entre si é o ORDINAL do token, não o passo.
+const planInputHandleStep = "plan-input"
+
+var (
+	// errEntradasSemEspacoDeHandles — um run num layout que põe os `plan_input` por handle num nó
+	// sem espaço de handles ligado. Recusa a hospedagem: sem selo, `conferirEntradas` recusaria o
+	// tail no primeiro turno e o run morria mais tarde e com pior diagnóstico.
+	errEntradasSemEspacoDeHandles = errors.New("aos: layout com entradas por handle num no sem espaco de handles ligado (AOS_HANDLE_DIR)")
+	// errEntradaNaoSelada — a selagem de uma entrada do plano recusou. A causa vem do vocabulário
+	// fechado do espaço.
+	errEntradaNaoSelada = errors.New("aos: a selagem de uma entrada do plano recusou")
+)
+
+// seloDoResultado é o PRODUTOR do `tool_result` por handle (AOS-551): a porta que o despacho
+// chama DENTRO do efeito do step-ledger, entre o permit do Reference Monitor e a escrita no log.
+//
+// Espaço de handles desligado ⇒ nil, e nada é selado em layout nenhum.
+//
+// O CORPO QUE DEVOLVE É A REFERÊNCIA NUA, que é o que o tail da 1.8.0 mostra ao modelo e o que a
+// reescrita resolve de volta para bytes antes da mediação da call seguinte. Quem decide SE sela é
+// o kernel, pela versão do layout do run e pela tool ([agentruntime.SealsToolResult]): esta
+// função sela o que lhe derem.
+//
+// SEM TIPO DECLARADO. O resultado de uma tool não traz media type, e o nó não o adivinha: o facto
+// `well_formed` do handle sai por isso `false`, que é o que [formaBemFormada] responde a um tipo
+// que não conhece. Resíduo declarado — o facto é lido por quem atravessa a aresta do plano
+// (AOS-553), e dentro de um run ninguém o consulta.
+//
+// # RESÍDUO MEDIDO: A `artifact_write` NUMA 1.8.0 SELA DUAS VEZES
+//
+// A `artifact_write` já sela o artefacto por si e devolve `{"handle":"…"}`
+// ([armazemDeArtefactos.gravar]). Numa 1.8.0 esse JSON é SELADO OUTRA VEZ por este produtor, e a
+// consequência é concreta: o modelo recebe a referência de um documento que CONTÉM a referência do
+// artefacto, e resolver a de fora entrega a uma tool o texto do documento — não o artefacto. A
+// referência de dentro nunca se resolve: a recusa de referência aninhada
+// ([handleCausaAninhado]) olha para os ARGUMENTOS que o modelo emitiu, não para os bytes
+// resolvidos, pelo que isto não é recusado — é inerte.
+//
+// Não é um defeito vivo: a 1.8.0 não é alcançável em produção. Mas é o que o AOS-556 tem de
+// resolver ANTES de ligar o interruptor, e a forma de o resolver NÃO é um discriminador por
+// `ToolID` neste produtor (a linha 1.19 do epic mediu que esse discriminador não generaliza): é
+// decidir se uma tool que já devolve uma referência a declara, e isso é contrato de tool.
+func seloDoResultado(p *planoDeHandles) activity.ResultSealer {
+	if p == nil {
+		return nil
+	}
+	return func(ctx context.Context, subject, runID, stepID, toolID string, conteudo []byte) ([]byte, error) {
+		ref, causa := p.selarEmQuarentena(ctx, subject, runID, stepID, toolID, "", conteudo)
+		if causa != "" {
+			// PELO TIPO, e não por um `errors.New`: a recusa do selo materializa-se como
+			// `tool_error` no corpo do segmento `tool_result`, que é exactamente o canal que o
+			// [erroDaTool] existe para fechar. Sem ele a mensagem saía como `<causa>` em vez de
+			// `<tool>: <causa>`, a substituição por [causaNaoDeclarada] nunca corria, e uma causa
+			// do espaço de handles chegava ao tail de uma tool que não a declara. A causa é do
+			// vocabulário FECHADO do espaço (já contada lá) e não leva um byte de conteúdo.
+			return nil, erroDaTool(toolID, causa)
+		}
+		return []byte(ref), nil
+	}
+}
+
+// selarEntradasDoPlano é o PRODUTOR do `plan_input` por handle (AOS-551): num layout que põe as
+// entradas do plano no tail por handle, sela o payload de cada uma e escreve-lhe a referência no
+// [agentruntime.PlanInput.Handle].
+//
+// Corre na HOSPEDAGEM do run, depois de o layout estar fixado e ANTES do registo de retoma — que
+// leva os `Inputs` e por isso guarda as referências. Fail-closed: uma entrada que não sele recusa
+// a hospedagem, em vez de deixar o run morrer no primeiro tail com
+// [agentruntime.ErrPlanInputWithoutHandle].
+//
+// UMA ENTRADA QUE JÁ TRAZ HANDLE NÃO SE RE-SELA. É o caso da RETOMA: o handle veio do registo, e
+// uma segunda selagem cunhava um token com OUTRO ordinal — outro rótulo no tail, outro
+// `prompt_hash`, e a retoma divergia do run que ela está a continuar.
+//
+// Fora de um layout por handle devolve o Goal TAL COMO ENTROU, sem tocar em nada.
+func selarEntradasDoPlano(ctx context.Context, p *planoDeHandles, goal agentruntime.Goal) (agentruntime.Goal, error) {
+	if len(goal.Inputs) == 0 || !agentruntime.HasPlanInputsByHandle(goal.AssemblyVersion) {
+		return goal, nil
+	}
+	if p == nil {
+		return goal, fmt.Errorf("%w (run %q, layout %s)", errEntradasSemEspacoDeHandles, goal.RunID, goal.AssemblyVersion)
+	}
+	// Cópia: o Goal do chamador não fica meio-selado se uma entrada a seguir recusar.
+	entradas := make([]agentruntime.PlanInput, len(goal.Inputs))
+	copy(entradas, goal.Inputs)
+	for i := range entradas {
+		if entradas[i].Handle != "" {
+			continue
+		}
+		// A proveniência diz `tool_result` porque é o que a RECONSTRUÇÃO da quarentena diz de
+		// TODOS os handles de um run ([planoDeHandles.quarentenaDoRun], que adopta cada um com
+		// [taint.OriginToolResult]). Uma origem diferente aqui tornava o handle vivo e o handle
+		// reconstruído dois objectos diferentes; e as duas origens classificam untrusted, pelo
+		// que a etiqueta não decide nada.
+		ref, causa := p.selarEmQuarentena(ctx, goal.Titular(), goal.RunID, planInputHandleStep, planInputHandleTool, "", entradas[i].Content)
+		if causa != "" {
+			return goal, fmt.Errorf("%w: entrada %d (%s>%s) do run %q: %s", errEntradaNaoSelada, i, entradas[i].From, entradas[i].Output, goal.RunID, causa)
+		}
+		entradas[i].Handle = ref
+	}
+	goal.Inputs = entradas
+	return goal, nil
+}
+
 // reescritaDeHandles é o [referencemonitor.Call] rewriter que troca as referências pelos bytes,
 // ANTES da mediação. Vale para TODAS as tools: a referência é um argumento, não uma tool.
 //
@@ -558,6 +677,24 @@ func reescritaDeHandles(p *planoDeHandles) reescritaDaCall {
 	}
 }
 
+// seloDoResultadoBanner é a linha de arranque do PRODUTOR do `tool_result` por handle (AOS-551).
+// Sem espaço de handles não sai linha nenhuma: o nó sem handles fica byte a byte como era.
+//
+// DECLARA A POSTURA, e em particular o caso em que ela é incompleta: com o espaço de handles
+// ligado e a execução durável DESLIGADA não há efeito de step-ledger onde o selo possa viver, pelo
+// que o nó não tem produtor. É seguro — a 1.8.0 não é alcançável neste nó, e se fosse o tail
+// materializava um erro de tool em vez do conteúdo e a designação da origem recusaria por não
+// reconhecer uma referência —, mas é uma composição degradada e é dito em voz alta.
+func seloDoResultadoBanner(p *planoDeHandles, composto bool) []string {
+	if p == nil {
+		return nil
+	}
+	if !composto {
+		return []string{fmt.Sprintf("selo do resultado por handle (AOS-551, fase R2): NAO COMPOSTO — o espaco de handles esta ligado mas a execucao duravel NAO (AOS_DURABLE_EXECUTION), e o selo corre DENTRO do efeito do step-ledger: sem ledger nao ha onde o pôr. Consequencia: neste no nenhum resultado de tool e selado em handle, em layout nenhum. E SEGURO e nao e fail-open — a %s nao e alcancavel neste no, e um run nela veria o tail materializar um erro de tool em vez do conteudo e a designacao da origem recusar por nao reconhecer uma referencia nos bytes do despacho. Para compor o produtor, liga a execucao duravel", agentruntime.AssemblyVersion180)}
+	}
+	return []string{fmt.Sprintf("selo do resultado por handle (AOS-551, fase R2): COMPOSTO — numa %s o corpo do resultado de cada tool call PERMITIDA e selado no espaco de handles e substituido pela REFERENCIA, DENTRO do efeito do step-ledger: depois da decisao do Reference Monitor e ANTES da escrita no log, pelo que o ledger, o loop, a captura, o replay e a rota que serve os bytes designados veem TODOS os mesmos bytes e a ancora da origem da saida confere. A `media_view` e EXCEPCAO por desenho da fase (o seu resultado e lido CRU para resolver a MediaRef e anexar a imagem, funcionalidade da R1a). Nos layouts anteriores a %s nada e selado: quem decide e a versao do layout do run, que o kernel poe no contexto. Uma selagem que recuse NEGA a tool call sem memorizar nada no ledger (fail-closed). HOJE ISTO E INERTE: nenhum interruptor deste no devolve a %s e o wire do submit nao a transporta — o produtor existe e esta provado, e o run em que ele corre chega com o AOS-556", agentruntime.AssemblyVersion180, agentruntime.AssemblyVersion180, agentruntime.AssemblyVersion180)}
+}
+
 // chavesDeTopo conta as chaves do objecto JSON de topo, pela ordem em que aparecem — incluindo as
 // repetidas, que o `json.Unmarshal` para um mapa funde ficando com a última.
 func chavesDeTopo(b []byte) (int, error) {
@@ -628,8 +765,8 @@ func handlesBanner(p *planoDeHandles) []string {
 	if p == nil {
 		return nil
 	}
-	return []string{fmt.Sprintf("entradas por handle (AOS-550, ADR-043 §2.6): um argumento de tool pode ser uma referencia %s<token> e o no troca-a pelos bytes NO CallRewriter, ANTES da mediacao — a Call que o RM decide, audita e sela e a que ja tem os bytes (a preview da aprovacao e o hash do span descrevem o efeito executado; o resource_value e calculado dos argumentos do MODELO, antes da reescrita, e por isso uma referencia num argumento que preencha um slot dele RECUSA a call). Procura-se SO nos escalares de topo do documento DESCODIFICADO: uma referencia aninhada, parcial, numa chave, ou numa chave repetida, RECUSA a call; ate %d referencias e %d bytes resolvidos por call. Um token que nao resolve recusa a call (E_EFFECT_REWRITE), nunca passa como literal. Handle forjado: so codigo do no CRIA um handle (emissor %s) e so o que o stream do run declara se RESOLVE — duas conferencias sobre a MESMA fonte duravel, defesa em profundidade e nao independencia; o texto que NOMEIA um token nao tem proveniencia verificavel nesta porta, e quem governa esse fluxo e a politica de dados do AOS-556. NENHUM dos dois guardas decide o taint: um handle e sempre untrusted. Tokens cunhados pelo no, escopados ao run, ligados a posicao e NAO ESCRIVEIS por quem nao conhece os bytes (hash sem chave de run+digest+ordinal, nao um segredo), com a sequencia pela ordem dos eventos (sem relogio, sem rand). Nesta fase o unico produtor de handles e a tool %s, que valida o conteudo antes de selar; sem AOS_ARTIFACT_DIR nenhum handle e cunhado",
-		agentruntime.HandleRefPrefix, handleMaxRefsPorCall, handleMaxBytesPorCall, handleNHI, artifactWriteToolName)}
+	return []string{fmt.Sprintf("entradas por handle (AOS-550, ADR-043 §2.6): um argumento de tool pode ser uma referencia %s<token> e o no troca-a pelos bytes NO CallRewriter, ANTES da mediacao — a Call que o RM decide, audita e sela e a que ja tem os bytes (a preview da aprovacao e o hash do span descrevem o efeito executado; o resource_value e calculado dos argumentos do MODELO, antes da reescrita, e por isso uma referencia num argumento que preencha um slot dele RECUSA a call). Procura-se SO nos escalares de topo do documento DESCODIFICADO: uma referencia aninhada, parcial, numa chave, ou numa chave repetida, RECUSA a call; ate %d referencias e %d bytes resolvidos por call. Um token que nao resolve recusa a call (E_EFFECT_REWRITE), nunca passa como literal. Handle forjado: so codigo do no CRIA um handle (emissor %s) e so o que o stream do run declara se RESOLVE — duas conferencias sobre a MESMA fonte duravel, defesa em profundidade e nao independencia; o texto que NOMEIA um token nao tem proveniencia verificavel nesta porta, e quem governa esse fluxo e a politica de dados do AOS-556. NENHUM dos dois guardas decide o taint: um handle e sempre untrusted. Tokens cunhados pelo no, escopados ao run, ligados a posicao e NAO ESCRIVEIS por quem nao conhece os bytes (hash sem chave de run+digest+ordinal, nao um segredo), com a sequencia pela ordem dos eventos (sem relogio, sem rand). PRODUTORES DE HANDLES neste no: a tool %s, que valida o conteudo antes de selar (exige AOS_ARTIFACT_DIR); e, do AOS-551, o selo do resultado de cada tool call permitida e o selo das entradas do plano, os dois SO num run num layout por handle (a %s) e declarados na linha do selo, a seguir",
+		agentruntime.HandleRefPrefix, handleMaxRefsPorCall, handleMaxBytesPorCall, handleNHI, artifactWriteToolName, agentruntime.AssemblyVersion180)}
 }
 
 // autoridadeBanner e a linha de arranque da AUTORIDADE POR ARGUMENTO (AOS-551). Sem plano de

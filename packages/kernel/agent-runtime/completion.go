@@ -307,7 +307,7 @@ type RunEvidence struct {
 	// ([RunEvidence.FollowOutputFrom]). Vazia num run sem declaração.
 	origem string
 	// resultadosPorHandle diz que o layout do run põe o corpo dos `tool_result` por handle (a
-	// 1.8.0, AOS-551): aí nenhum resultado designa a origem da saída — ver
+	// 1.8.0, AOS-551): aí só um resultado JÁ SELADO em handle designa a origem da saída — ver
 	// [RunEvidence.ResultsByHandle] e [observarPrimeiroDespacho].
 	resultadosPorHandle bool
 }
@@ -328,8 +328,9 @@ func (e *RunEvidence) FollowOutputFrom(tool string) {
 
 // ResultsByHandle diz à evidência que o layout deste run põe o corpo dos `tool_result` por HANDLE
 // (a 1.8.0, AOS-551). Chama-se ANTES de [RunEvidence.Observe], no molde de
-// [RunEvidence.FollowOutputFrom], e tem UMA consequência: nenhum resultado designa a origem da
-// saída, porque os bytes que a regra digeriria são a referência do handle e não o conteúdo.
+// [RunEvidence.FollowOutputFrom], e tem UMA consequência: só um resultado cujo corpo JÁ SEJA uma
+// referência de handle designa a origem da saída. Um corpo de conteúdo cru nesse layout é um nó
+// composto sem o produtor do selo, e não designa nada.
 //
 // É um setter e não um parâmetro de [RunEvidence.Observe] de propósito: a designação é um concern
 // do run inteiro e não de um turno, e mudar a assinatura do Observe tocaria em todos os chamadores
@@ -342,22 +343,23 @@ func (e *RunEvidence) ResultsByHandle(porHandle bool) {
 // foi despachada sem recusa e sem erro de tool — a mesma condição com que o loop confirma a
 // activity no checkpoint.
 //
-// stepID é o passo do turno e authority o rótulo do contexto que o modelo viu nele
-// ([ContextAuthority], lido a seguir ao Assemble). Só se guardam do PRIMEIRO turno que despachou
-// tool calls, e servem a designação da origem da saída (AOS-497).
+// stepID é o passo do turno e piso o PISO da autoridade nele ([ContextFloor]/[SegmentFloor], lido
+// a seguir ao Assemble). Só se guardam do PRIMEIRO turno que despachou tool calls, e servem a
+// designação da origem da saída (AOS-497). Fora de um layout por handle o piso é igual à
+// autoridade do contexto, pelo que a designação é a de sempre (AOS-551).
 //
 // O DIGEST DA ORIGEM CALCULA-SE AQUI, no momento em que o turno é observado, e só num run que
 // declarou a origem ([RunEvidence.FollowOutputFrom]): os bytes são os que o despacho acabou de
 // devolver, e nada do que lhes aconteça até ao turno terminal muda a âncora. Num run sem
 // declaração nenhum resultado é lido.
-func (e *RunEvidence) Observe(stepID string, authority taint.Label, results []CapturedToolResult) {
+func (e *RunEvidence) Observe(stepID string, piso taint.Label, results []CapturedToolResult) {
 	if len(results) == 0 {
 		// Um turno sem tool calls não muda nada: o «último turno que despachou» continua a
 		// ser o anterior.
 		return
 	}
 	if e.primeiro == nil {
-		e.primeiro = observarPrimeiroDespacho(stepID, authority, e.origem, results, e.resultadosPorHandle)
+		e.primeiro = observarPrimeiroDespacho(stepID, piso, e.origem, results, e.resultadosPorHandle)
 	}
 	negadas, falhadas := 0, 0
 	defer func() {

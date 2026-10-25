@@ -2,6 +2,8 @@ package agentruntime
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
@@ -23,7 +25,8 @@ func resultadoDeTeste(ref string) CapturedToolResult {
 	}
 }
 
-// refDeResultado é a forma textual de um handle, como o nó a produz no envelope do dispatcher.
+// refDeResultado é a forma textual de um handle, como o nó a produz no selo do resultado
+// ([activity.WithResultSealer], dentro do efeito do step-ledger).
 var refDeResultado = HandleRefPrefix + MintHandleToken("run-551b", "sha256:bb", 1)
 
 func turnoDa180(t *testing.T, results []CapturedToolResult) []TailSegment {
@@ -250,7 +253,7 @@ func TestAOS551B_EmNenhumRamoOValorChegaAoCorpo(t *testing.T) {
 // A 1.8.0 herda os segmentos de media da 1.7.0, e `mediaDoTurno` lê os resultados CRUS — não os
 // segmentos materializados. A primeira versão desta fatia tinha a colisão nos DOIS sentidos:
 //
-//   - sem o envelope que sela (o estado de hoje), o `tool_result` da `media_view` materializava
+//   - sem o PRODUTOR composto, o `tool_result` da `media_view` materializava
 //     «tool result not available by handle» porque a `MediaRef` não é uma referência de handle, E
 //     o segmento de media era acrescentado a seguir — o prompt dizia ao modelo que a chamada não
 //     deu resultado utilizável e anexava-lhe a imagem;
@@ -339,13 +342,22 @@ func TestAOS551B_OCorpoFixoDoResultadoCumpreAsRestricoes(t *testing.T) {
 	}
 }
 
-// UM RESULTADO POR HANDLE NÃO SE DESIGNA como origem da saída. Antes desta fatia, a designação
-// digeria `Result.Value`, que até à 1.7.0 É o corpo do tail. Na 1.8.0 esse valor é a REFERÊNCIA, e
-// digeri-la daria uma `OutputSource` bem formada cujo digest descreve o handle e não o conteúdo —
-// uma atestação errada, num eixo que governa a entrega por referência entre nós do plano.
+// NUM LAYOUT POR HANDLE, SÓ UM RESULTADO JÁ SELADO SE DESIGNA — e é a forma do VALOR que decide,
+// não o layout.
 //
-// Fica sem digest, logo NÃO bem formada, logo quem a consome recusa. A fatia 4 redefine a âncora.
-func TestAOS551B_UmResultadoPorHandleNaoSeDesigna(t *testing.T) {
+// A fatia 1b recusava por LAYOUT, porque não havia produtor e nenhum resultado era uma referência.
+// Com o produtor ([activity.WithResultSealer]) há dois casos a distinguir, e o layout não os
+// distingue:
+//
+//   - o valor É a referência (o nó composto com o selo): designa, e o digest descreve exactamente
+//     os bytes que o step-ledger gravou — que são os mesmos que os dois verificadores da âncora
+//     re-hasheiam. A âncora confere;
+//   - o valor é conteúdo CRU (o nó que compôs a 1.8.0 sem o selo): NÃO designa. Recusar por layout
+//     também o cobria, mas recusar por forma cobre-o sem depender de ninguém se lembrar de compor
+//     o selo — e era este o caso fail-OPEN: o tail esconde o conteúdo do modelo (materializa-o
+//     como erro de tool) mas a designação digeria-o e o `aos-orq` entregá-lo-ia a jusante como
+//     saída do run.
+func TestAOS551B_SoUmResultadoSeladoSeDesigna(t *testing.T) {
 	designarCom := func(porHandle bool, valor string) *OutputSource {
 		t.Helper()
 		e := NewRunEvidence()
@@ -373,33 +385,48 @@ func TestAOS551B_UmResultadoPorHandleNaoSeDesigna(t *testing.T) {
 		t.Fatalf("a designação de conteúdo perdeu o digest: %+v", normal)
 	}
 
-	// Num layout POR HANDLE: não designa — e a âncora continua SELÁVEL.
-	//
-	// O `State` é a asserção que faltava, e é por faltar que a primeira versão desta fatia passava
-	// os seus testes com um bloqueante por baixo: deixava `designated` com digest vazio, que é a
-	// ÚNICA combinação que [OutputSource.BemFormada] recusa. A máquina de estados recusava a
-	// transição terminal e o run ficava SEM desfecho no log durável — indistinguível de um crash,
-	// sem o `failed` que dispara a compensação, e com a reserva de quota presa.
+	// Num layout POR HANDLE com o valor JÁ SELADO: designa, e o digest é o dos bytes que o
+	// despacho devolveu — a referência. É o que o step-ledger grava e o que os verificadores da
+	// âncora re-hasheiam, pelo que a âncora confere. Um digest do CONTEÚDO seria inconfirmável
+	// pelos dois e o run fecharia `fulfilled` com a saída designada indisponível de vez.
 	porHandle := designarPorHandle(refDeResultado)
-	if porHandle.State != OutputSourceMissing {
-		t.Fatalf("o estado não é %q: %+v", OutputSourceMissing, porHandle)
+	if porHandle.State != OutputSourceDesignated {
+		t.Fatalf("um resultado SELADO não designou: %+v", porHandle)
 	}
 	if !porHandle.BemFormada() {
 		t.Fatalf("a âncora NÃO é selável — a transição terminal seria recusada e o run ficava sem desfecho: %+v", porHandle)
 	}
-	if porHandle.Digest != "" || porHandle.Bytes != 0 || porHandle.StepID != "" {
-		t.Fatalf("a designação por handle gravou campos da chamada designada: %+v", porHandle)
+	soma := sha256.Sum256([]byte(refDeResultado))
+	if quero := "sha256:" + hex.EncodeToString(soma[:]); porHandle.Digest != quero {
+		t.Fatalf("a âncora não atesta os bytes que o despacho devolveu: digest=%q, sha256(referência)=%q", porHandle.Digest, quero)
+	}
+	if porHandle.Bytes != len(refDeResultado) {
+		t.Fatalf("a âncora conta %d bytes e a referência tem %d — os dois verificadores comparam o tamanho", porHandle.Bytes, len(refDeResultado))
 	}
 
-	// E não designa TAMBÉM quando o valor não é uma referência — o caso do nó que compôs a 1.8.0
-	// SEM o envelope que sela. Era fail-OPEN na primeira versão: o tail mostrava um erro ao modelo
-	// e escondia-lhe o conteúdo, mas a designação digeria esse mesmo conteúdo e entregava-o a
-	// jusante como saída do run, conteúdo que o modelo nunca viu.
+	// E NÃO designa quando o valor não é uma referência — o nó que compôs a 1.8.0 SEM o selo.
+	// Fail-OPEN se designasse: o tail esconde esse conteúdo do modelo (materializa-o como erro de
+	// tool) mas a designação digeri-lo-ia e o `aos-orq` entregá-lo-ia a jusante como saída do run,
+	// conteúdo que o modelo nunca viu.
 	semSelo := designarPorHandle("o conteudo cru que o no nao selou")
 	if semSelo.State != OutputSourceMissing || !semSelo.BemFormada() {
-		t.Fatalf("o nó sem o envelope que sela designou a origem a partir de conteúdo cru: %+v", semSelo)
+		t.Fatalf("o nó sem o selo designou a origem a partir de conteúdo cru: %+v", semSelo)
 	}
 	if semSelo.Digest != "" {
 		t.Fatalf("a designação digeriu o conteúdo cru: %+v", semSelo)
+	}
+
+	// E uma referência QUASE bem formada é conteúdo cru para este efeito: é o mesmo vocabulário de
+	// [ParseHandleRef] que o tail usa, pelo que o que o tail recusa mostrar a designação recusa
+	// atestar. Sem isto, lixo à volta de um token passava a âncora.
+	for _, quase := range []string{
+		"prefixo " + refDeResultado,
+		refDeResultado + " e mais conteudo",
+		`{"handle":"` + refDeResultado + `"}`,
+		HandleRefPrefix,
+	} {
+		if s := designarPorHandle(quase); s.State != OutputSourceMissing || s.Digest != "" {
+			t.Fatalf("%q designou a origem: %+v", quase, s)
+		}
 	}
 }
