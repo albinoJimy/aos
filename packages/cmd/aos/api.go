@@ -794,6 +794,16 @@ type submitRequest struct {
 	// planos que validou com a regra P4 relaxada; um nó que não o garanta (reiniciado sem o
 	// interruptor, gate desarmado) recusa com 400 em vez de correr sem a fronteira.
 	RequiresFirstTurnTrusted bool `json:"requires_first_turn_trusted,omitempty"`
+	// ConteudoPorHandle (AOS-556, ADR-044 §2.9): quem submete PEDE que este run corra no
+	// layout que põe o conteúdo untrusted por handle (a 1.8.0, fase R2 do ADR-043). Segue o
+	// molde do campo acima, e pela mesma razão: um nó que não habilite o layout
+	// (`AOS_CONTEUDO_POR_HANDLE` desligada) RECUSA com 400 em vez de aceitar o campo e
+	// ignorá-lo — aceitar-e-ignorar daria a quem submete a ideia de que o conteúdo viaja por
+	// handle quando viaja inline, que é a afirmação exactamente ao contrário.
+	//
+	// Booleano e não uma versão de layout: a porta não oferece a escolha de um layout
+	// arbitrário. Um run RETOMADO não passa por aqui (traz o layout do seu registo).
+	ConteudoPorHandle bool `json:"conteudo_por_handle,omitempty"`
 	// OutputFromTool é a ORIGEM DECLARADA da saída do run (AOS-498, ADR-038): o nome de uma tool
 	// da lista-branca `tools` do MESMO pedido. OutputSourceBinding é o vínculo dessa declaração —
 	// `measure` (só medição) ou `binding` (vinculativa) — e os dois vêm sempre juntos
@@ -940,6 +950,12 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	// AOS-542: a exigência do primeiro turno confiável, antes de autenticar e de qualquer escrita.
 	if req.RequiresFirstTurnTrusted && (h.node == nil || !h.node.primeiroTurnoConfiavel) {
 		writeError(w, http.StatusBadRequest, "requires_first_turn_trusted: este no nao garante o primeiro turno confiavel (AOS_PLAN_INPUT_DEPOIS_DO_PRIMEIRO_TURNO desligado, gate de taint desarmado, ou tools de efeito fora do gate) — o plano foi validado com a regra P4 relaxada e nao corre sem essa fronteira")
+		return
+	}
+	// AOS-556: o pedido do layout por handle, pela mesma regra e no mesmo sítio — antes de
+	// autenticar e de qualquer escrita. Um nó que não o habilite recusa, e di-lo.
+	if req.ConteudoPorHandle && (h.node == nil || !h.node.conteudoPorHandle) {
+		writeError(w, http.StatusBadRequest, "conteudo_por_handle: este no nao habilita o layout por handle (AOS_CONTEUDO_POR_HANDLE desligada, ou sem o produtor do tool_result composto) — a submissao e recusada em vez de correr com o conteudo inline, que seria a afirmacao ao contrario")
 		return
 	}
 	// AOS-498: a origem declarada da saída, contra a mesma lista-branca. Recusa de pedido, como a
@@ -1197,6 +1213,10 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		// pedido passou; do corpo não vem nada. Vazio em qualquer run que não seja uma tentativa
 		// admitida, e sempre com o interruptor desligado.
 		RetryNotice: h.avisoDaTentativa(tentativaProvada),
+		// AOS-556: o PEDIDO do layout por handle, já conferido contra o que o nó habilita (400 se
+		// não). Quem o resolve para uma versão é o nó, no arranque do run ([layoutDoRunNovo]) —
+		// aqui viaja o pedido, não a decisão.
+		ConteudoPorHandle: req.ConteudoPorHandle,
 	}
 	goal.Principal.NHIID = req.PrincipalNHI
 	// AOS-439: quem pediu o run, para o selo de cada decisão. Vazio num run que não é de um plano.

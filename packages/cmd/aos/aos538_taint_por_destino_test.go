@@ -95,11 +95,18 @@ func TestAOS538_ManifestoDosDemos_WebPostContinuaNegado(t *testing.T) {
 	if dec := got["web_post"]; dec.Effect != rm.EffectDeny || dec.DeniedBy != "taint" {
 		t.Fatalf("web_post com o contexto untrusted devia ser NEGADO pelo taint, veio %s/%q", dec.Effect, dec.DeniedBy)
 	}
-	// A doc_read dos demos NÃO declara `reversibility` — um eixo implícito —, pelo que fica com a
-	// regra da capability e continua negada. É o fail-closed da regra a funcionar sobre um
-	// manifesto real: só os três eixos explícitos libertam.
-	if dec := got["doc_read"]; dec.Effect != rm.EffectDeny || dec.DeniedBy != "taint" {
-		t.Fatalf("doc_read dos demos (eixo implicito) devia continuar NEGADA pelo taint, veio %s/%q", dec.Effect, dec.DeniedBy)
+	// A doc_read dos demos PASSA, e isto mudou no AOS-556: ela declarava `egress` e `mutation` mas
+	// NÃO a `reversibility`, e com um eixo implícito ficava com a regra da capability — negada. O
+	// AOS-556 declarou-a, porque com a `allow_fs_read` partida por classe de destino um eixo
+	// implícito dá `unknown` e deixa de satisfazer regra nenhuma: a leitura ficava negada pela
+	// POLÍTICA, não só pelo taint. Declarar os três eixos passou a ser pré-condição da permissão,
+	// e os demos passaram a comportar-se como produção, que já os declarava.
+	//
+	// O fail-closed do eixo implícito continua coberto, e com sujeito: ver
+	// `TestAOS538_MutacaoImplicitaNaoLibertaNada` neste ficheiro, o caso `eixo-implicito` de
+	// `aos069_fase1_no_composto_test.go`, e os de `aos530`/`aos536`.
+	if dec := got["doc_read"]; dec.Effect != rm.EffectPermit {
+		t.Fatalf("doc_read dos demos declara os tres eixos desde o AOS-556 e devia PASSAR, veio %s/%q", dec.Effect, dec.DeniedBy)
 	}
 }
 

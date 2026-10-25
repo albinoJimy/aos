@@ -489,6 +489,11 @@ type Config struct {
 	// 1.6.0, em que o primeiro turno não vê os `plan_input`. false ⇒ o layout de sempre. Ver
 	// plan_input_env.go.
 	PlanInputDepoisDoPrimeiroTurno bool
+	// ConteudoPorHandle HABILITA o layout por handle (a 1.8.0, fase R2 do ADR-043; AOS-556)
+	// a partir de `AOS_CONTEUDO_POR_HANDLE`. Habilitar não é mover: nenhum run muda de
+	// layout por isto — quem escolhe é o campo `conteudo_por_handle` do `POST /runs`, e um
+	// nó que não habilite recusa esse campo com 400 (ADR-044 §2.9).
+	ConteudoPorHandle bool
 	// ArtifactDir e ArtifactMaxBytes ligam o armazém de artefactos do run (AOS-548, ADR-043 §2.3):
 	// a pasta do volume e o tecto em bytes. Pasta vazia ⇒ desligado.
 	ArtifactDir      string
@@ -1138,6 +1143,11 @@ type Node struct {
 	// primeiroTurnoConfiavel (AOS-542): pedirAntesDeLer E o gate de taint armado com o conjunto
 	// composto. É o que o `GET /tools` anuncia ao `aos-orq` ([anuncioDoAdiamentoDoNo]).
 	primeiroTurnoConfiavel bool
+	// conteudoPorHandle (AOS-556): este nó HABILITA o layout por handle — a env
+	// `AOS_CONTEUDO_POR_HANDLE=on` E o produtor do `tool_result` composto. Sem ele o layout
+	// não é alcançável de forma útil, e a porta recusa o pedido em vez de o aceitar e
+	// entregar um tail de erros de tool. NÃO move run nenhum: quem escolhe é o pedido.
+	conteudoPorHandle bool
 
 	// stateGates é a costura por-run (AOS-218) que resolve o [control.StateGate] durável
 	// (AOS-017) que o canal de steer usa para materializar running↔paused. O loop de
@@ -3613,16 +3623,23 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		estadoDoProvider:        estadoDoCliente(cfg.Model),    // AOS-514: estado opaco do provider por resultado, para o /metrics (nil ⇒ desligada)
 		completionVerdict:       completionVerdict,             // AOS-493: modo do veredicto de conclusão dos runs novos
 		pedirAntesDeLer:         pedirAntesDeLer,               // ADR-034 §4: runs novos com plan_input no layout 1.6.0
-		media:                   cfg.MediaNoTurno,              // AOS-546: a media_view (nil ⇒ desligada); runs novos no layout 1.7.0
-		artefactos:              armazem,                       // AOS-548: o armazém de artefactos (nil ⇒ desligado)
-		handles:                 espacoDeHandles,               // AOS-550: o espaço próprio de handles (nil ⇒ desligado)
-		planoHandles:            planoHandles,                  // AOS-550/551: o espaço + os slots; é por ele que o nó sela (nil ⇒ desligado)
-		primeiroTurnoConfiavel:  primeiroTurno,                 // AOS-542: anunciado no GET /tools
-		stateGates:              stateGates,                    // AOS-218: fonte do StateGate durável por-run para o steer
-		breakers:                breakers,                      // AOS-080/081/251: disjuntores por-run (libertados no fim do run)
-		anomaliaAutonomia:       anomaliaAutonomia,             // AOS-090/DEF-908: demoção automática por anomalia (arrancada no loop de serviço)
-		fiabilidade:             fiabilidade,                   // AOS-090/ADR-025: promoção automática por fiabilidade medida (arrancada no loop de serviço)
-		progress:                progress,                      // AOS-261/262: burn-down + aviso por-run (libertado no fim do run)
+		// AOS-556: habilita SÓ com o produtor do `tool_result` composto. Com a env `on` e sem
+		// ele, o layout é alcançável mas inútil — o tail materializa um erro de tool em vez do
+		// conteúdo e o piso cai à primeira call. Não aborta o arranque (ao contrário do
+		// `AOS_TAINT_ESCALA` sem aprovadores, que deixaria runs suspensos para sempre): o nó
+		// corre, não habilita, recusa o pedido com 400, e o banner diz qual das duas metades
+		// falta.
+		conteudoPorHandle:      cfg.ConteudoPorHandle && seloDeResultado != nil,
+		media:                  cfg.MediaNoTurno,  // AOS-546: a media_view (nil ⇒ desligada); runs novos no layout 1.7.0
+		artefactos:             armazem,           // AOS-548: o armazém de artefactos (nil ⇒ desligado)
+		handles:                espacoDeHandles,   // AOS-550: o espaço próprio de handles (nil ⇒ desligado)
+		planoHandles:           planoHandles,      // AOS-550/551: o espaço + os slots; é por ele que o nó sela (nil ⇒ desligado)
+		primeiroTurnoConfiavel: primeiroTurno,     // AOS-542: anunciado no GET /tools
+		stateGates:             stateGates,        // AOS-218: fonte do StateGate durável por-run para o steer
+		breakers:               breakers,          // AOS-080/081/251: disjuntores por-run (libertados no fim do run)
+		anomaliaAutonomia:      anomaliaAutonomia, // AOS-090/DEF-908: demoção automática por anomalia (arrancada no loop de serviço)
+		fiabilidade:            fiabilidade,       // AOS-090/ADR-025: promoção automática por fiabilidade medida (arrancada no loop de serviço)
+		progress:               progress,          // AOS-261/262: burn-down + aviso por-run (libertado no fim do run)
 
 		ownsEventStore: ownsES,
 		posseWAL:       posse,

@@ -217,13 +217,22 @@ um **pedido** do submissor que o nó recusa com 400 quando o seu estado composto
   anterior, sem release;
 - **o campo do pedido PEDE**, por run. Validado contra o estado composto do nó e recusado com **400**
   quando o nó não o habilita — nunca aceito e silenciosamente ignorado, que é o modo de falha que o
-  molde do `requires_first_turn_trusted` existe para evitar. A allowlist de valores é a que já
-  existe (`agentruntime.SupportedAssemblyVersions`), e não uma segunda lista.
+  molde do `requires_first_turn_trusted` existe para evitar. É um **booleano**, e não uma versão de
+  layout: a porta não oferece a escolha de um layout arbitrário, que seria uma superfície muito
+  maior pelo mesmo ganho.
 
-Sem o campo, um run novo fica no layout que o interruptor determinar; o campo serve para o plano
-pedir a 1.8.0 nó a nó, que é o que o caso de uso precisa (o nó 2 do plano é que consome o que o nó 1
-leu). Um run **retomado** não passa por nenhuma das duas: continua no layout do seu registo de
-retoma, como desde o AOS-489.
+**HABILITAR NÃO É MOVER, e é isso que torna as duas vias úteis em vez de redundantes.** Nenhum run
+muda de layout por a env estar `on`: sem o campo, o layout é o de sempre. Se a env sozinha movesse
+todos os runs novos — o molde da `AOS_MEDIA_NO_TURNO` —, o campo não servia para nada. O campo serve
+para o plano pedir a 1.8.0 **nó a nó**, que é o que o caso de uso precisa (o nó 2 do plano é que
+consome o que o nó 1 leu). Um run **retomado** não passa por nenhuma das duas: continua no layout do
+seu registo de retoma, como desde o AOS-489.
+
+**A habilitação efectiva exige também o PRODUTOR do `tool_result`** (a execução durável com ledger
+composto). Com a env `on` e sem ele, o layout seria alcançável mas inútil: o tail materializa um
+erro de tool em vez do conteúdo e o piso do run cai à primeira call. O nó **corre e não habilita** —
+não aborta, ao contrário do `AOS_TAINT_ESCALA` sem aprovadores, que deixaria runs suspensos para
+sempre —, recusa o pedido com 400, e o banner diz qual das duas metades falta.
 
 E a linha de postura declara o estado das duas no arranque, porque neste repositório postura
 anunciada é postura ligada.

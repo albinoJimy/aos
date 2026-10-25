@@ -448,6 +448,9 @@ func run(w io.Writer) error {
 	}
 
 	// PEDIR ANTES DE LER (ADR-034 §4): com `off` não sai linha. Já validado em [nodeConfigFromEnv].
+	for _, line := range conteudoPorHandleBanner(cfg.ConteudoPorHandle) {
+		fmt.Fprintf(w, "[aos] %s\n", line)
+	}
 	for _, line := range planInputDepoisBanner(cfg.PlanInputDepoisDoPrimeiroTurno) {
 		fmt.Fprintf(w, "[aos] %s\n", line)
 	}
@@ -1009,6 +1012,15 @@ func nodeConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	cfg.PlanInputDepoisDoPrimeiroTurno = pedirAntesDeLer
+
+	// CONTEÚDO POR HANDLE (AOS-556, ADR-043 fase R2). Vocabulário fechado (`off`/`on`); `on`
+	// HABILITA o layout e não move run nenhum. A habilitação efectiva exige também o produtor
+	// do `tool_result` composto, e isso decide-se no Bootstrap, que é quem sabe.
+	conteudoPorHandle, err := parseConteudoPorHandleFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.ConteudoPorHandle = conteudoPorHandle
 
 	// MEDIA NO TURNO (AOS-546, ADR-043 §2.2). Vocabulário fechado (`off`/`on`); `on` exige o «pedir
 	// antes de ler», a `media_view` declarada no registo de tools e a pasta semeada.
