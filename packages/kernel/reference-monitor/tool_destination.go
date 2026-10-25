@@ -29,6 +29,20 @@ type ToolDestination struct {
 	Mutation      string // none | run_artifact | mutates; "" implícito
 	Reversibility string // reversible | irreversible; "" implícito
 	Sensitivity   string // public | internal | sensitive; "" implícito (lê-se sensível)
+	// FixedDestination diz que o DESTINO desta tool é fixado pelo seu CÓDIGO e não por um
+	// argumento do modelo (AOS-556): no registo do nó, é a tool que declara o bloco `modelo` —
+	// o efeito é uma chamada ao Model Gateway (ADR-042) — e NÃO declara `sandbox`.
+	//
+	// É A CONDIÇÃO QUE A REVISÃO DE SEGURANÇA EXIGIU, e vale dizer porquê: o
+	// `!derivesEgress` confere dois campos DECLARADOS (o prefixo da capability e o
+	// `resource_type`), e um manifesto com `capability: "cap:doc.fetch"`, `resource_type:
+	// "file"` e `resource_value: "https://{host}/x"` passava-o deixando o MODELO nomear o
+	// destino. Sem este eixo, a terceira isenção afirmava uma propriedade que ninguém impunha.
+	//
+	// FALSO POR OMISSÃO, e isso é a postura certa: a isenção não se concede a uma tool cujo
+	// registo não o declare. Não PROÍBE forma nenhuma de manifesto — uma tool que saia para
+	// fora e não mude nada continua declarável, e continua privilegiada como antes.
+	FixedDestination bool
 }
 
 func normalizeAxis(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
@@ -154,6 +168,12 @@ func NewToolDestinations(in map[string]ToolDestination) ToolDestinations {
 			Mutation:      normalizeAxis(d.Mutation),
 			Reversibility: normalizeAxis(d.Reversibility),
 			Sensitivity:   normalizeAxis(d.Sensitivity),
+			// AOS-556: um booleano não se normaliza, mas TEM de ser copiado. Este construtor
+			// reconstrói a struct campo a campo, pelo que um campo novo que não venha aqui é
+			// DEIXADO CAIR em silêncio — e foi o que aconteceu na primeira versão: a isenção do
+			// fluxo nunca se concedia, porque o eixo chegava falso a toda a tool. É a mesma classe
+			// de defeito do AOS-454 (uma tradução que perde um campo), noutro construtor.
+			FixedDestination: d.FixedDestination,
 		}
 	}
 	return ToolDestinations{m: m}
@@ -310,13 +330,16 @@ func (d DestinationPrivileged) ClassifyCall(call *Call) (bool, string) {
 	//     esta tool sai para fora e não muda nada (`egress: external`, `mutation: none`,
 	//     `reversibility: reversible`, os três explícitos). Um eixo implícito dá `unknown` e
 	//     não isenta.
-	//  2. `!derivesEgress(call)` — a capability e o recurso da call NÃO denunciam rede. É esta
-	//     a condição que faz a isenção segura, e a que a formulação ingénua esquecia: uma tool
-	//     `cap:http.post` com `mutation: none` e reversível TAMBÉM classifica `external_read`,
-	//     e isentá-la deixava uma injecção exfiltrar para um host que ELA nomeia. Com esta
-	//     condição, o destino é fixado pelo CÓDIGO da tool (o Model Gateway do nó, na
-	//     `ocr_read` e na `video_read`) e não por um argumento do modelo. É a diferença entre
-	//     «os dados saem» e «os dados saem para onde o atacante disser».
+	//  2. `FixedDestination` **e** `!derivesEgress(call)` — as duas, e por razões diferentes.
+	//     O `!derivesEgress` impede que a capability ou o recurso da call denunciem rede: uma
+	//     tool `cap:http.post` com `mutation: none` e reversível TAMBÉM classifica
+	//     `external_read`, e isentá-la deixava uma injecção exfiltrar para um host que ELA
+	//     nomeia. O `FixedDestination` impõe o resto, e foi a revisão de SEGURANÇA que o
+	//     exigiu: o `!derivesEgress` confere dois campos DECLARADOS, e um manifesto com
+	//     `capability: "cap:doc.fetch"`, `resource_type: "file"` e
+	//     `resource_value: "https://{host}/x"` passava-o. Com as duas, o destino é mesmo o
+	//     Model Gateway do nó — a diferença entre «os dados saem» e «os dados saem para onde o
+	//     atacante disser» passa a ser estrutural.
 	//  3. `TaintProvenance == ProvenanceHandleArgument` — o untrusted é o handle desta call, e
 	//     não outra coisa que o modelo já viu. Num run com media o piso já é untrusted, a
 	//     proveniência é `context`, e NADA se isenta: é o controlo negativo da fase, e vem de
@@ -332,8 +355,8 @@ func (d DestinationPrivileged) ClassifyCall(call *Call) (bool, string) {
 	// mesmo do rótulo de taint: quem constrói a [Call] pode escrevê-la (resíduo 5 do ADR-034).
 	// A fronteira de confiança desta isenção é, por construção, a MESMA que a do rótulo que o
 	// gate já lê — não é mais larga, e não é mais estreita.
-	if known && dest.Class() == DestinationExternalRead && !derivesEgress(call) &&
-		call.Context.TaintProvenance == ProvenanceHandleArgument {
+	if known && dest.Class() == DestinationExternalRead && dest.FixedDestination &&
+		!derivesEgress(call) && call.Context.TaintProvenance == ProvenanceHandleArgument {
 		return false, TaintPrivilegeFlowByHandle
 	}
 	if d.base.IsPrivileged(call.Capability) {
