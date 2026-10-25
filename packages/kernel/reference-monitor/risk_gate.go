@@ -511,6 +511,21 @@ func (c RiskClassifier) Evaluate(_ context.Context, call *Call) (HookResult, err
 		Taint:         taint.ParseLabel(call.Context.Taint),
 	})
 	call.Context.RiskClass = classification.Class.String()
+	// A CLASSE DE DESTINO, para a política de fluxo de dados (AOS-556, ADR-044 §2.5). Aqui, e não
+	// no [TaintGate] que hoje carimba o porquê da classificação pelo destino: o gate de taint corre
+	// DEPOIS da política na cadeia do ápice, e um carimbo dele chegaria tarde para o Cedar o ler.
+	// Este hook corre antes, e já detém o registo de destinos — a ordem está imposta por teste
+	// (`packages/integration/cadeia_ordem_risco_test.go`), que ganha assim a segunda razão.
+	//
+	// SEMPRE REESCRITA, como o [RiskClassifier] faz com a classe de risco: um valor que quem
+	// constrói a Call tenha posto no campo nunca chega ao PDP como se fosse a derivação do registo
+	// trusted. Tool fora do registo, ou com outra capability que não a do binding, dá
+	// [DestinationUnknown] — fail-closed, nenhuma regra de fluxo o satisfaz.
+	if d, ok := c.dests.forCall(call); ok {
+		call.Context.Destination = d.Class()
+	} else {
+		call.Context.Destination = DestinationUnknown
+	}
 	return HookResult{Decision: HookAllow, PolicyVersion: classification.PolicyVersion}, nil
 }
 

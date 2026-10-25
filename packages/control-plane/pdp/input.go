@@ -96,6 +96,21 @@ type DecisionContext struct {
 	// não altera a política Cedar base e não toca no taint: uma acção negada por qualquer
 	// outra razão continua negada.
 	HumanGateSatisfied bool
+	// Destination e a CLASSE do destino que o registo de tools DECLARA para esta tool
+	// (AOS-556, ADR-044 §2.2): `local_read`, `run_artifact`, `external_read`, `external_effect`,
+	// ou `unknown` (fail-closed). Mapeada para `context.destination`.
+	//
+	// E a primeira coordenada da politica de fluxo de dados. Vem do registo trusted do operador,
+	// escrita pelo classificador de risco do RM — que corre ANTES da politica — e nunca do modelo.
+	// Vazia ou desconhecida nao satisfaz regra de fluxo nenhuma: a regra de antes vale.
+	Destination string
+	// Provenance e DE ONDE VEM o untrusted desta call (AOS-556, ADR-044 §2.3): `clean`,
+	// `handle_argument` ou `context`, com `context` a dominar. Mapeada para `context.provenance`.
+	//
+	// E a segunda coordenada, e e o que torna possivel o controlo negativo da fase: sem ela, um run
+	// com media projectada para o modelo e um run com um handle untrusted nos argumentos chegam
+	// ambos `taint: untrusted` e sao indistinguiveis. NAO substitui [DecisionContext.Taint].
+	Provenance string
 }
 
 // Input é o pedido de decisão submetido a [PDP.Decide] (request do contrato C1).

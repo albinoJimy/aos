@@ -30,6 +30,11 @@ var smokeAttrMapaFixo = map[string]bool{
 	"resource.region":     true,
 	"context.taint":       true,
 	"context.sensitivity": true,
+	// AOS-556: as duas coordenadas da politica de fluxo de dados. Sem estarem AQUI, uma regra que
+	// as leia compila, assina, e em runtime devolve erro de avaliacao — que contamina toda a
+	// autorizacao daquela capability (deny-all silencioso). E por isso que este mapa existe.
+	"context.destination": true,
+	"context.provenance":  true,
 }
 
 // smokeRaizes são as raízes de request cujos atributos o motor mapeia. `action` NÃO entra: é
@@ -340,6 +345,13 @@ func (e *cedarEngine) evaluate(in Input) (allow bool, reason string, err error) 
 		Context: cedar.NewRecord(cedar.RecordMap{
 			"taint":       cedar.String(in.Context.Taint),
 			"sensitivity": cedar.String(in.Context.Sensitivity),
+			// AOS-556 (ADR-044 §2.4): as duas coordenadas da politica de fluxo de dados. O
+			// `destination` e a classe que o registo de tools DECLARA; a `provenance` e de onde
+			// vem o untrusted desta call. Ambas derivadas pelo no, nunca pelo modelo, e ambas
+			// vazias num chamador que nao as preencha — o que nao satisfaz regra de fluxo
+			// nenhuma, logo a regra de antes vale (fail-closed).
+			"destination": cedar.String(in.Context.Destination),
+			"provenance":  cedar.String(in.Context.Provenance),
 		}),
 	}
 

@@ -113,6 +113,16 @@ var camposNaoPropagados = map[string]string{
 	// depende de campo nenhum que a via durável tenha de levar: classifica pelo ToolID, que
 	// atravessa (paridade em TestAOS538_ViaDuravelDecideIgualAViaDirecta).
 	"Context.TaintPrivilege": "saída do TaintGate, não entrada",
+	// SAÍDA do RiskClassifier (AOS-556): a classe de DESTINO que o registo de tools declara,
+	// escrita dentro de Mediate pelo hook que corre antes da política, e sempre reescrita. Pela
+	// mesma razão das quatro acima — um valor do chamador não pode atravessar, ou quem despacha
+	// escolhia a classe de destino de que a política de fluxo depende. Deriva-se do ToolID, que
+	// atravessa, pelo que a via durável não perde capacidade nenhuma ao não a levar.
+	//
+	// A irmã dela, `Context.TaintProvenance`, NÃO está aqui de propósito: essa é ENTRADA, cunhada
+	// pelo Agent Runtime antes do despacho, e a via durável leva-a por
+	// `Activity.AuthorizationProvenance`. É por este teste que se sabe que a leva.
+	"Context.Destination": "saída do RiskClassifier, não entrada",
 }
 
 // preencherComSentinelas põe um valor não-zero em cada campo EXPORTADO de v (recursivo em

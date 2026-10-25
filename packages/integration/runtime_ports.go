@@ -238,6 +238,10 @@ func (d *DurableDispatcher) Dispatch(ctx context.Context, call referencemonitor.
 		// — o `doc_read` do turno 1 de um nó só com o objectivo incluído (fase 1,
 		// 2026-09-26). ParseLabel é fail-closed: vazio ou desconhecido ⇒ untrusted.
 		AuthorizationTaint: taint.ParseLabel(call.Context.Taint),
+		// AOS-556: a proveniencia do untrusted viaja ao lado do rotulo, pela mesma razao que ele
+		// viaja — sem isto a via duravel deitava-a fora e a politica de fluxo decidia por vazio na
+		// via de PRODUCAO, que e esta.
+		AuthorizationProvenance: call.Context.TaintProvenance,
 		// AOS-485: a lista-branca do run é imposta pelo RM, e o RM desta via só vê o que a
 		// Activity levar. Sem esta linha a via durável — a de produção — mediava todas as
 		// calls sem lista, e um nó do plano voltava a ter as tools do run inteiro. O slice

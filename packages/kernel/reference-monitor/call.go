@@ -131,6 +131,35 @@ type CallContext struct {
 	// tools e o gate está armado. Vazia com o gate fora da cadeia, desarmado, ou sem o destino das
 	// tools. Não decide nada: é registo.
 	TaintPrivilege string
+
+	// TaintProvenance é DE ONDE VEM o untrusted desta call (AOS-556, ADR-044 §2.3), no
+	// vocabulário fechado [ProvenanceClean], [ProvenanceHandleArgument] e [ProvenanceContext].
+	// É o que a política de fluxo de dados interroga, e só ela: não substitui [CallContext.Taint],
+	// que continua a ser o rótulo da autoridade que o [TaintGate] impõe e o classificador de risco
+	// eleva — «um só rótulo para todos os leitores» (ADR-034 §2.3) mantém-se.
+	//
+	// Escrito pelo Agent Runtime no MESMO sítio e instante em que faz a re-junção do piso, que é
+	// o último ponto em que o piso e o taint dos handles resolvidos ainda são separáveis: depois
+	// do `join` são uma string só, e um run com media e um run com um handle untrusted nos
+	// argumentos ficam indistinguíveis. É essa indistinguibilidade que torna impossível o controlo
+	// negativo que esta fase exige («o mesmo plano com media continua negado»).
+	//
+	// ATRAVESSA AS DUAS VIAS DE DESPACHO, por construção: é escrito antes do despacho, e a via
+	// durável leva-o na Activity. O ADR-034 §2.8 nomeia a classe de defeito «um campo novo que uma
+	// das vias esquece», e o AOS-454 mediu que esta tradução já perdeu um campo quatro vezes.
+	// Vazio ⇒ a política de fluxo não decide nada por ele (fail-closed: nenhuma regra de fluxo o
+	// satisfaz, e a regra de antes vale).
+	TaintProvenance string
+
+	// Destination é a CLASSE do destino que o registo de tools DECLARA para esta tool
+	// ([ToolDestination.Class], AOS-556). É a segunda coordenada da política de fluxo.
+	//
+	// SAÍDA de um hook, nunca entrada: escrita pelo [RiskClassifier], que corre ANTES da política
+	// na cadeia do ápice e já detém o registo de destinos. Não é o [TaintGate] que a escreve — ele
+	// corre DEPOIS da política, e um carimbo dele chegaria tarde para o Cedar o ler. É sempre
+	// reescrita, pelo que um valor posto por quem constrói a Call nunca chega ao PDP como se fosse
+	// a derivação do registo trusted.
+	Destination string
 }
 
 // PortVersion é a versão SemVer da porta C1 (contrato de mediação) que este RM

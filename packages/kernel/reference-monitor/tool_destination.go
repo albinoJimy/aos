@@ -65,6 +65,57 @@ func (d ToolDestination) IsLocalRunWrite() bool {
 		normalizeAxis(d.Reversibility) == "reversible"
 }
 
+// Classes de DESTINO de uma tool (AOS-556, ADR-044 §2.2): a classe do efeito que o registo de
+// tools DECLARA, derivada dos TRÊS eixos que ele já exige explícitos. É o que a política de fluxo
+// de dados interroga, e é config trusted do operador — nunca saída do modelo.
+//
+// PORQUE UMA CLASSE E NÃO OS TRÊS EIXOS CRUS. Três atributos novos no motor Cedar são três
+// superfícies de regra mal-atributada (e uma regra mal-atributada assina e nega TUDO daquela
+// capability), e a regra que os combinasse repetiria em Cedar a derivação que este ficheiro já faz
+// — duas cópias da mesma regra, que é a forma de defeito que este repositório paga repetidamente.
+//
+// O `egress` SOZINHO não serve, e foi medido: a `ocr_read` e o `web_post` declaram os DOIS
+// `egress: external`. O que os separa é a `mutation`, declarada ao lado.
+const (
+	// DestinationLocalRead — lê e não sai nem muda: [ToolDestination.IsLocalRead].
+	DestinationLocalRead = "local_read"
+	// DestinationRunArtifact — escreve só no armazém do próprio run:
+	// [ToolDestination.IsLocalRunWrite].
+	DestinationRunArtifact = "run_artifact"
+	// DestinationExternalRead — SAI para fora e não muda nada: o conteúdo vai a um terceiro (o
+	// fornecedor de um modelo, na `ocr_read` e na `video_read`) e volta como dados. Enviar continua
+	// a ser enviar: o SA-ROC classifica-o pela sensibilidade e o egress continua default-deny com
+	// allowlist — a classe não muda nada disso.
+	DestinationExternalRead = "external_read"
+	// DestinationExternalEffect — tudo o mais que declare egress ou mutação: muda o mundo, ou sai
+	// para fora a mudar algo. É o `web_post`.
+	DestinationExternalEffect = "external_effect"
+	// DestinationUnknown — um eixo IMPLÍCITO, ou uma tool fora do registo. FAIL-CLOSED: não
+	// satisfaz regra de fluxo nenhuma, pelo que a tool fica com a regra de antes. Um eixo ausente
+	// nunca se lê como benigno — é a invariante do AOS-538, e esta classe herda-a.
+	DestinationUnknown = "unknown"
+)
+
+// Class devolve a classe de destino desta tool ([DestinationLocalRead] e seguintes). Um eixo
+// implícito dá [DestinationUnknown]: a ordem dos casos é a das garantias, e o `unknown` vem antes
+// de qualquer leitura dos valores.
+func (d ToolDestination) Class() string {
+	eg, mu, rv := normalizeAxis(d.Egress), normalizeAxis(d.Mutation), normalizeAxis(d.Reversibility)
+	if eg == "" || mu == "" || rv == "" {
+		return DestinationUnknown
+	}
+	switch {
+	case d.IsLocalRead():
+		return DestinationLocalRead
+	case d.IsLocalRunWrite():
+		return DestinationRunArtifact
+	case eg == "external" && mu == "none" && rv == "reversible":
+		return DestinationExternalRead
+	default:
+		return DestinationExternalEffect
+	}
+}
+
 // DeclaresEffect diz se a tool DECLARA um efeito: egress diferente de `none`, mutação diferente
 // de `none`, ou reversibilidade diferente de `reversible` — só eixos explícitos contam. Com o gate
 // armado, uma tool que declara um efeito é privilegiada mesmo que a sua capability não esteja em
@@ -317,3 +368,21 @@ func (d ToolDestination) declaredSensitivity() (risk.Sensitivity, bool) {
 		return risk.SensitivityUnknown, false
 	}
 }
+
+// Vocabulário FECHADO da proveniência do untrusted de uma call (AOS-556, ADR-044 §2.3), escrito em
+// [CallContext.TaintProvenance] pelo Agent Runtime.
+//
+// `ProvenanceContext` DOMINA: se o piso do turno já era untrusted — media projectada para o modelo,
+// um `tool_error`, memória, um steer —, a proveniência é essa, qualquer que seja o que a call
+// consuma nos argumentos. É o que preserva a decisão do dono de 2026-10-23 («num run com media a
+// fase R2 não levanta nada») SEM a política de fluxo ter de saber o que é media.
+const (
+	// ProvenanceClean — o piso é trusted e a call não resolveu handle nenhum.
+	ProvenanceClean = "clean"
+	// ProvenanceHandleArgument — o piso é trusted e a call resolveu ao menos um handle untrusted
+	// nos seus argumentos. É a única proveniência que uma regra de fluxo pode autorizar sobre
+	// contexto untrusted, e só para os destinos que a política nomear.
+	ProvenanceHandleArgument = "handle_argument"
+	// ProvenanceContext — o piso já era untrusted, por qualquer razão.
+	ProvenanceContext = "context"
+)

@@ -160,6 +160,12 @@ func inputFromCall(call *rm.Call) Input {
 			// ApprovalGate escreve após verificar a evidência contra o broker (amarra à
 			// preview, uso-único, TTL) — nunca do conteúdo do pedido.
 			HumanGateSatisfied: call.HumanApproval() != nil,
+			// AOS-556: as duas coordenadas da politica de fluxo. Este adaptador e o UNICO fio entre
+			// o RM e o PDP, e o comentario da classe de risco acima registra o que custa esquecer
+			// uma copia aqui. Desde o AOS-556 ha guarda por reflexao sobre a forma do Input
+			// (aos556_input_guard_test.go), que avermelha um campo que fique no zero.
+			Destination: call.Context.Destination,
+			Provenance:  call.Context.TaintProvenance,
 		},
 	}
 }

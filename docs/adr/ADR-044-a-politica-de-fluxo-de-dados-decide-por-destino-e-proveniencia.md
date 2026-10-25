@@ -205,6 +205,29 @@ Um `permit` sem a cláusula de taint como conjunção de topo continua a ser vio
 A sintaxe da regra desenha-se **com** o gate, e não contra ele: a forma acima é a que o parser de
 conjunções de topo já sabe recusar, tornada aceitável por uma anotação visível a quem assina.
 
+### 2.9 A 1.8.0 pede-se pelas DUAS vias: interruptor do nó e campo do pedido
+
+**Decisão do dono, 2026-10-25.** O precedente do repositório é duplo e contraditório — o
+`AOS_MEDIA_NO_TURNO` põe **todos** os runs novos no layout novo, e o `requires_first_turn_trusted` é
+um **pedido** do submissor que o nó recusa com 400 quando o seu estado composto não o garante. A
+1.8.0 leva as duas, e cada uma tem um papel distinto:
+
+- **o interruptor do nó HABILITA**, e é o recuo. Desligado por omissão (critério 9 do AOS-556) e
+  até o bundle assinado estar em vigor. Um operador desliga-o e todos os runs novos voltam ao layout
+  anterior, sem release;
+- **o campo do pedido PEDE**, por run. Validado contra o estado composto do nó e recusado com **400**
+  quando o nó não o habilita — nunca aceito e silenciosamente ignorado, que é o modo de falha que o
+  molde do `requires_first_turn_trusted` existe para evitar. A allowlist de valores é a que já
+  existe (`agentruntime.SupportedAssemblyVersions`), e não uma segunda lista.
+
+Sem o campo, um run novo fica no layout que o interruptor determinar; o campo serve para o plano
+pedir a 1.8.0 nó a nó, que é o que o caso de uso precisa (o nó 2 do plano é que consome o que o nó 1
+leu). Um run **retomado** não passa por nenhuma das duas: continua no layout do seu registo de
+retoma, como desde o AOS-489.
+
+E a linha de postura declara o estado das duas no arranque, porque neste repositório postura
+anunciada é postura ligada.
+
 ---
 
 ## 3. Alternativas consideradas

@@ -1362,6 +1362,11 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 	//
 	// `taint.ParseLabel` é fail-closed: um valor ausente ou desconhecido resolve untrusted, pelo
 	// que uma reescrita que escreva lixo no campo também não baixa nada.
+	// A PROVENIÊNCIA ANTES DO `join`, e é esta a única linha em que ela existe (AOS-556, ADR-044
+	// §2.3). Depois do `join` há uma string só, e um run com media projectada e um run com um
+	// handle untrusted nos argumentos ficam indistinguíveis — é essa indistinguibilidade que torna
+	// impossível o controlo negativo que a fase exige («o mesmo plano com media continua negado»).
+	call.Context.TaintProvenance = provenienciaDaCall(piso, taint.ParseLabel(call.Context.Taint))
 	call.Context.Taint = taint.Join(piso, taint.ParseLabel(call.Context.Taint)).String()
 
 	// EVIDÊNCIA DE APROVAÇÃO (AOS-021) — na RETOMA de uma acção escalada, é aqui que a
