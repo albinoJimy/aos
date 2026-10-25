@@ -369,7 +369,7 @@ func (a *armazemDeHandles) selar(ctx context.Context, subject, runID, stepID, to
 		// SEM EVENTO NÃO HÁ HANDLE: o guarda (b) recusaria este conteúdo para sempre, e deixá-lo
 		// no disco seria ocupar o tecto do volume com um ficheiro que ninguém consegue resolver
 		// nem apagar (achado M-4 da revisão de segurança). Desfaz-se a gravação.
-		a.apagar(runID, hexd, int64(len(conteudo)))
+		a.apagar(runID, hexd)
 		return handleCriado{}, a.conta(hCausaRegisto)
 	}
 	a.conta(hSelado)
@@ -418,7 +418,7 @@ func (a *armazemDeHandles) gravar(ctx context.Context, subject, runID, hexd stri
 
 // apagar desfaz uma gravação cujo evento de proveniência não ficou durável. Best-effort: se o
 // ficheiro não sair, o tecto do volume fica com ele — e é melhor do que não tentar.
-func (a *armazemDeHandles) apagar(runID, hexd string, bytesEmClaro int64) {
+func (a *armazemDeHandles) apagar(runID, hexd string) {
 	nome := pastaDoRun(runID) + "/" + hexd
 	info, err := a.root.Stat(nome)
 	if err != nil {
@@ -427,7 +427,6 @@ func (a *armazemDeHandles) apagar(runID, hexd string, bytesEmClaro int64) {
 	if err := a.root.Remove(nome); err == nil {
 		a.usado.Add(-info.Size())
 	}
-	_ = bytesEmClaro
 }
 
 // abrir lê e decifra um conteúdo em quarentena e confere TRÊS coisas antes de devolver um byte: o
@@ -581,6 +580,6 @@ func handleStoreBanner(a *armazemDeHandles) []string {
 	if a == nil {
 		return nil
 	}
-	return []string{fmt.Sprintf("espaco de handles (AOS-550, ADR-043 §2.6): AOS_HANDLE_DIR=%q — o conteudo untrusted que viaja por handle vive AQUI, nao na via da %s: tectos PROPRIOS (%d bytes por handle, %d handles e %d bytes por run, %d bytes no volume), vocabulario ABERTO (binario incluido) e superficie de leitura PROPRIA — emissor %s, pelo que nada deste espaco aparece em GET /runs/{id}/artifacts nem e descarregavel com read:artifact, e nenhuma rota HTTP serve o conteudo (os METADADOS do evento — token, digest, passo e titular — saem na trajectoria do run, como os do artifact.created). Cifrado pelo cifrador por titular do no, com o run nos DADOS ASSOCIADOS (um blob copiado para a pasta de outro run nao abre), proveniencia selada em %s. Ocupado no arranque: %d bytes. RESIDUOS: o conteudo de um artefacto fica gravado DUAS vezes (aqui e no armazem de artefactos); nada apaga ficheiros deste espaco, pelo que o crypto-shred do titular os torna ilegiveis mas nao liberta bytes, e o tecto do volume cheio faz a %s recusar em TODOS os runs ate alguem apagar a pasta a mao",
+	return []string{fmt.Sprintf("espaco de handles (AOS-550, ADR-043 §2.6): AOS_HANDLE_DIR=%q — o conteudo untrusted que viaja por handle vive AQUI, nao na via da %s: tectos PROPRIOS (%d bytes por handle, %d handles e %d bytes por run, %d bytes no volume), vocabulario ABERTO (binario incluido) e superficie de leitura PROPRIA — emissor %s, pelo que nada deste espaco aparece em GET /runs/{id}/artifacts nem e descarregavel com read:artifact, e nenhuma rota HTTP serve o conteudo (os METADADOS do evento — token, digest, passo e titular — saem na trajectoria do run, como os do artifact.created). Cifrado pelo cifrador por titular do no, com o run nos DADOS ASSOCIADOS (um blob copiado para a pasta de outro run nao abre), proveniencia selada em %s. Ocupado no arranque: %d bytes. RESIDUOS: o conteudo de um artefacto fica gravado DUAS vezes (aqui e no armazem de artefactos); nada apaga ficheiros deste espaco — so se DESFAZ uma selagem que nao chegou a valer (o evento que falha, e desde o AOS-556 a hospedagem que recusa a meio; um CRASH entre os selos e o registo de retoma deixa-os) —, pelo que o crypto-shred do titular os torna ilegiveis mas nao liberta bytes, e o tecto do volume cheio faz a %s recusar em TODOS os runs ate alguem apagar a pasta a mao",
 		a.pasta, artifactWriteToolName, handleMaxBytes, handleMaxPorRun, handleMaxBytesPorRun, a.maximo, handleNHI, EventTypeHandleCreated, a.usado.Load(), artifactWriteToolName)}
 }

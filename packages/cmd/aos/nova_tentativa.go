@@ -589,11 +589,17 @@ func (h *apiHandler) medirPromptDaTentativa(pedido context.Context, runID string
 		// delas, gravado nesse turno, tem de ser o mesmo nas duas tentativas. Não se compara o hash
 		// do turno 2 (o primeiro com as entradas): ele inclui o texto e as tool calls do turno 1,
 		// que o modelo gera de novo em cada tentativa, e diferiria sem que nada do pedido mudasse.
-		if promptDaTentativaDifere(*semente, prova.avisoAnterior, prova.promptHash, turno) || turno.PlanInputsDigest != prova.entradas {
+		entradasDiferem := turno.PlanInputsDigest != prova.entradas
+		if promptDaTentativaDifere(*semente, prova.avisoAnterior, prova.promptHash, turno) || entradasDiferem {
 			h.tentativas.promptDiferente.Add(1)
-			if semente.aviso != agentruntime.RetryNoticeNone || prova.avisoAnterior != agentruntime.RetryNoticeNone {
+			switch {
+			case !entradasDiferem && sementeSemReferencias(*semente, turno):
+				// AOS-556: só quando o digest das entradas CONFERE — se ele divergir, a divergência
+				// é real e mensurável, e dizer «não se conseguiu comparar» esconderia-a.
+				h.logf("submit (AOS-556): o prompt do primeiro turno da tentativa %q NAO se conseguiu comparar com o do run anterior %q: num layout por handle a semente hospedada nao leva as referencias das entradas (o selo corre depois do observador do Goal) — conta como diferente", runID, prova.anterior)
+			case semente.aviso != agentruntime.RetryNoticeNone || prova.avisoAnterior != agentruntime.RetryNoticeNone:
 				h.logf("submit (AOS-506): o prompt do primeiro turno da tentativa %q NAO e o do run anterior %q mais o aviso — a tentativa devia repetir o mesmo pedido e acrescentar so o aviso", runID, prova.anterior)
-			} else {
+			default:
 				h.logf("submit (AOS-502): o prompt do primeiro turno da tentativa %q NAO e o do run anterior %q — a tentativa devia repetir o mesmo pedido", runID, prova.anterior)
 			}
 		}

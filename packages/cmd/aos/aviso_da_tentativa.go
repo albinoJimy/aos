@@ -153,6 +153,32 @@ func hashDaSementeCom(s sementeDaTentativa, aviso agentruntime.RetryNotice, turn
 	return asm.Assemble(1, semente).PromptHash, nil
 }
 
+// sementeSemReferencias diz que esta semente NÃO é recalculável no layout deste turno: um layout
+// por handle exige a referência de cada entrada ([agentruntime.SeedTail] recusa sem ela) e a
+// semente que o serviço hospeda não as tem, porque o selo das entradas corre DEPOIS do observador
+// do Goal — resíduo declarado em [NodeService.SubmitObservando], que o AOS-556 fecha aqui.
+//
+// É uma PRÉ-CONDIÇÃO da medição e não um segundo cálculo dela: [promptDaTentativaDifere] continua a
+// ler o que não se consegue comparar como DIFERENTE (nunca como igual), e o que isto muda é só o
+// que se DIZ — «não se conseguiu comparar», em vez de acusar a tentativa de ter mudado o pedido.
+func sementeSemReferencias(s sementeDaTentativa, turno turnoDaProva) bool {
+	if !agentruntime.HasPlanInputsByHandle(turno.Manifest.AssemblyVersion) {
+		return false
+	}
+	for _, in := range s.inputs {
+		// Pelo MESMO predicado do portão que isto prevê — `conferirEntradas` recusa a referência
+		// ausente E a malformada ([agentruntime.ParseHandleRef], `prompt.go`) —, e não por
+		// `Handle == ""`: com duas cópias da regra, uma referência não-vazia mal formada fazia o
+		// recálculo falhar e a pré-condição responder que estava tudo bem, e o log voltava a
+		// acusar a tentativa. É a forma de defeito que esta série já pagou, e que o AOS-556 evita
+		// em [armazemDeArtefactos.gravar] pela mesma via.
+		if _, ok := agentruntime.ParseHandleRef(in.Handle); !ok {
+			return true
+		}
+	}
+	return false
+}
+
 // promptDaTentativaDifere diz se o prompt do primeiro turno de uma tentativa NÃO é o esperado.
 // `avisoAnterior` é o aviso com que a tentativa ANTERIOR foi semeada (lido do `run.plan_origin`
 // dela, que só o nó escreve), e `hashAnterior` o `prompt_hash` do turno dela.

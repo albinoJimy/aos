@@ -44,6 +44,7 @@ import (
 	"sync/atomic"
 	"unicode/utf8"
 
+	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 	"github.com/aos-ref/kernel/reference-monitor/taint"
 	"github.com/aos-ref/substrate/eventstore"
@@ -489,8 +490,31 @@ func (a *armazemDeArtefactos) executar(ctx context.Context, input []byte) ([]byt
 	// próprios — handle_store.go), com o run nos dados associados e um `handle.created` de emissor
 	// próprio: nada deste espaço fica descarregável com `read:artifact`. O token é cunhado pelo nó
 	// e o nome do handle é `<tool>-<índice>`, nunca o nome que o modelo pediu.
+	//
+	// AOS-556 — NUM LAYOUT POR HANDLE ESTA TOOL NÃO SELA, porque o PRODUTOR do `tool_result` já
+	// sela o resultado de cada call permitida. Selar nos dois punha o modelo a receber a
+	// referência de um documento que CONTÉM a referência do artefacto: a de dentro NUNCA se
+	// resolve (a recusa de referência aninhada olha para os argumentos que o modelo emitiu, não
+	// para os bytes resolvidos, pelo que nem é recusada — é inerte) e cada escrita gastava DUAS
+	// posições do tecto de handles do run.
+	//
+	// A PERGUNTA É A MESMA FUNÇÃO que o produtor e o tail fazem ([agentruntime.SealsToolResult]),
+	// sobre a versão que o `Runtime.Run` pôs no contexto: não há aqui uma segunda definição de
+	// quem sela.
+	//
+	// O QUE NÃO SE FEZ, E PORQUÊ: isentar esta tool do selo do PRODUTOR — o molde da `media_view` —
+	// tirava ao segmento o rótulo `tool_result_handle`, e sem esse rótulo
+	// [agentruntime.SegmentFloor] devolve untrusted. Todo o run que escrevesse um artefacto caía
+	// para untrusted para sempre, que é o oposto do que a fase existe para comprar.
+	//
+	// CONSEQUÊNCIA DECLARADA: num layout por handle o conteúdo do artefacto não ganha handle
+	// próprio, logo não é resolúvel como argumento de outra tool do mesmo run. Não se perde nada
+	// que funcione hoje (a referência de dentro nunca era resolúvel), e o artefacto continua no
+	// armazém, declarado por `artifact.created` e descarregável pelo titular. Num nó com handles e
+	// SEM execução durável não há produtor e o resultado chega ao tail como erro de tool — o que
+	// acontece a TODAS as tools nesse nó, e está declarado no banner de arranque.
 	var handle string
-	if a.handles != nil {
+	if a.handles != nil && !agentruntime.SealsToolResult(agentruntime.AssemblyVersionFromContext(ctx), artifactWriteToolName) {
 		ref, hcausa := a.handles.selarEmQuarentena(ctx, in.Subject, in.RunID, in.StepID, artifactWriteToolName, in.MediaType, conteudo)
 		if hcausa != "" {
 			return a.recusar(hcausa)
@@ -694,7 +718,7 @@ func artifactBanner(a *armazemDeArtefactos) []string {
 	}
 	tecto, nota := artifactMaxBytes, ""
 	if a.handles != nil && handleMaxBytes < tecto {
-		tecto, nota = handleMaxBytes, fmt.Sprintf(" (o tecto por artefacto e o do corpo de um tool_result, %d, e nao os %d do armazem: com AOS_HANDLE_DIR ligada cada artefacto e selado tambem no espaco de handles)", handleMaxBytes, artifactMaxBytes)
+		tecto, nota = handleMaxBytes, fmt.Sprintf(" (o tecto por artefacto e o do corpo de um tool_result, %d, e nao os %d do armazem: com AOS_HANDLE_DIR ligada cada artefacto e selado tambem no espaco de handles; num run num layout por handle quem sela o resultado e o PRODUTOR e a tool nao sela, pelo que ali o tecto efectivo volta a ser os %d do armazem — AOS-556)", handleMaxBytes, artifactMaxBytes, artifactMaxBytes)
 	}
 	return []string{fmt.Sprintf("armazem de artefactos (AOS-548, ADR-043 §2.3): AOS_ARTIFACT_DIR=%q — a tool %s grava texto (json, markdown, csv, texto, svg sem script nem ligacoes externas; ate %d bytes%s, %d artefactos e %d bytes por run, %d bytes no volume) CIFRADO por titular, sela a proveniencia (%s) no stream do run e devolve uma referencia; GET /runs/{id}/artifacts serve-o como anexo (nosniff, CSP sandbox) pelas portas da leitura soberana. Ocupado no arranque: %d bytes. Resíduo: um titular apagado deixa os blobs cifrados (ilegiveis) na pasta",
 		a.pasta, artifactWriteToolName, tecto, nota, artifactMaxPorRun, artifactMaxBytesPorRun, a.maximo, EventTypeArtifactCreated, a.usado.Load())}

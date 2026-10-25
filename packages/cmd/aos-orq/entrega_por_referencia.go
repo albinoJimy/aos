@@ -152,13 +152,20 @@ const (
 	// causaOrigemVazia — o que se entregaria está vazio: o texto extraído do envelope, ou o
 	// resultado cru, não tem nada além de espaços.
 	causaOrigemVazia = "origem_vazia"
+	// causaOrigemPorHandle — os bytes designados NOMEIAM um handle em vez de serem conteúdo
+	// (AOS-556). Num run num layout por handle o kernel sela o resultado da tool e designa a
+	// própria referência, que CONFERE com a âncora porque os dois lados a hasheiam; entregá-la
+	// dava ao consumidor um token que ele nunca abre — a pasta é por run e o `handle.created` é
+	// do stream de quem produziu. A travessia da aresta por handle é o AOS-553; até lá, uma causa
+	// nomeada em vez de lixo silencioso.
+	causaOrigemPorHandle = "origem_por_handle"
 )
 
 // causasDaOrigem é a lista fechada, pela ordem em que se documentam.
 var causasDaOrigem = []string{
 	causaOrigemEmFalta, causaOrigemAmbigua, causaOrigemInaplicavel, causaOrigemSemVinculo,
 	causaOrigemNaoConfere, causaOrigemIndisponivel, causaOrigemNaoTransportavel,
-	causaOrigemToolFalhou, causaOrigemVazia,
+	causaOrigemToolFalhou, causaOrigemVazia, causaOrigemPorHandle,
 }
 
 // resultadoEntregue é o rótulo do nó cuja saída por referência se entregou — com as causas,
@@ -240,7 +247,12 @@ func extrairEntrega(servido string) (conteudo string, forma plannerevents.Payloa
 //     abortar a publicação — o que parava o `serve` em todas as gerações (M3);
 //  3. o nó serviu os bytes, e `sha256(bytes)` e o tamanho são os da âncora. O QUE NÃO CONFERE
 //     NÃO SE ENTREGA — e a conferência é sobre os bytes INTEIROS, antes de qualquer extracção;
-//  4. só então se extrai ([extrairEntrega]).
+//  4. os bytes designados são CONTEÚDO e não o NOME de um handle — pela FORMA completa de uma
+//     referência, nunca pelo prefixo, que o kernel declara não ser autoridade. Conferir com a
+//     âncora não basta num layout por handle: lá o kernel sela o resultado e designa a referência,
+//     e os dois lados hasheiam-na, pelo que o passo 3 passa e o que se entregaria é um token que o
+//     consumidor não abre (AOS-556; a travessia é o AOS-553);
+//  5. só então se extrai ([extrairEntrega]).
 //
 // O que vem do nó passa por vocabulários fechados: um estado ou uma marca que este binário não
 // conhece dão uma causa deste ficheiro, sem serem repetidos.
@@ -279,6 +291,18 @@ func entregaDoRun(tool, runFilho string, st estadoDoRun) (entregaPorReferencia, 
 	}
 	if len(*st.Output) != a.Bytes || digestDoConteudo(*st.Output) != a.Digest {
 		return entregaPorReferencia{}, causaOrigemNaoConfere
+	}
+	// PELA FORMA COMPLETA, e não pelo prefixo. O prefixo seria mais largo e parecia mais seguro, e
+	// é a decisão errada por duas razões medidas. (1) O PREFIXO NÃO É AUTORIDADE — o kernel di-lo
+	// no sítio da constante: qualquer um pode escrever aqueles bytes, um documento lido inclusive.
+	// Num layout SEM handles o resultado designado é conteúdo, e um documento que comece por eles
+	// é conteúdo legítimo que passaria a fechar o nó do plano. (2) No caso em que esta causa TEM de
+	// disparar, o prefixo não acrescenta cobertura nenhuma: num layout por handle a designação só
+	// é efectiva se os bytes forem uma referência BEM FORMADA ([agentruntime.ParseHandleRef] em
+	// `observarPrimeiroDespacho`), pelo que o kernel nunca designa uma malformada — ela resolve
+	// `missing` e cai no [causaOrigemEmFalta] acima.
+	if _, porHandle := agentruntime.ParseHandleRef(*st.Output); porHandle {
+		return entregaPorReferencia{}, causaOrigemPorHandle
 	}
 	conteudo, forma, causa := extrairEntrega(*st.Output)
 	if causa != "" {
