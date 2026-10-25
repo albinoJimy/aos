@@ -298,3 +298,40 @@ func (j *janelaDeContagem) Assemble(context.Context, int) PromptView {
 	return PromptView{}
 }
 func (j *janelaDeContagem) SystemHash() string { return "sha256:" + strings.Repeat("0", 64) }
+
+// A PROVENIÊNCIA, MEDIDA DIRECTAMENTE (AOS-556, achado da revisão adversarial).
+//
+// Esta derivação não tinha teste nenhum: toda a asserção sobre proveniência era feita sobre um
+// valor que o próprio teste fornecia. Trocar a ordem dos dois `case` não avermelhava nada — e com a
+// política de fluxo em vigor isso inverteria o controlo negativo do dono: um run COM media (piso
+// untrusted) passaria a chegar `handle_argument`, e a leitura externa seria PERMITIDA.
+//
+// É a forma «gate recalculado de entradas do chamador»: o que se mede é o valor que o medidor
+// forneceu. Aqui mede-se a função.
+func TestAOS556_ProvenienciaDaCall(t *testing.T) {
+	for nome, c := range map[string]struct {
+		piso, daReescrita taint.Label
+		quero             string
+	}{
+		// O PISO DOMINA, e é isso que preserva «num run com media nada se levanta» sem a política
+		// ter de saber o que é media.
+		"piso sujo, reescrita suja":   {taint.Untrusted, taint.Untrusted, referencemonitor.ProvenanceContext},
+		"piso sujo, reescrita limpa":  {taint.Untrusted, taint.Trusted, referencemonitor.ProvenanceContext},
+		"piso limpo, reescrita suja":  {taint.Trusted, taint.Untrusted, referencemonitor.ProvenanceHandleArgument},
+		"piso limpo, reescrita limpa": {taint.Trusted, taint.Trusted, referencemonitor.ProvenanceClean},
+	} {
+		if got := provenienciaDaCall(c.piso, c.daReescrita); got != c.quero {
+			t.Errorf("%s: proveniencia=%q, quero %q", nome, got, c.quero)
+		}
+	}
+	// E O VOCABULÁRIO É FECHADO: três valores, e a função nunca devolve outro.
+	vistos := map[string]bool{}
+	for _, piso := range []taint.Label{taint.Trusted, taint.Untrusted} {
+		for _, re := range []taint.Label{taint.Trusted, taint.Untrusted} {
+			vistos[provenienciaDaCall(piso, re)] = true
+		}
+	}
+	if len(vistos) != 3 {
+		t.Fatalf("a funcao devolve %d valores distintos sobre o dominio todo: %v", len(vistos), vistos)
+	}
+}

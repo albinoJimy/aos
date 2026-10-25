@@ -102,7 +102,12 @@ type DecisionContext struct {
 	//
 	// E a primeira coordenada da politica de fluxo de dados. Vem do registo trusted do operador,
 	// escrita pelo classificador de risco do RM — que corre ANTES da politica — e nunca do modelo.
-	// Vazia ou desconhecida nao satisfaz regra de fluxo nenhuma: a regra de antes vale.
+	//
+	// VAZIA OU DESCONHECIDA NAO SATISFAZ REGRA DE FLUXO NENHUMA, e isso NAO e «a regra de antes
+	// vale» — e o que a primeira versao deste comentario dizia, e e falso na capability que a
+	// particao toca. Na politica 1.2.0 a `allow_fs_read` inteira DESAPARECE: para `cap:fs.read`
+	// nao ha regra de antes, e um destino vazio ou `unknown` da **DENY**. O sentido e seguro, mas
+	// a consequencia e grande — ver o residuo 7 do ADR-044 e a nota de cerimonia da candidata.
 	Destination string
 	// Provenance e DE ONDE VEM o untrusted desta call (AOS-556, ADR-044 §2.3): `clean`,
 	// `handle_argument` ou `context`, com `context` a dominar. Mapeada para `context.provenance`.

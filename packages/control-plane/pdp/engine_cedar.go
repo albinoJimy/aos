@@ -349,7 +349,9 @@ func (e *cedarEngine) evaluate(in Input) (allow bool, reason string, err error) 
 			// `destination` e a classe que o registo de tools DECLARA; a `provenance` e de onde
 			// vem o untrusted desta call. Ambas derivadas pelo no, nunca pelo modelo, e ambas
 			// vazias num chamador que nao as preencha — o que nao satisfaz regra de fluxo
-			// nenhuma, logo a regra de antes vale (fail-closed).
+			// nenhuma. ATENCAO: com a politica 1.2.0 isso NAO e «a regra de antes vale», porque
+			// para `cap:fs.read` nao ha regra de antes — a `allow_fs_read` inteira desaparece, e
+			// um destino vazio da DENY. Ver o residuo 7 do ADR-044.
 			"destination": cedar.String(in.Context.Destination),
 			"provenance":  cedar.String(in.Context.Provenance),
 		}),

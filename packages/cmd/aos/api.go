@@ -1186,8 +1186,15 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	// `plan_input` fica no layout 1.6.0, cujo primeiro turno nunca termina o run — os dados só
 	// entram no segundo. Com menos de dois turnos o run morria no tecto sem nunca ver os dados.
 	// Recusa-se aqui, explícito, em vez de elevar o valor que o cliente pediu.
-	if h.node != nil && h.node.pedirAntesDeLer && len(req.Inputs) > 0 && req.MaxTurns < 2 {
-		writeError(w, http.StatusBadRequest, "max_turns tem de ser pelo menos 2 num run com inputs: com AOS_PLAN_INPUT_DEPOIS_DO_PRIMEIRO_TURNO=on o primeiro turno nao ve os inputs e nao termina o run")
+	//
+	// AOS-556: o `conteudo_por_handle` TAMBÉM adia as entradas, porque a 1.8.0 deriva da 1.6.0 e
+	// herda-a. Sem esta disjunção o portão chaveava só na CONFIG do nó e o campo furava-o: um nó
+	// com o «pedir antes de ler» DESLIGADO aceitava um run na 1.8.0 com inputs e `max_turns: 1`,
+	// o turno 1 não via os dados, e o run morria no tecto sem nunca os ter visto — pior do que
+	// sem o campo, em que o mesmo run ficava num layout que os via no turno 1. Achado da revisão
+	// adversarial.
+	if h.node != nil && (h.node.pedirAntesDeLer || req.ConteudoPorHandle) && len(req.Inputs) > 0 && req.MaxTurns < 2 {
+		writeError(w, http.StatusBadRequest, "max_turns tem de ser pelo menos 2 num run com inputs: com AOS_PLAN_INPUT_DEPOIS_DO_PRIMEIRO_TURNO=on ou com conteudo_por_handle o primeiro turno nao ve os inputs e nao termina o run")
 		return
 	}
 

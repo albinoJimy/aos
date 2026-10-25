@@ -11,17 +11,55 @@
 // decisões, par allow+deny por regra; e o self-test do gate `policy-taint` corre o gate sobre ele.
 // Nenhum dos dois toca no bundle assinado nem na âncora.
 //
-// A CERIMÓNIA, quando o dono a fizer:
+// ======================================================================================
+// NÃO ASSINAR AINDA. Há uma decisão ANTES desta cerimónia, e ela é do dono.
+// ======================================================================================
+//
+// Achado da revisão adversarial de 2026-10-25, MEDIDO em
+// `TestAOS556_Bateria_ACadeiaRealDecideOQue`: com esta política em vigor e o
+// `AOS_PRIVILEGED_CAPS` armado como em produção, a cadeia do nó decide
+// `politica=permit · taint=DENY`. A `allow_fs_read_external` permite, e o **TaintGate nega a
+// seguir** — a `ocr_read` declara `egress: external`, logo é privilegiada, e o gate corre
+// DEPOIS da política.
+//
+// Assinar isto como está: esvazia a baseline do `policy-taint`, aperta `cap:fs.read` para quem
+// não sela o destino (ponto 4 abaixo), e **NÃO entrega ganho nenhum**. O resíduo 1 do ADR-044
+// tem a decisão e o que ela custa — relaxar a invariante P0 do ADR-005 para uma classe de
+// destino.
+//
+// ======================================================================================
+//
+// A CERIMÓNIA, quando a decisão estiver tomada:
 //
 //   cp docs/governance/politica-1.2.0-candidata.cedar \
 //      packages/control-plane/pdp/policies/aos_authz.cedar
 //   cd packages/control-plane/pdp && go run ./cmd/policy-sign -version 1.2.0
 //
-// Depois: remover a entrada `allow_fs_read` de `scripts/ci/baseline/policy-taint.txt` (fica
-// OBSOLETA, e o gate falha até ser removida — a baseline só encolhe, e esta é a última entrada);
-// mover os pares allow+deny das regras novas para `ruleCoverageTable` em `policy_suite_test.go`; e,
-// se a chave mudar, rodar o `trust_anchor.pub`, os seis literais da âncora em
-// `packages/integration` e o `AOS_POLICY_TRUST_ANCHOR` do `.env` do servidor.
+// E DEPOIS, nesta ordem, porque cada uma destas avermelha se for esquecida:
+//
+//  1. remover a entrada `allow_fs_read` de `scripts/ci/baseline/policy-taint.txt` — fica
+//     OBSOLETA e o gate falha até ser removida (a baseline só encolhe, e esta é a última);
+//  2. mover os pares allow+deny das regras novas para `ruleCoverageTable` em
+//     `policy_suite_test.go`, senão o `TestPolicyRuleCoverage` avermelha;
+//  3. **conferir que NENHUMA tool `cap:fs.read` de nenhum manifesto classifica `unknown`** —
+//     isto é, que os três eixos (`egress`, `mutation`, `reversibility`) estão EXPLÍCITOS em
+//     todas. Nesta política a `allow_fs_read` inteira desaparece, pelo que `unknown` deixa a
+//     leitura **sem regra nenhuma**: DENY, e não «como antes». O `deploy/server/model-tools/
+//     tools.json` declara-os nas cinco; o `deploy/node/dev-hardened/model-tools/tools.json`
+//     deixa a `reversibility` implícita na `doc_read` e tem de a declarar ANTES da assinatura
+//     (declará-la antes disso é um alargamento de comportamento VIVO — a segunda leitura de um
+//     run nos demos passa de DENY a PERMIT com a 1.1.0 em vigor —, e por isso não vem na fatia
+//     que escreveu esta política);
+//  4. **os consumidores do PDP que não correm o `risk-classify`** chegam com o destino vazio e
+//     passam de permit a deny no instante da assinatura. São testes, e vão avermelhar: ~12 usos
+//     de `fsRead()` em `packages/control-plane/pdp` (`pdp_test.go`, `policy_suite_test.go`), e
+//     entradas `cap:fs.read` inline em `autonomy_test.go`, `escalada_auditavel_test.go`,
+//     `capabilities_test.go`, `identity_gate_integration_test.go`, `sovereignty_test.go`,
+//     `packages/security-tests/report_test.go` e
+//     `packages/cmd/aos/acceptance_mediation_test.go`. Cada um ou passa a selar o destino, ou
+//     declara porque não o faz;
+//  5. se a chave mudar, rodar o `trust_anchor.pub`, os seis literais da âncora em
+//     `packages/integration` e o `AOS_POLICY_TRUST_ANCHOR` do `.env` do servidor.
 //
 // -----------------------------------------------------------------------------------------------
 //

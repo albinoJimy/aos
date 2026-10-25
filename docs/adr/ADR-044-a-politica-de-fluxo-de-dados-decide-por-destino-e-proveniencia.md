@@ -55,8 +55,8 @@ modelo, que é precisamente o que esta fase não pode fazer.
 autoridade da call é **uma** string, e um run com media e um run com um handle untrusted nos
 argumentos chegam ambos `untrusted`, indistinguíveis. O controlo negativo que o dono pediu («o mesmo
 plano com media continua negado») exige separá-los. E são separáveis: no sítio da re-junção
-(`agentruntime.Runtime.callDeUmaInvocacao`) o kernel tem o **piso** e o valor **da reescrita** em
-mãos, cada um por si, imediatamente antes de o `join` os colapsar.
+(`agentruntime.Runtime.mediateToolCall`, em `kernel/agent-runtime/loop.go`) o kernel tem o **piso**
+e o valor **da reescrita** em mãos, cada um por si, imediatamente antes de o `join` os colapsar.
 
 ---
 
@@ -87,7 +87,7 @@ e `IsLocalRunWrite`, que já fazem exactamente isto:
 | `local_read` | `egress: none`, `mutation: none`, `reversibility: reversible` | `doc_read`, `media_view` |
 | `run_artifact` | `egress: none`, `mutation: run_artifact`, `reversibility: reversible` | `artifact_write` |
 | `external_read` | `egress: external`, `mutation: none`, `reversibility: reversible` | `ocr_read`, `video_read` |
-| `external_effect` | tudo o mais com `egress` ou `mutation` declarados | `web_post` |
+| `external_effect` | tudo o mais com `egress` ou `mutation` declarados | nenhuma em produção: o `web_post` saiu do manifesto em 2026-09-26 (ADR-034 §2.7) e o dos demos deixa a `reversibility` implícita, logo classifica `unknown` |
 | `unknown` | um eixo implícito, ou tool fora do registo | — |
 
 **Porque uma classe e não os três eixos crus.** Três atributos novos no motor são três superfícies
@@ -260,16 +260,25 @@ anunciada é postura ligada.
 - **(E) Deixar a decisão no TaintGate, sem tocar no Cedar.** É onde a barreira hoje está (F2), e
   seria a mudança mais pequena. **Rejeitada:** o critério pede a política em **Cedar assinado**, e
   por boa razão — a decisão de que conteúdo pode sair para onde é governação do dono, versionada e
-  assinada, não uma classificação em código que muda com um deploy. O TaintGate continua a impor a
-  invariante estrutural; o que a política ganha é a decisão graduada.
+  assinada, não uma classificação em código que muda com um deploy. **Mas não é uma alternativa: é a
+  OUTRA METADE.** A primeira versão desta secção dizia «o TaintGate continua a impor a invariante
+  estrutural» sem notar que a invariante estrutural é exactamente o que **bloqueia** a regra nova —
+  medido em `TestAOS556_Bateria_ACadeiaRealDecideOQue`. As duas camadas têm de aprender a mesma
+  coordenada, e isso é o **resíduo 1 (§5)**: uma decisão do dono, não um ticket.
 
 ---
 
 ## 4. Consequências
 
-- **O que passa a correr:** um nó do plano que lê um documento e o entrega, por handle, a uma tool
-  de leitura com egress externo (a `ocr_read`, a `video_read`) **sem uma pessoa a aprovar cada
-  chamada** — desde que o run não tenha media projectada. É o ganho de produto da fase R2.
+- **O que esta decisão, SOZINHA, faz correr: nada.** E a primeira versão deste ADR afirmava o
+  contrário, o que é o defeito mais grave que a revisão adversarial desta fatia encontrou. A
+  cadeia do ápice é `… risk-classify → POLÍTICA → TAINT → …` e pára no primeiro não-permit: a
+  política passa a PERMITIR a leitura com egress externo sobre um handle untrusted, e o
+  **TaintGate nega-a a seguir**, porque a `ocr_read` declara `egress: external`, logo
+  `DeclaresEffect` é verdadeiro, logo é privilegiada com o `AOS_PRIVILEGED_CAPS` armado em
+  produção. **Medido**, não deduzido: `TestAOS556_Bateria_ACadeiaRealDecideOQue` compõe os dois
+  na ordem real e regista «politica=permit · taint=deny».
+  **O ganho de produto da fase R2 exige a decisão do resíduo 1 (§5).**
 - **O que continua negado, e por desenho:** qualquer efeito (`external_effect`) pedido de um contexto
   untrusted, qualquer que seja a proveniência. E **tudo** num run com media, porque aí a proveniência
   é `context`.
@@ -290,7 +299,33 @@ anunciada é postura ligada.
 
 ## 5. Resíduos declarados
 
-1. **Fluxo de controlo dependente de dados.** O modelo continua a escolher **qual** handle passa a
+1. **BLOQUEANTE — a barreira ESTRUTURAL nega o que a política passa a permitir, e fechá-la é
+   uma decisão do dono.** Achado da revisão adversarial desta fatia, e medido em
+   `TestAOS556_Bateria_ACadeiaRealDecideOQue`: com a 1.2.0 em vigor e o
+   `AOS_PRIVILEGED_CAPS` armado como em produção, a política PERMITE a leitura com egress
+   externo sobre um handle untrusted e o **TaintGate nega-a a seguir** — a `ocr_read` declara
+   `egress: external` e por isso é privilegiada. A cadeia pára no primeiro não-permit, pelo
+   que o permit do Cedar é irrelevante.
+
+   **Consequência honesta: assinar a 1.2.0 como está esvazia a baseline do `policy-taint`,
+   aperta `cap:fs.read` para quem não sela o destino (resíduo 7), e NÃO entrega o critério 1
+   nem a prova em produção.** A cerimónia não deve acontecer antes desta decisão.
+
+   **A mudança mínima que entrega o ganho** é dar ao gate a mesma coordenada que a política
+   aprendeu, no único sítio que já consulta o registo de destinos: uma terceira isenção em
+   `DestinationPrivileged.ClassifyCall`, para `Class() == external_read` **e**
+   `TaintProvenance == handle_argument`.
+
+   **O que isso custa, e é por isso que é do dono:** RELAXA a invariante **P0 do ADR-005** —
+   «só dados trusted podem ORIGINAR uma acção privilegiada» — para uma classe de destino. O
+   argumento a favor é o da CaMeL, e é o mesmo que sustenta toda a fase: o modelo que
+   ESCOLHEU a call só viu trusted e handles opacos, pelo que a injecção não escolheu a acção
+   — apenas viaja —, e o destino não muda nada no mundo. O argumento contra é que enviar É
+   agir, e foi assim que a emenda de 2026-10-19 ao ADR-034 o escreveu. Exige emenda declarada
+   ao ADR-005 e ao ADR-034, e torna o resíduo 2 **bloqueante**: a partir daí uma decisão de
+   segurança depende da derivação da proveniência, que tem de ter guarda própria.
+
+2. **Fluxo de controlo dependente de dados.** O modelo continua a escolher **qual** handle passa a
    que tool: vê a ordem, a contagem e o tipo. Uma injecção no documento A pode, indirectamente,
    levá-lo a passar o documento B a um destino permitido. Classe declarada aberta pela CaMeL, e esta
    decisão não a fecha — o que a limita é o destino: `external_read` não muda nada no mundo.

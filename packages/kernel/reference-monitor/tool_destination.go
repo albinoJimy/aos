@@ -90,9 +90,15 @@ const (
 	// DestinationExternalEffect — tudo o mais que declare egress ou mutação: muda o mundo, ou sai
 	// para fora a mudar algo. É o `web_post`.
 	DestinationExternalEffect = "external_effect"
-	// DestinationUnknown — um eixo IMPLÍCITO, ou uma tool fora do registo. FAIL-CLOSED: não
-	// satisfaz regra de fluxo nenhuma, pelo que a tool fica com a regra de antes. Um eixo ausente
-	// nunca se lê como benigno — é a invariante do AOS-538, e esta classe herda-a.
+	// DestinationUnknown — um eixo IMPLÍCITO, ou uma tool fora do registo (ou chamada com outra
+	// capability que não a do binding). FAIL-CLOSED: não satisfaz regra de fluxo nenhuma. Um eixo
+	// ausente nunca se lê como benigno — é a invariante do AOS-538, e esta classe herda-a.
+	//
+	// O QUE ISSO SIGNIFICA DEPENDE DA POLÍTICA EM VIGOR, e a primeira versão deste comentário
+	// dizia «fica com a regra de antes», o que é falso com a 1.2.0: lá a `allow_fs_read` inteira
+	// desaparece e `unknown` deixa `cap:fs.read` sem regra nenhuma — DENY, não «como antes». Uma
+	// tool de leitura à qual falte um dos três eixos fica com a leitura negada pela POLÍTICA, e
+	// não só pelo gate de taint. Ver o resíduo 7 do ADR-044.
 	DestinationUnknown = "unknown"
 )
 
