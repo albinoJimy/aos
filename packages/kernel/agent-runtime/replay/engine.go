@@ -671,7 +671,10 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 		// mesma função; sem isto o replay designaria onde o loop não designou e dava uma
 		// divergência falsa num run da 1.8.0.
 		evidencia.ResultsByHandle(agentruntime.HasToolResultsByHandle(manifest.AssemblyVersion))
-		evidencia.Observe(stepID, authority, results)
+		// AOS-551: o PISO, como no loop. Fora de um layout por handle é igual à autoridade e a
+		// designação reproduz-se byte a byte; dentro dele, medir pela autoridade dava uma
+		// divergência falsa (o motor designava `inapplicable` onde o loop designou).
+		evidencia.Observe(stepID, piso, results)
 
 		// (4) TERMINAÇÃO — a MESMA função do loop ([agentruntime.TurnEndsRun], AOS-492), no
 		// layout que o turno gravou, pela sequência da dobra desse layout — que acabou de dobrar

@@ -549,6 +549,12 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 				ErrArgumentAuthorityRequired, lay.version, rt.autoridadePorArgumento, rt.callRewriter != nil)
 		}
 	}
+	// A VERSÃO DO LAYOUT SEGUE NO CONTEXTO (AOS-551), a partir da MESMA `layout` que acabou de
+	// ser resolvida. É o que o PRODUTOR do `tool_result` por handle precisa de saber e não tem
+	// por onde descobrir: o selo corre dentro do efeito do step-ledger, e a versão não viaja na
+	// [referencemonitor.Call] nem na Activity. Posta AQUI, e não no nó, o gate do produtor é
+	// IDÊNTICO POR CONSTRUÇÃO ao do tail — ver [ContextWithAssemblyVersion].
+	ctx = ContextWithAssemblyVersion(ctx, lay.version)
 	// A SEMENTE DO TAIL resolve-se aqui, antes de qualquer efeito (AOS-506): um aviso de nova
 	// tentativa fora do vocabulário recusa o run antes de haver janela, evento ou span.
 	//
@@ -719,12 +725,17 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		if entradasAdiadas > 0 {
 			view.CompletionToForce = nil
 		}
-		// O rótulo do contexto que o modelo vai ver NESTE turno. Autoriza todas as tool calls
-		// que o turno pedir — lido aqui, antes de a resposta existir, para que nada do que o
-		// modelo devolva (texto, tool calls, resultados) o possa mudar retroactivamente.
-		turnAuthority := win.authority()
-		// O PISO do turno (AOS-551): o rótulo que a autoridade por argumento não pode levantar.
-		// Fora de um layout por handle é igual ao `turnAuthority` — ver [SegmentFloor].
+		// O PISO do turno (AOS-551): o rótulo que autoriza todas as tool calls que o turno pedir
+		// e que a autoridade por argumento não pode levantar. Lido aqui, antes de a resposta
+		// existir, para que nada do que o modelo devolva (texto, tool calls, resultados) o possa
+		// mudar retroactivamente.
+		//
+		// É O PISO E NÃO [authorityWindow.authority], e desde esta fatia em TODOS os leitores do
+		// loop: a Call que o Reference Monitor vê (AOS-551, fatia 2) e a designação da origem da
+		// saída. Fora de um layout por handle o piso É a autoridade do contexto, byte a byte
+		// ([SegmentFloor] delega em [SegmentAuthority]), pelo que nada muda nos layouts em
+		// produção. A autoridade do CONTEXTO continua acumulada pela janela, pelo mesmo ponto
+		// único, e é o rótulo que o AOS-556 interroga quando escrever a política de fluxo.
 		turnFloor := win.floor()
 		if err := rt.cp(ctx, goal.RunID, stepID, turn, PhaseAssembled); err != nil {
 			return res, err
@@ -872,9 +883,14 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			}
 			// Os contadores do veredicto (AOS-493) saem do MESMO `turnCaptured` que o tail e a
 			// captura, e pela mesma razão do comentário acima somam cada turno uma só vez.
-			// Levam o passo e o rótulo do contexto DESTE turno: é do primeiro turno que despachou
-			// tool calls que a origem da saída se designa (AOS-497).
-			evidencia.Observe(stepID, turnAuthority, turnCaptured)
+			// Levam o passo e o PISO DESTE turno: é do primeiro turno que despachou tool calls
+			// que a origem da saída se designa (AOS-497), e a medida é o piso e não a autoridade
+			// do contexto (AOS-551) — num layout por handle um `plan_input` já não põe conteúdo
+			// no contexto do modelo, pelo que a razão da regra («os argumentos foram escolhidos
+			// por um modelo que só tinha visto o prefixo e o objectivo») passa a ser verdade em
+			// mais turnos. Fora de um layout por handle o piso É a autoridade, byte a byte, pelo
+			// que nada muda nos layouts em produção ([SegmentFloor]).
+			evidencia.Observe(stepID, turnFloor, turnCaptured)
 			res.ToolCallsRequested = evidencia.ToolCallsRequested()
 			res.LastToolOutcome = evidencia.LastToolOutcome()
 		}

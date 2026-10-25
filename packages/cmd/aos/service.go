@@ -713,8 +713,19 @@ func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resumi
 
 // SubmitObservando é o [NodeService.Submit] com um observador do Goal HOSPEDADO (AOS-506).
 //
-// `aoHospedar` é chamado UMA vez, em síncrono e antes de o run arrancar, com o Goal tal como o
-// serviço o entrega ao run — isto é, DEPOIS da ingestão, que minimiza o objectivo (AOS-208). Não
+// `aoHospedar` é chamado UMA vez, em síncrono e antes de o run arrancar, com o Goal DEPOIS da
+// ingestão, que minimiza o objectivo (AOS-208).
+//
+// NÃO É, DESDE O AOS-551, «o Goal tal como o serviço o entrega ao run»: o layout do run é fixado
+// dentro do [NodeService.hostRun] (AOS-489) e com ele o selo das entradas do plano num layout por
+// handle, que corre LÁ e não aqui. Num run da 1.8.0 com entradas, o observador vê os `Inputs` sem
+// o `Handle` que o run vai ver. A consequência, seguida até ao consumidor, é a medição do AOS-506
+// ([promptDaTentativaDifere] → [hashDaSementeCom] → `SeedTail`, que recusa entradas sem handle):
+// ela lê «não consegui recalcular» como DIFERE, nunca como igual, pelo que o efeito é um
+// `prompt_diferente` espúrio num run da 1.8.0 com entradas E aviso de nova tentativa — nunca uma
+// diferença escondida. É residuo do AOS-551 e tem de ser fechado pelo AOS-556, que é quem torna a
+// 1.8.0 accionável; mover o selo para cá exigia fixar o layout antes da escolha do modelo, e
+// chamar `aoHospedar` de dentro do `hostRun` corre com quem lê a semente depois do retorno. Não
 // é chamado quando a submissão é recusada. Quem precisa de saber o que o run semeou (a medição do
 // prompt de uma nova tentativa) lê-o daqui, e não do Goal que submeteu: os dois diferem sempre
 // que o objectivo tem dados que a ingestão redige.
@@ -1257,6 +1268,28 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	if goal.AssemblyVersion != layoutNovo {
 		s.log("run %q hospedado no layout de prompt %s, e nao no dos runs novos (%s): o layout e fixado por run e veio do registo de retoma (AOS-489) — o run continua no layout em que os seus turnos foram gravados",
 			rs.runID, goal.AssemblyVersion, layoutNovo)
+	}
+	// AOS-551: o PRODUTOR do `plan_input` por handle. ANTES do registo de retoma, que leva os
+	// `Inputs` e é por isso que as referências sobrevivem à retoma sem serem re-seladas. Fora de
+	// um layout por handle não toca em nada. Fail-closed: sem selo o run morria no primeiro tail.
+	//
+	// DEPOIS do observador do Goal hospedado, e isso é um resíduo declarado — ver
+	// [NodeService.SubmitObservando], que explica o que o observador deixa de ver e qual o efeito
+	// medido.
+	//
+	// E DEPOIS DE CADA SELO HAVER UM `handle.created`: se a entrada k recusar com k-1 já seladas,
+	// ou se o processo morrer entre os selos e o registo de retoma, o stream fica com declarações
+	// de um run que nunca vai correr e os bytes ficam no espaço de handles até alguém limpar a
+	// pasta (nada apaga ficheiros deste espaço — está declarado no banner). A cópia defensiva do
+	// Goal protege o chamador, não o stream. Resíduo declarado; o alcance é o tecto do volume.
+	var herr error
+	if goal, herr = selarEntradasDoPlano(ctx, s.node.planoHandles, goal); herr != nil {
+		err = fmt.Errorf("aos: run %q: %w", rs.runID, herr)
+		s.mu.Lock()
+		rs.err = err
+		s.mu.Unlock()
+		s.log("run %q RECUSADO pela selagem das entradas do plano (AOS-551): o run fecha failed sem dar um turno — sem handle o tail do primeiro turno recusaria (ErrPlanInputWithoutHandle): %v", rs.runID, herr)
+		return
 	}
 	s.persistCrashResumeRecord(ctx, goal)
 

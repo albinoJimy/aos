@@ -81,17 +81,38 @@ func vocabularioDeErro() map[string]map[string]bool {
 		}
 		return m
 	}
+	// AOS-551: o SELO DO RESULTADO pode fazer falhar QUALQUER tool do nó, pelo que as causas do
+	// espaço de handles entram no vocabulário de TODAS — ver [causasDoSeloDeHandle].
+	com := func(causas ...string) map[string]bool {
+		return conjunto(append(append([]string(nil), causas...), causasDoSeloDeHandle()...)...)
+	}
 	// A `media_view` falha com o vocabulário da leitura local confinada — o mesmo da `ocr_read`,
 	// de que usa o leitor.
 	return map[string]map[string]bool{
-		artifactWriteToolName: conjunto(artCausaEntrada, artCausaTipo, artCausaConteudo, artCausaGrande,
-			artCausaRun, artCausaVolume, artCausaCifra, artCausaDisco, artCausaRegisto,
-			// AOS-550: a selagem do handle do artefacto corre dentro desta tool.
-			hCausaVazio, hCausaGrande, hCausaRun, hCausaVolume, hCausaCifra, hCausaDisco, hCausaRegisto,
-			handleCausaSemRun, handleCausaIlegivel),
-		mediaViewToolName: conjunto(ocrCausas()...),
-		ocrToolName:       conjunto(ocrCausas()...),
-		videoToolName:     conjunto(videoCausas()...),
+		artifactWriteToolName: com(artCausaEntrada, artCausaTipo, artCausaConteudo, artCausaGrande,
+			artCausaRun, artCausaVolume, artCausaCifra, artCausaDisco, artCausaRegisto),
+		mediaViewToolName: com(ocrCausas()...),
+		ocrToolName:       com(ocrCausas()...),
+		videoToolName:     com(videoCausas()...),
+	}
+}
+
+// causasDoSeloDeHandle são as causas com que a selagem em quarentena pode falhar.
+//
+// ENTRAM NO VOCABULÁRIO DE TODAS AS TOOLS, e não de uma. Até ao AOS-551 a selagem só corria DENTRO
+// da `artifact_write` e era por isso uma causa dela. Com o produtor do `tool_result` (AOS-551) o
+// selo corre FORA de qualquer tool — dentro do efeito do step-ledger, depois do permit do Reference
+// Monitor —, e uma recusa dele materializa-se como `tool_error` da tool que estava a correr. Logo
+// um `ocr_read` pode falhar com `handle_tecto_do_run`, e declarar essa causa só na
+// `artifact_write` deixava-a sair como [causaNaoDeclarada] — ou, antes desta correcção, sair CRUA
+// sem passar por [erroDaTool].
+//
+// A lista não é escrita de novo: são as mesmas constantes do espaço de handles
+// (`handle_store.go`, `handles.go`) que a métrica conta.
+func causasDoSeloDeHandle() []string {
+	return []string{
+		hCausaVazio, hCausaGrande, hCausaRun, hCausaVolume, hCausaCifra, hCausaDisco, hCausaRegisto,
+		handleCausaSemRun, handleCausaIlegivel,
 	}
 }
 

@@ -64,11 +64,13 @@ const (
 	// que seja o desfecho de cada chamada. Não se escolhe nem se concatena: seria o runtime a
 	// compor conteúdo, ou quem controla a falha de uma chamada a escolher a outra.
 	OutputSourceAmbiguous OutputSourceState = "ambiguous"
-	// OutputSourceInapplicable — a regra não se pode aplicar a este run: o contexto do primeiro
-	// turno que despachou tools já era untrusted. Como um turno sem tool calls termina o run, não
-	// há resultado de tool antes desse turno; o que o tornou untrusted foram as ENTRADAS do run
-	// (um `plan_input`, memória). É um defeito de quem compôs o run — um consumidor declarado
-	// como produtor — e não «o modelo não chamou»: por isso tem estado próprio.
+	// OutputSourceInapplicable — a regra não se pode aplicar a este run: o PISO do primeiro
+	// turno que despachou tools já era untrusted (AOS-551; fora de um layout por handle o piso é
+	// a autoridade do contexto, e este estado é o de sempre). Como um turno sem tool calls
+	// termina o run, não há resultado de tool antes desse turno; o que o tornou untrusted foram
+	// as ENTRADAS do run (um `plan_input`, memória). É um defeito de quem compôs o run — um
+	// consumidor declarado como produtor — e não «o modelo não chamou»: por isso tem estado
+	// próprio.
 	//
 	// No layout 1.6.0 («pedir antes de ler») os `plan_input` só entram depois do primeiro turno,
 	// e esse turno não termina o run: um run com entradas pode ter a origem designada no turno 1
@@ -179,16 +181,18 @@ func origemPossivel(c *Completion, goal Goal) error {
 var ErrOutputSourceNotFollowed = errors.New("agentruntime: a evidencia do run nao seguiu a tool declarada como origem da saida quando observou o primeiro turno com tools")
 
 // primeiroDespacho são os factos do PRIMEIRO turno do run que despachou tool calls, tirados no
-// momento em que o turno foi observado: o passo do turno, o rótulo do contexto que o modelo viu
-// nele e, sobre a tool declarada como origem, quantas vezes foi pedida e — quando foi pedida uma
-// só vez — o índice, o desfecho e o digest dessa chamada.
+// momento em que o turno foi observado: o passo do turno, o PISO da autoridade desse turno e,
+// sobre a tool declarada como origem, quantas vezes foi pedida e — quando foi pedida uma só vez —
+// o índice, o desfecho e o digest dessa chamada.
 //
 // NÃO GUARDA OS RESULTADOS. O digest calcula-se aqui, uma vez, sobre os bytes que o despacho
 // acabou de devolver; uma escrita posterior nesses bytes (que o tail e a captura partilham) já
 // não o pode mudar.
 type primeiroDespacho struct {
-	stepID    string
-	authority taint.Label
+	stepID string
+	// piso é o PISO da autoridade do turno ([SegmentFloor]), e não a autoridade do contexto
+	// (AOS-551). Fora de um layout por handle são o mesmo valor.
+	piso taint.Label
 	// origem é a tool que a evidência seguia quando o turno foi observado. Vazia ⇒ o run não
 	// declarou a origem e nada mais se calculou.
 	origem string
@@ -204,8 +208,8 @@ type primeiroDespacho struct {
 
 // observarPrimeiroDespacho tira os factos do primeiro turno que despachou tool calls. origem
 // vazia (run sem declaração) ⇒ nenhum resultado é lido.
-func observarPrimeiroDespacho(stepID string, authority taint.Label, origem string, results []CapturedToolResult, resultadosPorHandle bool) *primeiroDespacho {
-	p := &primeiroDespacho{stepID: stepID, authority: authority, origem: origem, indice: -1}
+func observarPrimeiroDespacho(stepID string, piso taint.Label, origem string, results []CapturedToolResult, resultadosPorHandle bool) *primeiroDespacho {
+	p := &primeiroDespacho{stepID: stepID, piso: piso, origem: origem, indice: -1}
 	if origem == "" {
 		return p
 	}
@@ -219,40 +223,52 @@ func observarPrimeiroDespacho(stepID string, authority taint.Label, origem strin
 			p.efectiva = r.Denial == nil && r.ToolError == nil
 		}
 	}
-	// AOS-551 (fatia 1b) — NUM LAYOUT QUE PÕE OS RESULTADOS POR HANDLE, NENHUM RESULTADO DESIGNA.
+	// AOS-551 — NUM LAYOUT POR HANDLE, SÓ UM RESULTADO JÁ SELADO DESIGNA.
 	//
-	// A regra de designação ancora no DIGEST DOS BYTES do resultado. Na 1.8.0 esses bytes são a
-	// REFERÊNCIA do handle, não o conteúdo: digeri-los daria uma âncora que descreve o handle e não
-	// a saída, e a atestação deixava de ligar ao conteúdo — num eixo que decide comportamento real
-	// (a entrega por referência entre nós do plano, `aos-orq/entrega_por_referencia.go:252`, e a
-	// transição terminal, `state/machine.go:574`).
+	// A regra ancora no DIGEST DOS BYTES que o despacho devolveu — os mesmos que o step-ledger
+	// grava e que os dois verificadores da âncora re-hasheiam (`cmd/aos/origem_na_api.go` sobre o
+	// payload do passo, `cmd/aos-orq/entrega_por_referencia.go` sobre os bytes que o nó serviu).
+	// A âncora atesta esses bytes, e tem de continuar a atestá-los: um digest do CONTEÚDO seria
+	// inconfirmável pelos dois e o run fecharia `fulfilled` com a saída designada indisponível de
+	// vez.
 	//
-	// A recusa é por NÃO-EFECTIVIDADE, e a forma importa. A primeira versão desta fatia deixava o
-	// digest vazio com a chamada ainda efectiva, o que dá `State=designated` com `Digest=""` — a
-	// ÚNICA combinação que [OutputSource.BemFormada] recusa. A âncora deixava de ser selável, a
-	// máquina de estados recusava a transição terminal, e o run ficava SEM DESFECHO no log durável,
-	// indistinguível de um crash, sem o `failed` que dispara a compensação e com a reserva de quota
-	// presa. Isso não é falhar fechado: é pior do que o defeito que a mudança queria evitar, e
-	// quebrava o invariante declarado acima — «uma âncora que este run produza é sempre selável».
+	// Com o PRODUTOR composto (`activity.WithResultSealer`), nesses bytes está a REFERÊNCIA do
+	// handle — e aí a designação é honesta: o digest descreve exactamente o que o ledger tem, o
+	// que o loop viu e o que a rota serve.
 	//
-	// Por não-efectividade o estado resolve `missing`, que é BEM FORMADO com os campos vazios: a
-	// transição sela, os consumidores do `aos-orq` recusam, e o veredicto sai
-	// `output_source_missing` — e não `empty_output`, que é o que um `designated` com zero bytes
-	// produziria (`completion.go`, o `case vincula`) e que seria um diagnóstico errado sobre uma
-	// tool que devolveu conteúdo.
+	// A CONDIÇÃO É A FORMA DO VALOR, e isso é a correcção de 2026-10-25 à fatia 1b, que recusava
+	// por LAYOUT. O que o layout não distingue é o nó que compõe a 1.8.0 SEM produtor: aí o valor
+	// é conteúdo CRU, o tail esconde-o do modelo (materializa-o como erro de tool) mas a
+	// designação digeria-o e o `aos-orq` entregá-lo-ia a jusante como saída do run — conteúdo que
+	// o modelo nunca viu, num run cujo texto final não pode ter sido baseado nele. Fail-OPEN.
+	// Perguntar pela forma cobre os dois lados sem depender de ninguém se lembrar de compor o
+	// selo: sem referência, não designa.
 	//
-	// A CONDIÇÃO É O LAYOUT, e não a forma do valor. Condicioná-la ao valor deixava de fora o ramo
-	// em que o nó compôs a 1.8.0 SEM o envelope que sela: aí o valor não é uma referência, o tail
-	// mostra ao modelo um erro de tool e esconde-lhe o conteúdo, mas a designação digeria esse
-	// conteúdo e entregava-o a jusante como saída do run — conteúdo que o modelo nunca viu, num run
-	// cujo texto final não pode ter sido baseado nele. Fail-OPEN, e na direcção que a assimetria
-	// que eu invocava não cobria.
+	// É «FAREJAR», e a 1.19 escreveu que o kernel não o faria. O limite está MEDIDO e é este: num
+	// nó que componha a 1.8.0 SEM produtor, uma tool cujo output CRU seja exactamente
+	// `aos-handle/v1:h<n>.<16 hex minúsculos>` — e [ParseHandleRef]/[HandleTokenOrdinal] não
+	// aceitam mais nada — consegue designar-se como origem e entregar a jusante 8 bytes à sua
+	// escolha. Exige um defeito de composição (o nó compõe a 1.8.0 e não compõe o selo, que o
+	// banner de arranque declara) e o que ela escolhe são 8 bytes de hexadecimal. A alternativa —
+	// recusar por LAYOUT — não tem essa aresta mas tem a sua, que é maior e não exige defeito
+	// nenhum: nenhum run da 1.8.0 designa, nem com produtor.
 	//
-	// Consequência assumida: na 1.8.0 NENHUM run designa a origem da saída, pelo que um run que a
-	// declare fecha `output_source_missing`. É a fatia 4 do AOS-551 que redefine a âncora — no
-	// digest do próprio handle, que o nó tem e este pacote não.
+	// A recusa é por NÃO-EFECTIVIDADE, e a forma importa. Deixar o digest vazio com a chamada
+	// ainda efectiva dá `State=designated` com `Digest=""` — a ÚNICA combinação que
+	// [OutputSource.BemFormada] recusa —, a âncora deixava de ser selável, a máquina de estados
+	// recusava a transição terminal e o run ficava SEM DESFECHO no log durável. Por
+	// não-efectividade o estado resolve `missing`, que é bem formado, sela, e dá o veredicto
+	// `output_source_missing`.
+	//
+	// A `media_view` é a excepção do caminho dos handles ([SealsToolResult]) e o seu resultado é
+	// CRU por desenho. Um run PODE declará-la como origem — com a media no turno ligada ela é
+	// registada no RM e tem de constar do registo de tools do nó, pelo que a afirmação contrária
+	// que aqui esteve era falsa —, e o que acontece então é o caso de cima: a `MediaRef` crua não
+	// é uma referência de handle, logo a chamada não é efectiva e a âncora resolve `missing`.
 	if p.pedidas == 1 && p.efectiva && resultadosPorHandle {
-		p.efectiva = false
+		if _, ok := ParseHandleRef(string(results[p.indice].Result.Value)); !ok {
+			p.efectiva = false
+		}
 	}
 	if p.pedidas == 1 && p.efectiva {
 		// Os bytes do resultado tal como o despacho os devolveu nesta vida do run: os do corpo do
@@ -268,17 +284,26 @@ func observarPrimeiroDespacho(stepID string, authority taint.Label, origem strin
 
 // designar aplica a REGRA DE DESIGNAÇÃO (ADR-038 §2.2) aos factos guardados:
 //
-//	no primeiro turno do run que despachou tool calls, e só se o contexto desse turno era
+//	no primeiro turno do run que despachou tool calls, e só se o PISO desse turno era
 //	trusted, a tool declarada foi PEDIDA exactamente uma vez e essa chamada foi EFECTIVA
 //	(despachada, sem recusa e sem erro de tool) ⇒ designada.
 //	Pedida mais de uma vez nesse turno, qualquer que seja o desfecho de cada chamada ⇒ ambígua.
 //	Pedida uma vez e não efectiva, não pedida, ou nenhum turno despachou tools ⇒ em falta.
-//	Contexto desse turno untrusted ⇒ não aplicável.
+//	Piso desse turno untrusted ⇒ não aplicável.
+//	Num layout por handle, um resultado que não seja uma referência selada ⇒ não efectiva, logo
+//	em falta (ver [observarPrimeiroDespacho]).
 //
-// PORQUE O CONTEXTO TRUSTED. É o que garante que os argumentos da chamada foram escolhidos por
-// um modelo que só tinha visto o prefixo e o objectivo. Uma chamada pedida depois de conteúdo
+// PORQUE O PISO TRUSTED. É o que garante que os argumentos da chamada foram escolhidos por um
+// modelo que só tinha visto o prefixo e o objectivo. Uma chamada pedida depois de conteúdo
 // untrusted entrar no tail (um `plan_input`, memória, um resultado de tool) pode ter sido
 // provocada por esse conteúdo, e nunca é a origem.
+//
+// A MEDIDA É O PISO E NÃO A AUTORIDADE DO CONTEXTO (AOS-551), e fora de um layout por handle são
+// o MESMO valor ([SegmentFloor] delega em [SegmentAuthority]), pelo que nada muda nos layouts em
+// produção. Num layout por handle muda, e é a correcção: um `plan_input` por handle já não põe
+// conteúdo no contexto do modelo — o corpo é texto FIXO escrito pelo runtime —, pelo que a razão
+// da regra continua verdadeira num turno que tenha entradas, e medi-la pela autoridade declarava
+// `inapplicable` um run em que o modelo não leu conteúdo nenhum.
 //
 // PORQUE SE CONTAM AS PEDIDAS E NÃO AS EFECTIVAS. Com duas chamadas da tool declarada no mesmo
 // turno, contar só as efectivas deixava quem controla a falha de uma delas (um servidor que
@@ -298,7 +323,7 @@ func (e *RunEvidence) designar(tool string, binding OutputSourceBinding) (*Outpu
 		return nil, ErrOutputSourceNotFollowed
 	}
 	switch {
-	case !p.authority.IsTrusted():
+	case !p.piso.IsTrusted():
 		src.State = OutputSourceInapplicable
 	case p.pedidas > 1:
 		src.State = OutputSourceAmbiguous
