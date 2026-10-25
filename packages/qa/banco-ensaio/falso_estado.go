@@ -53,6 +53,10 @@ type FalsoDeEstado struct {
 	// no cabeçalho do modelo servido ([port.HeaderServedModel]). É para o modo `falso`, que não
 	// tem proxy; atrás do proxy real fica vazio, e quem declara é o proxy.
 	ServidoComo string
+	// ImagemDeSaida faz o falso pôr, na resposta de chat de um pedido sem tools, o campo `images`
+	// da OpenRouter com o PNG de [PNGDoFalso] (AOS-558). É o que o adaptador `openrouter` do
+	// proxy lê para montar a resposta de `images/generations`.
+	ImagemDeSaida bool
 
 	chaveEsperada [sha256.Size]byte
 	exigeChave    bool
@@ -171,7 +175,25 @@ type FormaNoFornecedor struct {
 	// Media lista as partes com media, pela ordem de chegada: a classe da URL, o sha256 e o
 	// tamanho dos bytes. Nunca os bytes.
 	Media []MediaNoFornecedor `json:"media_no_content,omitempty"`
+	// Caminhos conta os pedidos por CAMINHO, pela lista fechada de [ClassificarCaminho]
+	// (AOS-558). O caminho em bruto nunca se grava.
+	Caminhos map[string]int `json:"caminhos_pedidos,omitempty"`
+	// ChavesDoTopo conta, por nome, as chaves do topo do corpo dos pedidos
+	// ([chavesDoTopoDeGeracao]). Nenhum valor.
+	ChavesDoTopo map[string]int `json:"chaves_do_topo,omitempty"`
+	// Autenticacao conta as respostas 401 do falso, por causa ([RecusaDeChave]). Um pedido
+	// recusado por chave não entra em [FormaNoFornecedor.Pedidos] nem em Caminhos: o falso
+	// recusa-o antes de o ler. Sem este contador, um pedido ENCAMINHADO pelo proxy e recusado
+	// aqui era indistinguível de um que o proxy nunca mandou (AOS-558).
+	Autenticacao map[string]int `json:"respostas_401_por_causa,omitempty"`
+	// ShaDoPNG é o sha256, em hexadecimal, do PNG que este falso emite com
+	// [FalsoDeEstado.ImagemDeSaida] ([PNGDoFalso]). Quem mede compara-o com o seu, para que um
+	// binário do falso de outra árvore não dê um falso negativo silencioso (AOS-558).
+	ShaDoPNG string `json:"sha256_do_png_do_falso,omitempty"`
 }
+
+// RecusaDeChave é a causa de um 401 do falso ([FormaNoFornecedor.Autenticacao]).
+const RecusaDeChave = "chave_recusada"
 
 // ExigirChave faz o falso recusar com 401 os pedidos cuja chave não tenha este sha256. A chave
 // lê-se de `Authorization: Bearer …` (wire de chat) ou de `x-api-key` (wire de mensagens).
@@ -195,6 +217,8 @@ func (f *FalsoDeEstado) Forma() *FormaNoFornecedor {
 		Assistant: copia(f.forma.Assistant), Estado: copia(f.forma.Estado),
 		Parametros: copia(f.forma.Parametros), Recusas: copia(f.forma.Recusas),
 		Partes: copia(f.forma.Partes), Media: append([]MediaNoFornecedor(nil), f.forma.Media...),
+		Caminhos: copia(f.forma.Caminhos), ChavesDoTopo: copia(f.forma.ChavesDoTopo),
+		Autenticacao: copia(f.forma.Autenticacao), ShaDoPNG: f.shaDoPNG(),
 	}
 }
 
@@ -242,6 +266,12 @@ func (f *FalsoDeEstado) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		soma := sha256.Sum256([]byte(chave))
 		if subtle.ConstantTimeCompare(soma[:], f.chaveEsperada[:]) != 1 {
+			// O 401 conta-se (AOS-558). Sem isto um pedido que o proxy ENCAMINHOU e o falso
+			// recusou por chave não deixava rasto nenhum na forma, e quem medisse leria
+			// «o proxy não encaminhou» de um pedido que encaminhou.
+			f.mu.Lock()
+			f.contar(&f.forma.Autenticacao, RecusaDeChave)
+			f.mu.Unlock()
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = w.Write([]byte(`{"error":{"message":"chave recusada pelo provider falso","type":"authentication_error"}}`))
 			return
@@ -253,8 +283,18 @@ func (f *FalsoDeEstado) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.forma.Pedidos++
+	// O CAMINHO do pedido, pela lista fechada do AOS-558: é por ele que se vê a que endereço o
+	// proxy encaminhou, e um endereço a que ele nunca chegou não tem pedido nenhum aqui.
+	caminho := ClassificarCaminho(r.URL.Path)
+	f.contar(&f.forma.Caminhos, caminho)
 	if len(corpo) > maxCorpoDoFalsoDoEstado {
-		f.recusar(w, RecusaCorpoAcimaDoTecto, strings.HasSuffix(r.URL.Path, "/messages"))
+		f.recusar(w, RecusaCorpoAcimaDoTecto, caminho == CaminhoDeMensagens)
+		return
+	}
+	switch caminho {
+	case CaminhoDeVideos, CaminhoDeVideoPorID, CaminhoDoConteudoDoVideo:
+		// A família do vídeo responde-se antes de exigir JSON: um GET de estado não tem corpo.
+		f.servirVideos(w, r, caminho, corpo)
 		return
 	}
 	var topo map[string]json.RawMessage
@@ -262,13 +302,18 @@ func (f *FalsoDeEstado) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.recusar(w, RecusaPedidoIlegivel, false)
 		return
 	}
+	f.contarChavesDoTopo(topo)
 	f.contarParametros(r, topo)
 	var msgs []map[string]json.RawMessage
 	_ = json.Unmarshal(topo["messages"], &msgs)
 	f.contarPartes(msgs)
-	if strings.HasSuffix(r.URL.Path, "/messages") {
+	switch caminho {
+	case CaminhoDeMensagens:
 		f.forma.Wire = WireDeMensagens
 		f.servirMensagens(w, corpo, topo, msgs)
+		return
+	case CaminhoDeImagens, CaminhoDeEdicaoDeImagens:
+		f.servirImagens(w)
 		return
 	}
 	f.forma.Wire = WireDeChat

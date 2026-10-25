@@ -5,6 +5,8 @@
   viu uma planta e listou os cômodos, com replay de fidelidade 1. A fase R1b (AOS-548 e AOS-549)
   está em produção desde a v0.1.69 (2026-10-23): o run viu a planta e gravou `comodos.json` e
   `planta.svg` no armazém do run, e o dono descarregou os dois. O resto do roteiro (§7) por fazer.
+  A **pré-condição «spike do LiteLLM» da fase R3 está resolvida a 2026-10-25 (AOS-558)**: com ela,
+  a alternativa (E) da §3 fica rejeitada para a imagem, e em aberto só para a R6.
 - **Data:** 2026-10-22
 - **Deciders:** Dono do produto. A análise de base é
   `docs/reports/analise-critica-harness-flexivel-2026-10-22.md` (v2): foi sujeita a duas revisões
@@ -211,9 +213,22 @@ registado. Uma **capability** nova continua a ser uma alteração ao bundle Ceda
   medida por metadados declarados pelo vendedor. Fica a elegibilidade, mais o banco em lote.
 - **(D) O nó lê o catálogo da OpenRouter em tempo de execução.** Rejeitada: é egress novo do nó,
   e o catálogo deixaria de estar assinado e de ser reproduzível.
-- **(E) Um adaptador directo à OpenRouter, sem o LiteLLM.** Fica em aberto. É um destino de egress
-  novo (o guard-test AOS-069 recusa-o hoje). Decide-se no ticket do §2.2, pelo resultado de um
-  spike que meça se o LiteLLM fixado encaminha as APIs de imagem e de vídeo.
+- **(E) Um adaptador directo à OpenRouter, sem o LiteLLM.** **Rejeitada para a imagem, a
+  2026-10-25, pelo spike que esta alternativa pedia (AOS-558,
+  `docs/reports/spike-litellm-imagem-video-2026-10-25.md`).** Era um destino de egress novo (o
+  guard-test AOS-069 recusa-o hoje), e a premissa que a justificava — «o LiteLLM só fala chat e
+  não declara o endpoint», lida e não medida — **está errada nas duas metades**: o proxy fixado
+  (1.96.2) serve `POST /v1/images/generations` nas duas formas de rota (no adaptador `openrouter`
+  traduzindo-o para `chat/completions` e extraindo de volta o `message.images[]`), a imagem volta
+  ao cliente com o mesmo sha256, e `modalities`, `provider`, `plugins` e `transforms` chegam ao
+  fornecedor — com o `drop_params: true` do banco (chegam) e sem serem recusados com o `false` que
+  produção corre desde 2026-10-11. **Fica em aberto só para o vídeo gerado (R6):** o adaptador
+  `openrouter` não tem configuração de vídeo na 1.96.2, e nos três passos nada sai do proxy,
+  enquanto pela forma de rota `openai/…` — a de produção — o ciclo
+  assíncrono atravessa o proxy, na forma da API de vídeo da OpenAI; **se a OpenRouter aceita essa
+  forma está NÃO VERIFICADO**, e dele depende a escolha entre esta alternativa, um fornecedor de
+  vídeo que a 1.96.2 suporte e um digest novo do proxy. A decisão é do dono, está nomeada na §5
+  do relatório e **não foi tomada no spike**.
 
 ## 4. Consequências
 
@@ -269,10 +284,10 @@ objecção original:
 | R1a | Parte genérica **de entrada**; o titular vê media com o perfil `imagem` qualificado no banco e com replay pelo digest | Ratificação deste ADR | M |
 | R1b | Armazém de artefactos; `artifact_write`/`artifact_read`; rota soberana de entrega | R1a | M |
 | R2 | Opção A do ADR-034: entradas por handle e taint do artefacto | R1b | L |
-| R3 | `model_invoke` genérica; partes de **saída**; preço por imagem; fornecedor fixado e selado; `ocr_read`/`video_read` como configuração | R2; spike do LiteLLM (§3 E) | L |
+| R3 | `model_invoke` genérica; partes de **saída**; preço por imagem; fornecedor fixado e selado; `ocr_read`/`video_read` como configuração | R2. **O spike do LiteLLM (§3 E) está feito: AOS-558, 2026-10-25** — o proxy fixado encaminha a geração de imagem nas duas rotas e nos dois sentidos, e deixa declarar o fornecedor; a R3 segue por ele | L |
 | R4 | Catálogo qualificado (snapshot + política + banco em lote) e router por requisitos | R3 | L |
 | R5 | `code_exec` na gVisor; MCP composto no nó | R2 | L |
-| R6 | Vídeo gerado (API assíncrona) | R3; um caso real | L |
+| R6 | Vídeo gerado (API assíncrona) | R3; um caso real; **e um elo por medir (AOS-558): se a OpenRouter aceita a forma da API de vídeo da OpenAI que o proxy monta na rota `openai/…` — o adaptador `openrouter` não tem vídeo na 1.96.2**. Enquanto esse elo não estiver medido, a escolha do caminho do vídeo é uma decisão do dono (§3 E) | L |
 
 O caso «foto → cômodos» fica entregue em R1a + R1b (lista e planta). As imagens geradas dos
 cômodos chegam em R3.
@@ -292,7 +307,11 @@ nascem com a fase que os torna verdadeiros:
 
 ## 9. Referências
 
-- `docs/reports/analise-critica-harness-flexivel-2026-10-22.md` (v2, com a validação adversarial)
+- `docs/reports/analise-critica-harness-flexivel-2026-10-22.md` (v2, com a validação adversarial).
+  **A sua §6 afirma que «o LiteLLM só fala chat e não declara o endpoint»: era leitura de
+  documentação, e o AOS-558 mediu o contrário — ver a §3 E e o relatório abaixo.**
+- `docs/reports/spike-litellm-imagem-video-2026-10-25.md` (AOS-558: o spike que a §3 E pedia,
+  medido contra a imagem fixada do proxy, 1.96.2, com um fornecedor falso e sem custo)
 - `docs/reports/desenho-a5-a6-multimodal-2026-10-14.md`
 - `specs/00_AOS_Carta.md` §4.1 e §6.5
 - OpenRouter: `GET /api/v1/models`; geração de imagem; geração de vídeo (documentação lida a

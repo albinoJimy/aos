@@ -189,13 +189,22 @@ func TestAOS534_Falso_CorpoAcimaDoTectoTemCausaPropria(t *testing.T) {
 }
 
 func TestAOS534_Falso_SemPartesAFormaNaoMuda(t *testing.T) {
-	// Um pedido de sempre (content em texto) não acrescenta nada à forma: os relatórios de antes
-	// (AOS-516, AOS-518) não ganham campos.
+	// Um pedido de sempre (content em texto) não acrescenta à forma os campos DAS PARTES.
+	//
+	// Nota do AOS-558: a forma passou a trazer `caminhos_pedidos` e `chaves_do_topo` em TODOS os
+	// pedidos, por isso os relatórios de antes (AOS-516, AOS-518) ganham esses dois — de
+	// propósito, e compatível (são `omitempty` e a versão do relatório não muda). A invariante
+	// que este teste guarda é a das partes, e é só sobre os nomes que nomeia.
 	f := &FalsoDeEstado{FormaDoEstado: FormaOpenRouter}
 	_ = aos534Servir(t, f, []byte(`{"model":"m","messages":[{"role":"user","content":"ola"}]}`))
 	cru, _ := json.Marshal(f.Forma())
 	if strings.Contains(string(cru), "partes_do_content") || strings.Contains(string(cru), "media_no_content") {
 		t.Errorf("a forma ganhou campos num pedido sem partes: %s", cru)
+	}
+	// E o sha do PNG só aparece com a imagem de saída ligada (AOS-558): um cenário que não a usa
+	// não vê a sentinela na sua forma.
+	if strings.Contains(string(cru), "sha256_do_png_do_falso") {
+		t.Errorf("a forma traz o sha do PNG sem a imagem de saida ligada: %s", cru)
 	}
 }
 
