@@ -113,6 +113,16 @@ var camposNaoPropagados = map[string]string{
 	// depende de campo nenhum que a via durável tenha de levar: classifica pelo ToolID, que
 	// atravessa (paridade em TestAOS538_ViaDuravelDecideIgualAViaDirecta).
 	"Context.TaintPrivilege": "saída do TaintGate, não entrada",
+	// SAÍDA do RiskClassifier (AOS-556): a classe de DESTINO que o registo de tools declara,
+	// escrita dentro de Mediate pelo hook que corre antes da política, e sempre reescrita. Pela
+	// mesma razão das quatro acima — um valor do chamador não pode atravessar, ou quem despacha
+	// escolhia a classe de destino de que a política de fluxo depende. Deriva-se do ToolID, que
+	// atravessa, pelo que a via durável não perde capacidade nenhuma ao não a levar.
+	//
+	// A irmã dela, `Context.TaintProvenance`, NÃO está aqui de propósito: essa é ENTRADA, cunhada
+	// pelo Agent Runtime antes do despacho, e a via durável leva-a por
+	// `Activity.AuthorizationProvenance`. É por este teste que se sabe que a leva.
+	"Context.Destination": "saída do RiskClassifier, não entrada",
 }
 
 // preencherComSentinelas põe um valor não-zero em cada campo EXPORTADO de v (recursivo em
@@ -201,6 +211,12 @@ func TestAOS454_AuditoriaCampoACampoCallActivityCall(t *testing.T) {
 	// a própria tool: a call continua permitida, e um campo que se perca continua a ver-se
 	// (chegaria nil em vez desta lista).
 	enviado.AllowedTools = []string{enviado.ToolID}
+	// AOS-556: a proveniência é VOCABULÁRIO FECHADO, e a via durável valida-a
+	// ([activity.ErrBadAuthorizationProvenance]) desde que uma isenção do gate de taint depende
+	// dela. A sentinela genérica de string era recusada na validação, e a recusa é o que se quer
+	// — o campo leva um valor DO vocabulário, que continua a distinguir-se do zero: um campo que
+	// se perca chega vazio e vê-se.
+	enviado.Context.TaintProvenance = referencemonitor.ProvenanceHandleArgument
 	dec, err := newDurableDispatcher(t, store, rm).Dispatch(context.Background(), enviado)
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)

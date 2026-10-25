@@ -94,6 +94,17 @@ type Goal struct {
 	// do que os gravados. Versão desconhecida ⇒ o run não arranca
 	// ([ErrUnknownAssemblyVersion]).
 	AssemblyVersion string
+	// ConteudoPorHandle é o PEDIDO de quem submete para este run correr no layout que põe o
+	// conteúdo por handle (a 1.8.0, fase R2 do ADR-043; AOS-556). É um pedido e não uma
+	// imposição: quem o resolve para uma versão é o nó, no mesmo sítio em que resolve as outras
+	// (`layoutDoRunNovo`), e um nó que não habilite o layout RECUSA a submissão com 400 em vez de
+	// aceitar o campo e ignorá-lo — o molde do `requires_first_turn_trusted`.
+	//
+	// NÃO é lido por um run RETOMADO: esse chega com a [Goal.AssemblyVersion] do seu registo de
+	// retoma e não é tocado (AOS-489). Um booleano e não uma versão, de propósito: a porta não
+	// oferece a escolha de um layout arbitrário, que seria uma superfície muito maior pelo mesmo
+	// ganho.
+	ConteudoPorHandle bool
 	// ProjectionVersion FIXA a versão da projecção nativa deste run (AOS-513), quando o perfil
 	// da rota do run declara uma. Vazia — a omissão, e o caso de todos os runs enquanto nenhum
 	// perfil a declarar — ⇒ quem projecta usa a versão que tem configurada, como sempre.
@@ -1362,6 +1373,11 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 	//
 	// `taint.ParseLabel` é fail-closed: um valor ausente ou desconhecido resolve untrusted, pelo
 	// que uma reescrita que escreva lixo no campo também não baixa nada.
+	// A PROVENIÊNCIA ANTES DO `join`, e é esta a única linha em que ela existe (AOS-556, ADR-044
+	// §2.3). Depois do `join` há uma string só, e um run com media projectada e um run com um
+	// handle untrusted nos argumentos ficam indistinguíveis — é essa indistinguibilidade que torna
+	// impossível o controlo negativo que a fase exige («o mesmo plano com media continua negado»).
+	call.Context.TaintProvenance = provenienciaDaCall(piso, taint.ParseLabel(call.Context.Taint))
 	call.Context.Taint = taint.Join(piso, taint.ParseLabel(call.Context.Taint)).String()
 
 	// EVIDÊNCIA DE APROVAÇÃO (AOS-021) — na RETOMA de uma acção escalada, é aqui que a

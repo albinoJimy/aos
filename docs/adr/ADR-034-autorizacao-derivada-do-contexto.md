@@ -487,3 +487,33 @@ continua privilegiado e negado com o contexto untrusted.
 §AOS-363 · `docs/governance/REGISTO-Deferimentos.md` (DEF-806, DEF-807) ·
 `docs/adr/ADR-027-execucao-dos-nos-do-plano-como-runs-do-no.md` §2.4 ·
 `tecnica/07_Seguranca_Isolamento.md` §6
+
+## Emenda de 2026-10-25 (AOS-556; decisão do dono: «aceito a decisão, ensina a coordenada
+ao gate»)
+
+A invariante **P0** — «só dados trusted podem ORIGINAR uma acção privilegiada» — deixa de
+ser absoluta para **uma** classe de destino, e esta é a primeira excepção a ela que não é
+uma leitura nem uma escrita local do run.
+
+O `TaintGate` ganha uma **terceira isenção** (`DestinationPrivileged.ClassifyCall`, razão
+`fluxo_por_handle`): uma tool que o operador declara **leitura com egress externo**
+(`egress: external`, `mutation: none`, `reversibility: reversible`, os três explícitos) não
+é privilegiada quando **(a)** a capability e o recurso da call não denunciam rede e **(b)** o
+untrusted da call vem do **handle que ela própria consome** (proveniência
+`handle_argument`).
+
+**A razão:** é a forma forte do ADR-034 a pagar-se (a opção A, dual-LLM/CaMeL). O modelo que
+ESCOLHEU a call só viu o prefixo confiável e handles **opacos**, pelo que a injecção não
+escolheu a acção — apenas viaja dentro dela —, e a condição (a) garante que o destino é
+fixado pelo **código** da tool e não por um argumento do modelo.
+
+**O que esta emenda ACEITA, por escrito:** enviar conteúdo não-confiável para um terceiro
+passa a ser possível sem autorização trusted, desde que o terceiro seja o destino declarado
+da tool e não mude nada no mundo. O argumento contra — que **enviar é agir**, como a emenda
+de 2026-10-19 a este ADR o escreveu — fica registado e foi pesado.
+
+**O que NÃO muda:** o rótulo de taint (a call continua untrusted no registo e no evento, e o
+classificador de risco continua a elevar a sensibilidade); a proveniência `context`, que num
+run com media não isenta nada; a assimetria do efeito (o `web_post` denuncia egress pela
+capability e nunca isenta); e o egress default-deny com allowlist. Desenho e condições no
+**ADR-044 §2.10**; controlos negativos em `TestAOS556_IsencaoDoFluxoNaoSeEstende`.

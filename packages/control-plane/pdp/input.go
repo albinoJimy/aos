@@ -96,6 +96,26 @@ type DecisionContext struct {
 	// não altera a política Cedar base e não toca no taint: uma acção negada por qualquer
 	// outra razão continua negada.
 	HumanGateSatisfied bool
+	// Destination e a CLASSE do destino que o registo de tools DECLARA para esta tool
+	// (AOS-556, ADR-044 §2.2): `local_read`, `run_artifact`, `external_read`, `external_effect`,
+	// ou `unknown` (fail-closed). Mapeada para `context.destination`.
+	//
+	// E a primeira coordenada da politica de fluxo de dados. Vem do registo trusted do operador,
+	// escrita pelo classificador de risco do RM — que corre ANTES da politica — e nunca do modelo.
+	//
+	// VAZIA OU DESCONHECIDA NAO SATISFAZ REGRA DE FLUXO NENHUMA, e isso NAO e «a regra de antes
+	// vale» — e o que a primeira versao deste comentario dizia, e e falso na capability que a
+	// particao toca. Na politica 1.2.0 a `allow_fs_read` inteira DESAPARECE: para `cap:fs.read`
+	// nao ha regra de antes, e um destino vazio ou `unknown` da **DENY**. O sentido e seguro, mas
+	// a consequencia e grande — ver o residuo 7 do ADR-044 e a nota de cerimonia da candidata.
+	Destination string
+	// Provenance e DE ONDE VEM o untrusted desta call (AOS-556, ADR-044 §2.3): `clean`,
+	// `handle_argument` ou `context`, com `context` a dominar. Mapeada para `context.provenance`.
+	//
+	// E a segunda coordenada, e e o que torna possivel o controlo negativo da fase: sem ela, um run
+	// com media projectada para o modelo e um run com um handle untrusted nos argumentos chegam
+	// ambos `taint: untrusted` e sao indistinguiveis. NAO substitui [DecisionContext.Taint].
+	Provenance string
 }
 
 // Input é o pedido de decisão submetido a [PDP.Decide] (request do contrato C1).

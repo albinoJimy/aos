@@ -2,6 +2,7 @@ package activity
 
 import (
 	"context"
+	"fmt"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/kernel/agent-runtime/durable"
@@ -152,11 +153,37 @@ type Activity struct {
 	// tools na via durável — a de produção. Como o Credential, NÃO entra na idempotency key
 	// nem na impressão da acção: restringe a call, não a identifica.
 	AllowedTools []string
+	// AuthorizationProvenance e DE ONDE VEM o untrusted da autorizacao (AOS-556, ADR-044 §2.3),
+	// PROPAGADA ao [referencemonitor.CallContext].TaintProvenance, onde a politica de fluxo de
+	// dados a interroga. Vocabulario fechado: [referencemonitor.ProvenanceClean],
+	// [referencemonitor.ProvenanceHandleArgument], [referencemonitor.ProvenanceContext].
+	//
+	// EXISTE PELA RAZAO EXACTA do [Activity.AuthorizationTaint] acima, e o comentario dele conta a
+	// historia: ate ao AOS-069 o campo do taint nao existia, a via duravel DEITAVA FORA o rotulo
+	// que o loop cunhara, e o trusted do ADR-034 nunca chegava ao RM de producao. O ADR-034 §2.8
+	// nomeia a classe — «um campo novo que uma das vias esquece» — e o AOS-454 mediu que esta
+	// traducao ja perdeu um campo quatro vezes.
+	//
+	// O valor-zero e a string vazia, que nao satisfaz regra de fluxo nenhuma: um chamador que nao
+	// a conheca medeia pela regra de antes, que e o comportamento de SEMPRE. Como o Credential,
+	// NAO entra na idempotency key: e material de mediacao, nao de identidade da activity.
+	AuthorizationProvenance string
 }
 
 func (a Activity) validate() error {
 	if a.RunID == "" {
 		return ErrEmptyRunID
+	}
+	// AOS-556: a proveniência é vocabulário FECHADO, e desde a decisão do dono de 2026-10-25
+	// uma decisão de segurança depende dela (a terceira isenção do gate de taint). Vazia é o
+	// valor-zero e vale — significa «sem isenção de fluxo». Qualquer outro valor é recusado
+	// AQUI, e não lido como «não isenta»: um valor que ninguém reconhece não deve chegar a um
+	// classificador que decide por igualdade de strings.
+	switch a.AuthorizationProvenance {
+	case "", referencemonitor.ProvenanceClean, referencemonitor.ProvenanceHandleArgument,
+		referencemonitor.ProvenanceContext:
+	default:
+		return fmt.Errorf("%w: %q", ErrBadAuthorizationProvenance, a.AuthorizationProvenance)
 	}
 	if a.StepID == "" {
 		return ErrEmptyStepID
@@ -185,6 +212,7 @@ func (a Activity) toCall() referencemonitor.Call {
 			BudgetTokensRemaining: a.BudgetTokensRemaining,
 			Reversibility:         a.Reversibility,
 			Sensitivity:           a.Sensitivity,
+			TaintProvenance:       a.AuthorizationProvenance,
 		},
 		Input:            a.Input,
 		ApprovalEvidence: a.ApprovalEvidence,

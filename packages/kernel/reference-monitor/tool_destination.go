@@ -65,6 +65,63 @@ func (d ToolDestination) IsLocalRunWrite() bool {
 		normalizeAxis(d.Reversibility) == "reversible"
 }
 
+// Classes de DESTINO de uma tool (AOS-556, ADR-044 §2.2): a classe do efeito que o registo de
+// tools DECLARA, derivada dos TRÊS eixos que ele já exige explícitos. É o que a política de fluxo
+// de dados interroga, e é config trusted do operador — nunca saída do modelo.
+//
+// PORQUE UMA CLASSE E NÃO OS TRÊS EIXOS CRUS. Três atributos novos no motor Cedar são três
+// superfícies de regra mal-atributada (e uma regra mal-atributada assina e nega TUDO daquela
+// capability), e a regra que os combinasse repetiria em Cedar a derivação que este ficheiro já faz
+// — duas cópias da mesma regra, que é a forma de defeito que este repositório paga repetidamente.
+//
+// O `egress` SOZINHO não serve, e foi medido: a `ocr_read` e o `web_post` declaram os DOIS
+// `egress: external`. O que os separa é a `mutation`, declarada ao lado.
+const (
+	// DestinationLocalRead — lê e não sai nem muda: [ToolDestination.IsLocalRead].
+	DestinationLocalRead = "local_read"
+	// DestinationRunArtifact — escreve só no armazém do próprio run:
+	// [ToolDestination.IsLocalRunWrite].
+	DestinationRunArtifact = "run_artifact"
+	// DestinationExternalRead — SAI para fora e não muda nada: o conteúdo vai a um terceiro (o
+	// fornecedor de um modelo, na `ocr_read` e na `video_read`) e volta como dados. Enviar continua
+	// a ser enviar: o SA-ROC classifica-o pela sensibilidade e o egress continua default-deny com
+	// allowlist — a classe não muda nada disso.
+	DestinationExternalRead = "external_read"
+	// DestinationExternalEffect — tudo o mais que declare egress ou mutação: muda o mundo, ou sai
+	// para fora a mudar algo. É o `web_post`.
+	DestinationExternalEffect = "external_effect"
+	// DestinationUnknown — um eixo IMPLÍCITO, ou uma tool fora do registo (ou chamada com outra
+	// capability que não a do binding). FAIL-CLOSED: não satisfaz regra de fluxo nenhuma. Um eixo
+	// ausente nunca se lê como benigno — é a invariante do AOS-538, e esta classe herda-a.
+	//
+	// O QUE ISSO SIGNIFICA DEPENDE DA POLÍTICA EM VIGOR, e a primeira versão deste comentário
+	// dizia «fica com a regra de antes», o que é falso com a 1.2.0: lá a `allow_fs_read` inteira
+	// desaparece e `unknown` deixa `cap:fs.read` sem regra nenhuma — DENY, não «como antes». Uma
+	// tool de leitura à qual falte um dos três eixos fica com a leitura negada pela POLÍTICA, e
+	// não só pelo gate de taint. Ver o resíduo 7 do ADR-044.
+	DestinationUnknown = "unknown"
+)
+
+// Class devolve a classe de destino desta tool ([DestinationLocalRead] e seguintes). Um eixo
+// implícito dá [DestinationUnknown]: a ordem dos casos é a das garantias, e o `unknown` vem antes
+// de qualquer leitura dos valores.
+func (d ToolDestination) Class() string {
+	eg, mu, rv := normalizeAxis(d.Egress), normalizeAxis(d.Mutation), normalizeAxis(d.Reversibility)
+	if eg == "" || mu == "" || rv == "" {
+		return DestinationUnknown
+	}
+	switch {
+	case d.IsLocalRead():
+		return DestinationLocalRead
+	case d.IsLocalRunWrite():
+		return DestinationRunArtifact
+	case eg == "external" && mu == "none" && rv == "reversible":
+		return DestinationExternalRead
+	default:
+		return DestinationExternalEffect
+	}
+}
+
 // DeclaresEffect diz se a tool DECLARA um efeito: egress diferente de `none`, mutação diferente
 // de `none`, ou reversibilidade diferente de `reversible` — só eixos explícitos contam. Com o gate
 // armado, uma tool que declara um efeito é privilegiada mesmo que a sua capability não esteja em
@@ -166,6 +223,11 @@ const (
 	// TaintPrivilegeDeclaredEffect — privilegiada pelo efeito que a tool declara (egress, mutação
 	// ou irreversibilidade), com a capability fora de AOS_PRIVILEGED_CAPS.
 	TaintPrivilegeDeclaredEffect = "declared_effect"
+	// TaintPrivilegeFlowByHandle — a call NÃO é privilegiada porque o que a suja é o handle
+	// que ela própria consome, e o destino declarado é uma leitura com egress externo cujo
+	// alvo o modelo não escolhe (AOS-556; decisão do dono de 2026-10-25). Ver a terceira
+	// isenção em [DestinationPrivileged.ClassifyCall].
+	TaintPrivilegeFlowByHandle = "fluxo_por_handle"
 )
 
 // ToolPrivilegeClassifier é a extensão OPCIONAL de [PrivilegedAuthorizer] que classifica a CALL
@@ -231,6 +293,48 @@ func (d DestinationPrivileged) ClassifyCall(call *Call) (bool, string) {
 	// privilegiado — não sai do nó, não muda estado de terceiros, e apaga-se com o titular.
 	if known && dest.IsLocalRunWrite() && !derivesEgress(call) {
 		return false, TaintPrivilegeLocalRunWrite
+	}
+	// AOS-556 — A TERCEIRA ISENÇÃO, E A ÚNICA QUE RELAXA A P0 DO ADR-005. Decisão do dono de
+	// 2026-10-25, depois de a revisão adversarial medir que sem ela a política de fluxo de
+	// dados não muda nenhuma decisão: a regra permitia e este gate negava a seguir.
+	//
+	// O QUE ELA DIZ: uma call cujo untrusted vem do handle que ela PRÓPRIA consome, para uma
+	// tool que o operador declarou leitura com egress externo, não é privilegiada. É a forma
+	// forte do ADR-034 (a opção A, dual-LLM/CaMeL) a pagar-se: o modelo que ESCOLHEU esta call
+	// só viu o prefixo confiável e handles OPACOS, pelo que a injecção não escolheu a acção —
+	// apenas viaja dentro dela.
+	//
+	// AS TRÊS CONDIÇÕES, e nenhuma é dispensável:
+	//
+	//  1. `Class() == DestinationExternalRead` — o OPERADOR declarou, no registo trusted, que
+	//     esta tool sai para fora e não muda nada (`egress: external`, `mutation: none`,
+	//     `reversibility: reversible`, os três explícitos). Um eixo implícito dá `unknown` e
+	//     não isenta.
+	//  2. `!derivesEgress(call)` — a capability e o recurso da call NÃO denunciam rede. É esta
+	//     a condição que faz a isenção segura, e a que a formulação ingénua esquecia: uma tool
+	//     `cap:http.post` com `mutation: none` e reversível TAMBÉM classifica `external_read`,
+	//     e isentá-la deixava uma injecção exfiltrar para um host que ELA nomeia. Com esta
+	//     condição, o destino é fixado pelo CÓDIGO da tool (o Model Gateway do nó, na
+	//     `ocr_read` e na `video_read`) e não por um argumento do modelo. É a diferença entre
+	//     «os dados saem» e «os dados saem para onde o atacante disser».
+	//  3. `TaintProvenance == ProvenanceHandleArgument` — o untrusted é o handle desta call, e
+	//     não outra coisa que o modelo já viu. Num run com media o piso já é untrusted, a
+	//     proveniência é `context`, e NADA se isenta: é o controlo negativo da fase, e vem de
+	//     graça desta condição.
+	//
+	// O QUE ISTO CUSTA, por escrito: a invariante P0 do ADR-005 («só dados trusted podem
+	// ORIGINAR uma acção privilegiada») deixa de ser absoluta para esta classe de destino. O
+	// argumento contra, que vale registar porque é o do próprio ADR-034 na emenda de
+	// 2026-10-19, é que ENVIAR é agir. A decisão foi tomada por quem decidiu a invariante, e
+	// está emendada nos dois ADRs.
+	//
+	// A PROVENIÊNCIA É DERIVADA PELO KERNEL e nunca auto-declarada, mas o contrato do RM é o
+	// mesmo do rótulo de taint: quem constrói a [Call] pode escrevê-la (resíduo 5 do ADR-034).
+	// A fronteira de confiança desta isenção é, por construção, a MESMA que a do rótulo que o
+	// gate já lê — não é mais larga, e não é mais estreita.
+	if known && dest.Class() == DestinationExternalRead && !derivesEgress(call) &&
+		call.Context.TaintProvenance == ProvenanceHandleArgument {
+		return false, TaintPrivilegeFlowByHandle
 	}
 	if d.base.IsPrivileged(call.Capability) {
 		return true, TaintPrivilegeCapability
@@ -317,3 +421,21 @@ func (d ToolDestination) declaredSensitivity() (risk.Sensitivity, bool) {
 		return risk.SensitivityUnknown, false
 	}
 }
+
+// Vocabulário FECHADO da proveniência do untrusted de uma call (AOS-556, ADR-044 §2.3), escrito em
+// [CallContext.TaintProvenance] pelo Agent Runtime.
+//
+// `ProvenanceContext` DOMINA: se o piso do turno já era untrusted — media projectada para o modelo,
+// um `tool_error`, memória, um steer —, a proveniência é essa, qualquer que seja o que a call
+// consuma nos argumentos. É o que preserva a decisão do dono de 2026-10-23 («num run com media a
+// fase R2 não levanta nada») SEM a política de fluxo ter de saber o que é media.
+const (
+	// ProvenanceClean — o piso é trusted e a call não resolveu handle nenhum.
+	ProvenanceClean = "clean"
+	// ProvenanceHandleArgument — o piso é trusted e a call resolveu ao menos um handle untrusted
+	// nos seus argumentos. É a única proveniência que uma regra de fluxo pode autorizar sobre
+	// contexto untrusted, e só para os destinos que a política nomear.
+	ProvenanceHandleArgument = "handle_argument"
+	// ProvenanceContext — o piso já era untrusted, por qualquer razão.
+	ProvenanceContext = "context"
+)

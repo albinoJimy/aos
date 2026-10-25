@@ -24,6 +24,11 @@ var (
 	// ErrEmptyRunID — a [Activity] não trouxe run_id. É metade da idempotency key
 	// (run_id:step_id) e o stream do Event Store — sem ele não há identidade durável.
 	ErrEmptyRunID = errors.New("activity: run_id vazio")
+	// ErrBadAuthorizationProvenance — [Activity.AuthorizationProvenance] fora do vocabulário
+	// fechado (AOS-556). Recusa-se na validação e não se lê como «sem isenção»: desde a decisão
+	// do dono de 2026-10-25 uma isenção do gate de taint depende deste valor, e um valor que
+	// ninguém reconhece não deve chegar a um classificador que decide por igualdade de strings.
+	ErrBadAuthorizationProvenance = errors.New("activity: authorization_provenance fora do vocabulario (clean|handle_argument|context, ou vazio)")
 
 	// ErrEmptyStepID — a [Activity] não trouxe step_id. É metade da idempotency key e a
 	// âncora de estabilidade entre execução, retry e replay (AOS-014).

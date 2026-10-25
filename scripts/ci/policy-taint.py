@@ -72,6 +72,36 @@ TAINT_CLAUSE_NOSPACE = 'context.taint!="untrusted"'
 LOCAL_RUN_WRITE_CAPS = {"cap:artifact.write"}
 TAINT_EXEMPT_LOCAL_RUN_WRITE = "local_run_write"
 
+# AS DUAS FORMAS NOVAS DA POLÍTICA DE FLUXO DE DADOS (AOS-556; ADR-044 §2.6 e §2.8, decisão do dono
+# de 2026-10-25 de PARTIR a `allow_fs_read` por classe de destino).
+#
+# Ambas valem SÓ se a regra constranger a classe de destino como conjunct de topo. Sem essa
+# exigência, a anotação numa regra que não nomeia o destino isentava TODA a capability — incluindo
+# a leitura com egress externo, que é precisamente o que a partição existe para separar. É o mesmo
+# buraco que a revisão do AOS-549 fechou do lado da cabeça, pelo outro lado.
+#
+# (1) LEITURA LOCAL: `egress: none`, `mutation: none`, `reversibility: reversible`, os três
+#     explícitos no registo de tools. Não sai nem muda nada, pelo que é permitida também com o
+#     contexto untrusted (emenda de 2026-10-19 ao ADR-034). A regra NÃO tem a cláusula de taint, e
+#     diz porquê na anotação.
+LOCAL_READ_CAPS = {"cap:fs.read"}
+TAINT_EXEMPT_LOCAL_READ = "local_read"
+
+# (2) LEITURA COM EGRESS EXTERNO: o conteúdo sai para um terceiro que não muda nada no mundo (o
+#     fornecedor de um modelo). É a REGRA DE FLUXO, e a única forma em que uma DISJUNÇÃO é aceita
+#     neste gate: permitida com contexto limpo, OU com contexto untrusted quando a proveniência é
+#     o handle que a própria call consome. Num run com media o piso já é untrusted e a proveniência
+#     é `context`, pelo que os dois lados falham e a call é negada — é o controlo negativo da fase.
+#
+#     A forma é LITERAL. Não se aceita a disjunção numa cabeça livre, nem com `unless`, nem com
+#     outro atributo, nem com os lados trocados por outra condição: o parser compara byte a byte
+#     sem espaços. Uma regra de fluxo que precise de outra forma precisa de uma entrada nova aqui,
+#     revista, e não de uma excepção mais larga.
+EXTERNAL_READ_CAPS = {"cap:fs.read"}
+FLOW_ANNOTATION = "flow_from_handle"
+FLOW_DESTINATION = "external_read"
+FLOW_CLAUSE_NOSPACE = '(context.taint!="untrusted"||context.provenance=="handle_argument")'
+
 
 def strip_cedar_comments(text: str) -> str:
     """
@@ -113,10 +143,20 @@ def strip_cedar_comments(text: str) -> str:
     return "".join(out)
 
 
-def _skip_to_top_level_semicolon(text: str, i: int) -> int:
-    """A partir de `i`, avança até ao `;` de topo (depth 0), respeitando
-    aninhamento `{}`/`()`/`[]` e strings. Devolve o índice do `;` (ou fim)."""
-    depth = 0
+def _skip_to_top_level_semicolon(text: str, i: int, depth: int = 0) -> int:
+    """A partir de `i`, avança até ao `;` de topo, respeitando aninhamento
+    `{}`/`()`/`[]` e strings. Devolve o índice do `;` (ou fim).
+
+    `depth` é a profundidade JÁ ABERTA em `i`, e o chamador tem de a declarar (AOS-556). O
+    [parse_permits] entra DEPOIS do `(` da cabeça do permit, pelo que entra a 1: com `depth=0` o
+    `)` da cabeça levava a contagem a -1, o `};` do `when` a -1 também, e o `;` do próprio permit
+    NUNCA era visto como de topo — o corpo devolvido absorvia as regras SEGUINTES até calhar um
+    `;` a zero.
+
+    Era fail-closed e não fail-open (o `when` lido é sempre o PRIMEIRO, logo a conformidade era
+    julgada na regra certa), mas vetava a excepção de uma regra por causa de um `||` de outra: a
+    excepção da escrita local do run só funcionava por ser a ÚLTIMA regra do ficheiro. Apareceu
+    quando o AOS-556 pôs uma regra com disjunção depois de outra com anotação."""
     n = len(text)
     while i < n:
         c = text[i]
@@ -164,7 +204,7 @@ def parse_permits(text: str):
                 anns[nome] = valor
         pid = anns.get("id")
         i = m.end()
-        end = _skip_to_top_level_semicolon(text, i)
+        end = _skip_to_top_level_semicolon(text, i, depth=1)  # `i` e DEPOIS do `(` da cabeca
         permits.append((pid, text[i:end], anns))
     return permits
 
@@ -273,6 +313,59 @@ def _top_level_and_conjuncts(s: str):
     return parts
 
 
+def _conjunct_presente(wb: str, alvo: str) -> bool:
+    """True sse `alvo` (comparado sem espaços) é um conjunct AND de TOPO de `wb`."""
+    a = re.sub(r"\s+", "", alvo)
+    return any(re.sub(r"\s+", "", c) == a for c in _top_level_and_conjuncts(wb))
+
+
+def permit_constrange_destino(body: str, classe: str) -> bool:
+    """True sse o permit exige `context.destination == "<classe>"` como conjunct AND de topo.
+
+    É a amarra das duas formas novas (AOS-556): a anotação diz a INTENÇÃO, e esta cláusula é o que
+    a torna verdadeira. Sem ela a anotação isentaria toda a capability, e a partição da
+    `allow_fs_read` por destino não separava nada."""
+    wb = _when_body(body)
+    if wb is None:
+        return False
+    return _conjunct_presente(wb, 'context.destination=="%s"' % classe)
+
+
+def acao_do_permit_de_fluxo(body: str):
+    """A capability da CABEÇA de um permit de FLUXO, ou None.
+
+    Como [acao_do_permit], com uma diferença e só uma: aceita a disjunção, e aceita-a SÓ na forma
+    literal de [FLOW_CLAUSE_NOSPACE], como UM conjunct de topo, e com mais nenhum `||` em todo o
+    corpo. `unless` continua a desqualificar — uma regra de fluxo tem de se ler de uma vez."""
+    depth, fim = 0, None
+    for i, ch in enumerate(body):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0:
+                fim = i
+                break
+            depth -= 1
+    if fim is None:
+        return None
+    cabeca, resto = body[:fim], body[fim + 1 :]
+    m = re.fullmatch(r'\s*principal\b[^,]*,\s*action\s*==\s*Action::"([^"]+)"\s*,\s*resource\b[^,]*', cabeca)
+    if not m or re.search(r"\bunless\b", resto):
+        return None
+    wb = _when_body(body)
+    if wb is None:
+        return None
+    conjuncts = _top_level_and_conjuncts(wb)
+    alvo = re.sub(r"\s+", "", FLOW_CLAUSE_NOSPACE)
+    de_fluxo = [c for c in conjuncts if re.sub(r"\s+", "", c) == alvo]
+    if len(de_fluxo) != 1:
+        return None
+    # Nenhum OUTRO `||` em todo o corpo: a única disjunção do permit é a da forma de fluxo.
+    if resto.count("||") != 1:
+        return None
+    return m.group(1)
+
+
 def permit_cumpre_taint(body: str) -> bool:
     """True sse o permit exige `context.taint != "untrusted"` como um conjunct AND
     de topo do seu `when {}` — a única colocação que garante que o permit NÃO
@@ -355,16 +448,48 @@ def main() -> int:
     for pid, body, anns in permits:
         if permit_cumpre_taint(body):
             continue  # cumpre — a cláusula é conjunct AND de topo do `when {}`
-        if "taint_exempt" in anns:
-            acao = acao_do_permit(body)
-            if anns["taint_exempt"] == TAINT_EXEMPT_LOCAL_RUN_WRITE and acao in LOCAL_RUN_WRITE_CAPS and pid is not None:
-                continue  # a excepção da escrita local do run (AOS-549), anotada na política assinada
+        if FLOW_ANNOTATION in anns:
+            acao = acao_do_permit_de_fluxo(body)
+            if (
+                anns[FLOW_ANNOTATION] == FLOW_DESTINATION
+                and acao in EXTERNAL_READ_CAPS
+                and pid is not None
+                and permit_constrange_destino(body, FLOW_DESTINATION)
+            ):
+                continue  # a regra de FLUXO (AOS-556), anotada na política assinada
             violations.append(
                 (
                     pid or "<anonimo>",
-                    f'{POLICY_REL}: @taint_exempt("{anns["taint_exempt"]}") em `{acao}` — a excepção só vale '
-                    f'como @taint_exempt("{TAINT_EXEMPT_LOCAL_RUN_WRITE}"), com @id, numa das capabilities de '
-                    f"escrita local do run ({', '.join(sorted(LOCAL_RUN_WRITE_CAPS))}) — AOS-549",
+                    f'{POLICY_REL}: @{FLOW_ANNOTATION}("{anns[FLOW_ANNOTATION]}") em `{acao}` — a regra de fluxo '
+                    f'só vale como @{FLOW_ANNOTATION}("{FLOW_DESTINATION}"), com @id, numa das capabilities de '
+                    f"leitura com egress externo ({', '.join(sorted(EXTERNAL_READ_CAPS))}), com "
+                    f'`context.destination == "{FLOW_DESTINATION}"` como conjunct de topo e com a disjunção '
+                    f"EXACTAMENTE na forma `{FLOW_CLAUSE_NOSPACE}` — AOS-556, ADR-044 §2.8",
+                )
+            )
+            continue
+        if "taint_exempt" in anns:
+            acao = acao_do_permit(body)
+            valor = anns["taint_exempt"]
+            if pid is not None and (
+                (valor == TAINT_EXEMPT_LOCAL_RUN_WRITE and acao in LOCAL_RUN_WRITE_CAPS)
+                or (
+                    valor == TAINT_EXEMPT_LOCAL_READ
+                    and acao in LOCAL_READ_CAPS
+                    and permit_constrange_destino(body, TAINT_EXEMPT_LOCAL_READ)
+                )
+            ):
+                continue  # escrita local do run (AOS-549) ou leitura local (AOS-556), na política assinada
+            violations.append(
+                (
+                    pid or "<anonimo>",
+                    f'{POLICY_REL}: @taint_exempt("{valor}") em `{acao}` — a excepção só vale como '
+                    f'@taint_exempt("{TAINT_EXEMPT_LOCAL_RUN_WRITE}") numa das capabilities de escrita local do '
+                    f"run ({', '.join(sorted(LOCAL_RUN_WRITE_CAPS))}), ou como "
+                    f'@taint_exempt("{TAINT_EXEMPT_LOCAL_READ}") numa das de leitura local '
+                    f"({', '.join(sorted(LOCAL_READ_CAPS))}) e com "
+                    f'`context.destination == "{TAINT_EXEMPT_LOCAL_READ}"` como conjunct de topo — '
+                    f"AOS-549, AOS-556",
                 )
             )
             continue

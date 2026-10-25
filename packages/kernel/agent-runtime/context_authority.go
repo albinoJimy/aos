@@ -1,6 +1,7 @@
 package agentruntime
 
 import (
+	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 	"github.com/aos-ref/kernel/reference-monitor/taint"
 )
 
@@ -226,3 +227,27 @@ func (w *authorityWindow) authority() taint.Label { return w.label }
 // floor é o PISO da autoridade NESTE momento — o rótulo que a autoridade por argumento não pode
 // levantar ([SegmentFloor]). Fora de um layout por handle é igual a [authorityWindow.authority].
 func (w *authorityWindow) floor() taint.Label { return w.piso }
+
+// provenienciaDaCall deriva a PROVENIÊNCIA do untrusted de uma call (AOS-556, ADR-044 §2.3) dos
+// dois valores que o [Runtime] tem em mãos no sítio da re-junção, e só lá: o `piso` do turno, e o
+// rótulo que a reescrita por argumento devolveu.
+//
+// O PISO DOMINA. Se ele já era untrusted — media projectada para o modelo, um `tool_error`, a
+// memória, um steer —, a proveniência é [referencemonitor.ProvenanceContext], qualquer que seja o
+// que a call consuma nos argumentos. É o que preserva a decisão do dono de 2026-10-23 («num run com
+// media a fase R2 não levanta nada») SEM a política de fluxo ter de saber o que é media: ela decide
+// por esta etiqueta, e nunca por uma lista de kinds de segmento.
+//
+// FORA DE UM LAYOUT POR HANDLE o piso É a autoridade do contexto, pelo que um contexto untrusted dá
+// `context` e um contexto limpo dá `clean` — e nenhuma regra de fluxo se aplica a nenhum dos dois.
+// A etiqueta existe em todos os layouts e não muda decisão nenhuma onde não há handles.
+func provenienciaDaCall(piso, daReescrita taint.Label) string {
+	switch {
+	case piso.IsUntrusted():
+		return referencemonitor.ProvenanceContext
+	case daReescrita.IsUntrusted():
+		return referencemonitor.ProvenanceHandleArgument
+	default:
+		return referencemonitor.ProvenanceClean
+	}
+}

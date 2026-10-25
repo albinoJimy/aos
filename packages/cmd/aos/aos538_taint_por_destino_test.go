@@ -98,6 +98,12 @@ func TestAOS538_ManifestoDosDemos_WebPostContinuaNegado(t *testing.T) {
 	// A doc_read dos demos NÃO declara `reversibility` — um eixo implícito —, pelo que fica com a
 	// regra da capability e continua negada. É o fail-closed da regra a funcionar sobre um
 	// manifesto real: só os três eixos explícitos libertam.
+	//
+	// O AOS-556 chegou a declarar o eixo, e a revisão adversarial mostrou que era um ALARGAMENTO
+	// VIVO entregue sob um ticket que diz «desligado por omissão»: com a 1.1.0 em vigor, declarar
+	// o eixo faz a segunda leitura de um run passar de DENY a PERMIT nos demos, hoje. A exigência
+	// dos três eixos pertence à CERIMÓNIA (a 1.2.0 nega `unknown`), e está na nota da política
+	// candidata — não a esta fatia.
 	if dec := got["doc_read"]; dec.Effect != rm.EffectDeny || dec.DeniedBy != "taint" {
 		t.Fatalf("doc_read dos demos (eixo implicito) devia continuar NEGADA pelo taint, veio %s/%q", dec.Effect, dec.DeniedBy)
 	}

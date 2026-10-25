@@ -571,6 +571,10 @@ services:
       AOS_PLAN_INPUT_DEPOIS_DO_PRIMEIRO_TURNO: "${AOS_PLAN_INPUT_DEPOIS_DO_PRIMEIRO_TURNO:-}"
       # AOS-546: o modelo do run vê media (off por omissão). Ver .env.example.
       AOS_MEDIA_NO_TURNO: "${AOS_MEDIA_NO_TURNO:-}"
+      # AOS-556: HABILITA o layout por handle (fase R2). Vazio => ausente => off, e nenhum run
+      # pode pedi-lo. Habilitar nao move run nenhum: quem escolhe e o campo conteudo_por_handle
+      # do POST /runs, e um no que nao habilite recusa-o com 400.
+      AOS_CONTEUDO_POR_HANDLE: "${AOS_CONTEUDO_POR_HANDLE:-}"
       # AOS-548: o armazém de artefactos do run (vazio ⇒ desligado). Ver .env.example.
       AOS_ARTIFACT_DIR: "${AOS_ARTIFACT_DIR:-}"
       AOS_ARTIFACT_MAX_BYTES: "${AOS_ARTIFACT_MAX_BYTES:-}"
