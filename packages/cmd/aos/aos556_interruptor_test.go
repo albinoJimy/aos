@@ -1,14 +1,18 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
+	"github.com/aos-ref/kernel/reference-monitor/taint"
 )
 
 // O INTERRUPTOR DA 1.8.0, NAS DUAS VIAS (AOS-556, ADR-044 §2.9; decisão do dono de 2026-10-25).
@@ -149,5 +153,83 @@ func TestAOS556_SubmissaoRecusadaSemHabilitacao(t *testing.T) {
 	})
 	if rec2.Code != http.StatusCreated {
 		t.Fatalf("o mesmo pedido SEM o campo: %d %s, quero 201", rec2.Code, rec2.Body.String())
+	}
+}
+
+// A PREMISSA DA TERCEIRA ISENÇÃO É UM EIXO DO REGISTO, NÃO UMA AFIRMAÇÃO (AOS-556, observação (a)
+// da revisão de segurança).
+//
+// O ADR afirmava que a condição `!derivesEgress` garante que o destino é fixado pelo CÓDIGO da
+// tool. O que ela confere são dois campos DECLARADOS pelo operador — o prefixo da capability e o
+// `resource_type`. O manifesto `comHost` abaixo passa-a e deixa o MODELO nomear o destino: era uma
+// afirmação num documento a servir de razão para ninguém verificar.
+//
+// A PRIMEIRA CORRECÇÃO FOI PIOR, e fica registada: um validador de arranque que recusasse a FORMA
+// (`external_read` sem bloco `modelo`) proibia um manifesto legítimo — uma tool que sai, não muda
+// nada e não é um modelo —, e partia seis testes que usam essa forma de propósito. O eixo
+// `FixedDestination` não proíbe forma nenhuma: só a isenção é que o exige.
+func TestAOS556_IsencaoExigeODestinoFixadoNoCodigoDaTool(t *testing.T) {
+	destinosDe := func(t *testing.T, corpo string) referencemonitor.ToolDestinations {
+		t.Helper()
+		f := filepath.Join(t.TempDir(), "tools.json")
+		if err := os.WriteFile(f, []byte(corpo), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("AOS_MODEL_TOOLS", f)
+		d, err := toolDestinationsFromEnv()
+		if err != nil {
+			t.Fatalf("o manifesto tinha de carregar (a forma e legitima): %v", err)
+		}
+		return d
+	}
+
+	const comHost = `[{"name":"doc_fetch","description":"d","parameters":{"type":"object","properties":{"host":{"type":"string"}},"required":["host"]},` +
+		`"capability":"cap:doc.fetch","resource_type":"file","resource_value":"https://{host}/x","resource_region":"eu",` +
+		`"egress":"external","mutation":"none","reversibility":"reversible"}]`
+
+	call := referencemonitor.Call{
+		RunID: "run-556-fix", StepID: "s1", ToolID: "doc_fetch", Capability: "cap:doc.fetch",
+		Resource:  referencemonitor.Resource{Type: "file", Value: "https://evil.example/x", Region: "eu"},
+		Principal: referencemonitor.Principal{NHIID: "nhi:a", Authority: []string{"cap:doc.fetch"}},
+		Context: referencemonitor.CallContext{
+			Taint: taint.Untrusted.String(), TaintProvenance: referencemonitor.ProvenanceHandleArgument,
+		},
+	}
+	gate := referencemonitor.NewTaintGate(privilegedComDestinos(
+		referencemonitor.NewStaticPrivilegedSet("cap:doc.fetch"), destinosDe(t, comHost)))
+	res, err := gate.Evaluate(context.Background(), &call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Decision != referencemonitor.HookDeny {
+		t.Fatalf("uma tool SEM destino fixado no codigo foi isentada: %v (%s) — o modelo nomeava o destino no resource_value", res.Decision, res.Reason)
+	}
+	if call.Context.TaintPrivilege == referencemonitor.TaintPrivilegeFlowByHandle {
+		t.Fatal("a razao carimbada foi a do fluxo: a isencao concedeu-se sem o destino fixado")
+	}
+
+	// NÃO-VACUIDADE: o manifesto de PRODUÇÃO declara `external_read` COM o bloco `modelo` na
+	// `ocr_read` e na `video_read`, logo o eixo é verdadeiro e a isenção concede-se. Sem este caso,
+	// o deny acima passaria com um eixo que fosse sempre falso.
+	prod, rerr := os.ReadFile("../../../deploy/server/model-tools/tools.json")
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	ocr := referencemonitor.Call{
+		RunID: "run-556-fix", StepID: "s1", ToolID: "ocr_read", Capability: "cap:fs.read",
+		Resource:  referencemonitor.Resource{Type: "file", Value: "doc://x", Region: "eu"},
+		Principal: referencemonitor.Principal{NHIID: "nhi:a", Authority: []string{"cap:fs.read"}},
+		Context: referencemonitor.CallContext{
+			Taint: taint.Untrusted.String(), TaintProvenance: referencemonitor.ProvenanceHandleArgument,
+		},
+	}
+	gateProd := referencemonitor.NewTaintGate(privilegedComDestinos(
+		referencemonitor.NewStaticPrivilegedSet("cap:fs.read"), destinosDe(t, string(prod))))
+	resProd, err := gateProd.Evaluate(context.Background(), &ocr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resProd.Decision != referencemonitor.HookAllow || ocr.Context.TaintPrivilege != referencemonitor.TaintPrivilegeFlowByHandle {
+		t.Fatalf("a ocr_read de PRODUCAO tinha de ser isentada pelo fluxo: %v / %q", resProd.Decision, ocr.Context.TaintPrivilege)
 	}
 }

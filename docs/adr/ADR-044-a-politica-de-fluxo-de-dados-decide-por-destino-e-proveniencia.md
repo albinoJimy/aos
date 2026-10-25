@@ -252,13 +252,27 @@ e o gate ganha uma terceira isenção — a primeira que RELAXA a invariante **P
 1. **o destino declarado é `external_read`** — o operador declarou, no registo trusted, que a
    tool sai para fora e não muda nada, com os três eixos explícitos. Um eixo implícito dá
    `unknown` e não isenta;
-2. **a capability e o recurso da call NÃO denunciam rede** (`!derivesEgress`). É esta a condição
-   que torna a isenção segura, e a que a formulação ingénua esquecia: uma tool `cap:http.post`
-   com `mutation: none` e reversível **também** classifica `external_read`, e isentá-la deixava
-   uma injecção exfiltrar para um host que **ela** nomeia. Com esta condição o destino é fixado
-   pelo **código** da tool — o Model Gateway do nó, na `ocr_read` e na `video_read` — e não por
-   um argumento do modelo. É a diferença entre «os dados saem» e «os dados saem para onde o
-   atacante disser»;
+2. **a capability e o recurso da call NÃO denunciam rede** (`!derivesEgress`), **e o registo de
+   tools declara o destino no código da tool** — imposto no arranque por `validarLeituraExterna`.
+   É esta a condição que torna a isenção segura, e a que a formulação ingénua esquecia: uma tool
+   `cap:http.post` com `mutation: none` e reversível **também** classifica `external_read`, e
+   isentá-la deixava uma injecção exfiltrar para um host que **ela** nomeia.
+
+   **A segunda metade desta condição é correcção da revisão de segurança, e vale registar
+   porquê.** A primeira versão afirmava que o `!derivesEgress` garantia que «o destino é fixado
+   pelo código da tool». Não garantia: o que ele confere são dois campos DECLARADOS pelo
+   operador — o prefixo da capability e o `resource_type`. Um manifesto com `capability:
+   "cap:doc.fetch"` (prefixo que consta dos locais provados), `resource_type: "file"`,
+   `resource_value: "https://{host}/x"` e os três eixos de uma leitura externa passava as três
+   condições e deixava o **modelo** nomear o destino. Era uma afirmação num documento a servir de
+   razão para ninguém verificar.
+
+   Passa a ser IMPOSTA, no molde exacto do que o repositório já tinha para uma consequência **mais
+   fraca** — `validateResourceSensitivity`, que exige o bloco `modelo` e proíbe `args_from` pelo
+   achado M-1 do AOS-539: uma tool que classifique `external_read` tem de ter o bloco `modelo` e
+   **não** ter bloco `sandbox`, ou o nó não arranca. Com isso o destino é mesmo o Model Gateway do
+   nó, e a diferença entre «os dados saem» e «os dados saem para onde o atacante disser» é
+   estrutural em vez de documental;
 3. **a proveniência é `handle_argument`** — o untrusted é o handle que esta call consome, e não
    outra coisa que o modelo já viu. Num run com media o piso já é untrusted, a proveniência é
    `context`, e nada se isenta: **o controlo negativo do dono vem de graça desta condição.**
@@ -342,6 +356,25 @@ interruptor desligado — a omissão — a isenção nunca dispara.
 
 ---
 
+### 2.11 O anúncio `first_turn_trusted` passa a ter uma premissa que o nó já não cumpre na 1.8.0
+
+Observação da revisão de segurança, abaixo do limiar de achado e registada porque ninguém a
+re-derivou. O nó anuncia `first_turn_trusted` quando nenhuma tool de efeito escapa ao gate
+(`toolsDeEfeitoForaDoGate`), e o `aos-orq` usa esse anúncio para relaxar a regra P4 do validador
+do plano, com a justificação escrita de que «o nó só as deixa pedir antes de ver esse material
+**e nega-as depois**».
+
+Num run da 1.8.0 com proveniência de handle, a segunda metade dessa frase deixou de ser verdade
+para a classe `external_read`. O desfecho é o que esta decisão ratifica — conteúdo a sair para o
+fornecedor do modelo sem aprovação por chamada —, pelo que **não é um resultado não-autorizado**;
+o que mudou é a premissa com que o orquestrador aceita o plano. A sonda do anúncio não o observa,
+porque constrói a `Call` com a proveniência vazia.
+
+**Fica declarado e não é fechado aqui:** fechá-lo é fazer a sonda conhecer a proveniência, o que
+muda o que o `aos-orq` aceita — pertence ao ticket do planeador, não a esta fatia.
+
+---
+
 ## 5. Resíduos declarados
 
 1. **RESOLVIDO — decisão do dono, 2026-10-25: «aceito a decisão, ensina a coordenada ao gate».**
@@ -415,8 +448,21 @@ interruptor desligado — a omissão — a isenção nunca dispara.
    servidor.
 3. **Decidir, na mesma cerimónia:** o R8 do ADR-034 (a região do `allow_http_post`) e se
    `cap:http.post` fica sempre atrás de confirmação humana.
-4. **A prova em produção:** um plano **sem media** em que o nó 2 usa uma tool de leitura externa
-   sobre o que o nó 1 leu, sem aprovação humana por chamada — **mais o controlo negativo**, o mesmo
+4. **A prova em produção, e ela NÃO é possível com as tools de hoje** — achado da revisão de
+   segurança, confirmado por medição. A `ocr_read` e a `video_read` têm **um só parâmetro**
+   (`doc_id`), e ele preenche o `resource_value` (`doc://{doc_id}`), logo é um **slot** — e a
+   resolução de handles **recusa** uma referência num slot do recurso (`handleCausaSlot`), porque
+   o recurso auditado e o recurso tocado deixariam de ser o mesmo. **Nenhum handle chega a essas
+   duas tools.**
+
+   **Consequência: a isenção está correcta e não tem hoje tool que a exerça.** Abre uma decisão,
+   não um caminho — e o caminho chega com uma tool cujo argumento de CONTEÚDO não seja o slot do
+   recurso, isto é, com a `model_invoke` genérica da fase **R3**. Não é um defeito desta fase: é
+   o que a torna segura de fundir, e é a razão pela qual o critério 8 do AOS-556 (a prova em
+   produção) não pode ser feito antes da R3.
+
+   Quando houver tool: um plano **sem media** em que o nó 2 usa uma tool de leitura externa sobre
+   o que o nó 1 leu, sem aprovação humana por chamada — **mais o controlo negativo**, o mesmo
    plano com media, que tem de continuar negado.
 
 ---

@@ -78,7 +78,9 @@ func aos556PDPDaCandidata(t *testing.T) *pdp.PDP {
 func aos556Destinos() referencemonitor.ToolDestinations {
 	return referencemonitor.NewToolDestinations(map[string]referencemonitor.ToolDestination{
 		"doc_read": {Capability: "cap:fs.read", Egress: "none", Mutation: "none", Reversibility: "reversible"},
-		"ocr_read": {Capability: "cap:fs.read", Egress: "external", Mutation: "none", Reversibility: "reversible"},
+		// O `FixedDestination` e o que o registo do no deriva de uma tool com bloco `modelo` e sem
+		// `sandbox`: o destino e o Model Gateway, fixado pelo codigo da tool e nao por um argumento.
+		"ocr_read": {Capability: "cap:fs.read", Egress: "external", Mutation: "none", Reversibility: "reversible", FixedDestination: true},
 		"web_post": {Capability: "cap:http.post", Egress: "external", Mutation: "mutates", Reversibility: "irreversible"},
 		// E a armadilha que a condição (2) da isenção fecha: uma tool de REDE que o operador
 		// declara como leitura externa. A classe dá `external_read`, e a isenção NÃO a apanha,

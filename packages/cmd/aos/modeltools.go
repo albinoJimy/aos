@@ -405,6 +405,12 @@ func toolDestinationsFromEnv() (referencemonitor.ToolDestinations, error) {
 			Mutation:      s.Mutation,
 			Reversibility: s.Reversibility,
 			Sensitivity:   s.ResourceSensitivity,
+			// AOS-556: o destino é FIXADO PELO CÓDIGO da tool quando ela declara o bloco `modelo`
+			// (o efeito é uma chamada ao Model Gateway do nó, ADR-042) e NÃO declara `sandbox` (o
+			// que um comando faz com os argumentos não é o destino declarado — a razão do achado
+			// M-1 do AOS-539). É a única forma em que a terceira isenção do gate de taint se
+			// concede: ver [referencemonitor.DestinationPrivileged.ClassifyCall].
+			FixedDestination: s.Modelo != nil && s.Sandbox == nil,
 		}
 	}
 	return referencemonitor.NewToolDestinations(m), nil
