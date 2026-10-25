@@ -2674,7 +2674,7 @@ política ligada é que a separação muda alguma decisão.
 | Estimativa | M |
 | Dependências | AOS-551 (o mecanismo, desligado). **Cerimónia do dono: regras Cedar novas e re-assinatura do bundle.** Nasce com um **ADR próprio** — o ADR-038 §3 exigiu-o ao rejeitar «o nó consumidor resolve a referência», e o número atribui-se na emissão |
 | Responsável sugerido | Arquitecto de Plataforma + dono (assinatura) |
-| Documentos de referência | `docs/reports/desenho-r2-entradas-por-handle-2026-10-23.md` (§4.2 e §6); `docs/adr/ADR-034-autorizacao-derivada-do-contexto.md` (§3 alternativa E); `docs/governance/REGISTO-Deferimentos.md` (DEF-806) |
+| Documentos de referência | **`docs/adr/ADR-044-a-politica-de-fluxo-de-dados-decide-por-destino-e-proveniencia.md`** — o ADR próprio que este ticket exigia, com as duas incógnitas medidas e a decisão do dono de partir a `allow_fs_read`; `docs/reports/desenho-r2-entradas-por-handle-2026-10-23.md` (§4.2 e §6); `docs/adr/ADR-034-autorizacao-derivada-do-contexto.md` (§3 alternativa E); `docs/governance/REGISTO-Deferimentos.md` (DEF-806) |
 
 ### Contexto
 
