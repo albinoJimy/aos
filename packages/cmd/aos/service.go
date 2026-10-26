@@ -869,10 +869,19 @@ func (s *NodeService) submitObservando(ctx context.Context, goal agentruntime.Go
 		// (2-ter-ter) UM `run_id` QUE JÁ EXISTE (AOS-520). O estado durável que se acabou de ler não é
 		// o inicial, não é suspenso e não é terminal: o run está EM CURSO — deu turnos, ou foi
 		// reclamado, e o nó caiu. Hospedá-lo por esta via é uma retoma por outro nome, e tem o
-		// contrato da retoma: confere-se o Goal com o que está SELADO para o run, e se este nó não o
-		// pode continuar a submissão é recusada AQUI, antes de hospedar — sem lease, sem quota, sem
-		// uma escrita. O run fica como estava. É neste caminho, e só neste, que se lê a história do
-		// run; um run novo (estado inicial) segue sem uma leitura a mais.
+		// contrato da retoma: o Goal é RECONSTITUÍDO do registo de retoma e, se este nó não o pode
+		// continuar com o que está selado — ou se o corpo não é o que está selado —, a submissão é
+		// recusada AQUI, antes de hospedar: sem lease, sem quota, sem uma escrita. O run fica como
+		// estava. É neste caminho, e só neste, que se lê a história do run; um run novo (estado
+		// inicial) segue sem uma leitura a mais.
+		//
+		// O QUE A CONFERÊNCIA COBRE, CAMPO A CAMPO, está em `aos559_rehospedagem_confere_o_selo.go`
+		// — e é lá que fica, porque é longo e tem uma razão medida por campo. Em resumo: o Goal sai
+		// do selo; a `Credential` é a fresca do corpo; o `Objective`, os `Inputs` e o aviso da
+		// tentativa são sobrepostos sem comparação (a ingestão redige, o selo substitui as
+		// referências, o nó decide o aviso); tudo o resto que o corpo forneça e divirja RECUSA.
+		// Até ao AOS-559 conferiam-se três campos — o alias, a marca e o digest — e o Goal era o
+		// DO CORPO com esses três sobrepostos.
 		//
 		// Sem máquina de estados composta o estado vem vazio e o run é tratado como novo: esse nó
 		// não tem como saber que o run existe (nem o sabia antes).
@@ -880,9 +889,37 @@ func (s *NodeService) submitObservando(ctx context.Context, goal agentruntime.Go
 			existente, gerr := s.node.goalDoRunExistente(ctx, goal)
 			if gerr != nil {
 				s.unreserve(rs)
-				s.log("POST de um run que ja existe RECUSADO antes de hospedar (AOS-520): run %q, estado duravel %q, causa=%s — nada foi escrito e o run fica como estava (recuperavel: reponha o perfil ou o registo em que o run esta fixado, ou retome-o num no que o sirva): %v",
-					runID, st, causaDoRunExistenteRecusado(gerr), gerr)
+				// O REMÉDIO É POR CAUSA, e não uma lista de três que só serve a um terço dos casos
+				// (achado da revisão): as recusas do AOS-559 não se resolvem repondo um perfil, e
+				// as do selo em falta não se resolvem de modo nenhum.
+				s.log("POST de um run que ja existe RECUSADO antes de hospedar (AOS-520/AOS-559): run %q, estado duravel %q, causa=%s — nada foi escrito e o run fica como estava: %s: %v",
+					runID, st, causaDoRunExistenteRecusado(gerr), remedioDoRunExistenteRecusado(gerr), gerr)
 				return gerr
+			}
+			// AOS-559: `rs.principal` e `rs.titular` foram calculados do Goal DO CORPO, acima, e não
+			// são recalculados aqui — nem precisam: o `Principal` e o `Subject` estão na classe
+			// «recusado se divergir», pelo que um corpo admitido traz os do selo. Quem mexer nessa
+			// classificação tem de mexer nisto, que é o que imputa a quota (2-quater) e o que
+			// indexa o desfecho por titular.
+			//
+			// OS RUNS PRODUTORES SÃO DO CORPO E DESCREVEM AS ENTRADAS DO CORPO, que acabam de ser
+			// descartadas — e [atravessarArestasDoPlano] indexa `goal.Inputs` POR eles. Com as
+			// entradas a vir do selo as duas listas deixam de ser do mesmo ciclo, e o resultado não
+			// é uma recusa de admissão: a travessia corre dentro do [NodeService.hostRun], cujo
+			// defer SELA O RUN `failed` — um comprimento diferente sai como `travessia_composicao`,
+			// e um comprimento igual re-atravessa entradas cujo conteúdo a primeira travessia já
+			// RESOLVEU (deixou de ser uma referência) e recusa. Uma re-submissão LEGÍTIMA E FIEL
+			// matava um run recuperável, que é o oposto do contrato desta via. A aresta foi
+			// atravessada na PRIMEIRA hospedagem e o seu resultado está no selo: uma re-hospedagem
+			// não a atravessa. É também a forma que as outras duas vias já têm (chegam com `nil`).
+			rs.runsProdutores = nil
+			// A DIVERGÊNCIA DO OBJECTIVO FICA ATRIBUÍDA, porque é o único campo que o corpo fornece,
+			// que alarga autoridade (entra no tail como CONFIÁVEL) e que esta conferência não pode
+			// comparar — o do selo está redigido pela ingestão e o do corpo é cru. Sem esta linha a
+			// única coisa silenciosa era exactamente a que mais interessa ver. Nem um nem outro
+			// texto vai ao log: o objectivo é input do utilizador.
+			if existente.Objective != goal.Objective {
+				s.log("POST de um run que ja existe (AOS-559): run %q — o `objective` do corpo NAO e o que esta selado e foi IGNORADO; o run continua com o objectivo SELADO. Os dois nao sao comparaveis nesta rota (a ingestao redige o selado, AOS-091/AOS-208), pelo que a divergencia e registada e nao recusada", runID)
 			}
 			goal = existente
 			rs.existente = true

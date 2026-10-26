@@ -80,12 +80,18 @@ package main
 // catálogo vivo (AOS-050/AOS-155): conferi-lo contra o catálogo recusaria um run que o `Run`
 // admite. Duas das três re-hospedagens chegam com as entradas já seladas — a retoma pela API e a
 // varredura de crash-resume repõem os `Inputs` do registo, com as referências —, pelo que
-// [haEntradasPorSelar] já as excluía. A TERCEIRA NÃO: um `POST /runs` com um `run_id` que JÁ EXISTE
-// e está em curso é admitido como retoma por outro nome (caso «(2-ter-ter)» do
-// [NodeService.submitObservando], AOS-520) e o Goal dele é o DO CORPO, com `Inputs` sem referência
-// ([Node.goalDoRunExistente] só toca no modelo e no perfil). Sem a bandeira, um operador que
-// tirasse uma tool do manifesto e reiniciasse o nó fazia essa re-submissão fechar `failed` num run
-// que o `Run` continuaria a servir do snapshot.
+// [haEntradasPorSelar] já as excluía. A TERCEIRA NÃO, quando isto se escreveu: um `POST /runs` com
+// um `run_id` que JÁ EXISTE e está em curso é admitido como retoma por outro nome (caso
+// «(2-ter-ter)» do [NodeService.submitObservando], AOS-520) e o Goal dele era o DO CORPO, com
+// `Inputs` sem referência. Sem a bandeira, um operador que tirasse uma tool do manifesto e
+// reiniciasse o nó fazia essa re-submissão fechar `failed` num run que o `Run` continuaria a servir
+// do snapshot.
+//
+// DESDE O AOS-559 A TERCEIRA VIA TAMBÉM CHEGA COM AS ENTRADAS SELADAS — o Goal dela é reconstituído
+// do registo de retoma, e o registo é escrito DEPOIS do selo —, pelo que [haEntradasPorSelar] a
+// excluiria agora por si. A BANDEIRA FICA: é ela que diz o que esta condição quer dizer, e fazê-la
+// depender do que outro ticket garante seria apoiar um portão numa coincidência. Se a terceira via
+// voltar a aceitar entradas do corpo, isto continua correcto sem ninguém se lembrar dele.
 //
 // O QUE ISSO DEIXA DE FORA, declarado: um run re-hospedado por essa via com um contrato impossível
 // continua a selar antes de o `Run` o recusar. Fechá-lo exigia conferir contra o snapshot durável,
