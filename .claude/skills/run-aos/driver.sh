@@ -96,7 +96,7 @@ bin_age() {
 # 9/9 VERDE sem exercitar uma linha do codigo alterado. MEDIDO a 2026-09-05 na validacao da
 # EPIC-23: smoke verde, binario com sete horas (de antes do epic inteiro) e nenhum dos banners
 # de postura novos (AOS-322, AOS-326) no serve.log; com `build` forcado, o mesmo smoke deu 9/9
-# E os tres banners apareceram. E grave porque a skill agentic-engineering §7 nomeia o smoke
+# E os tres banners apareceram. E grave porque a skill software-factory §1.7 nomeia o smoke
 # como a unica evidencia que conta para mudancas no wiring, nos banners de arranque e na
 # superficie HTTP — exactamente as que os testes unitarios nao apanham, e por isso exactamente
 # aquelas em que um binario obsoleto passa despercebido com tudo verde por cima de codigo velho.

@@ -3,6 +3,7 @@
 Lê este ficheiro quando estiveres a rever — o teu trabalho ou o de outro agente.
 
 - [O guião](#o-guião)
+- [Verificação do achado](#verificação-do-achado)
 - [Evidência antes de conclusão](#evidência-antes-de-conclusão)
 - [Regressão](#regressão)
 - [Padrões de defeito neste repositório](#padrões-de-defeito-neste-repositório)
@@ -49,6 +50,39 @@ vermelho. Um teste que passa nos dois estados não está a testar a alteração.
 
 ---
 
+## Verificação do achado
+
+Um reviewer instruído a encontrar problemas encontra problemas, haja-os ou não. Por isso o
+achado não é o fim da revisão — é o início da verificação.
+
+```text
+ACHADO → verificar contra o código e o canon → CONFIRMADO | PLAUSÍVEL | MORTO
+```
+
+| Veredicto | Significa | Destino |
+|---|---|---|
+| **CONFIRMADO** | reproduzi-o, ou a leitura do código não admite outra interpretação | entra no portão de integração |
+| **PLAUSÍVEL** | o mecanismo é real, a ocorrência não está demonstrada | relatório, com o que falta para decidir |
+| **MORTO** | o canon, um deferimento ou o próprio código desmentem-no | registo, com a evidência que o matou |
+
+**Só o `CONFIRMADO` gera trabalho.** Um achado por verificar que vira ticket produz exactamente
+o efeito contrário ao da revisão: ocupa a fábrica a fechar coisas que não estavam abertas.
+
+Um `CONFIRMADO` precisa de **cenário de falha concreto** — entradas e estado que levam ao
+resultado errado. Se não consegues escrever o cenário, o achado é `PLAUSÍVEL`, por convicto que
+estejas.
+
+**Calibração.** Neste repositório cerca de **dois terços das hipóteses adversariais morrem**
+contra o registo de deferimentos e os ADRs em vigor: o trabalho já estava deferido com eixo, ou
+a decisão já tinha sido tomada ao contrário. Se a tua revisão confirma quase tudo o que
+levanta, só procurou o óbvio; se não confirma quase nada, está a produzir ruído. E uma **caixa
+por marcar não é trabalho por fazer** — pode ser trabalho feito cuja caixa ninguém marcou.
+
+**O `MORTO` registra-se.** Sem isso, a mesma hipótese volta na próxima auditoria e paga-se
+outra vez a verificação — que é o custo que este veredicto existe para evitar.
+
+---
+
 ## Evidência antes de conclusão
 
 Cada afirmação relevante precisa de evidência nomeada.
@@ -63,9 +97,6 @@ EVIDÊNCIA:
 
 Cita testes **pelo nome da função**, não por ficheiro e linha: os números de linha derivam a
 cada edição e uma citação que aponta para o sítio errado é pior do que nenhuma.
-
-```text
-```
 
 Substitui isto:
 
@@ -134,6 +165,17 @@ composição condicional, verifica se o banner de arranque declara o estado real
 esquecer uma entrada na lista produz o mesmo silêncio que esquecer a chamada. Deriva a lista do
 registo único por onde tudo passa obrigatoriamente.
 
+**Rever a correcção, não só o diff.** Uma correcção a um achado pode abrir um defeito pior do
+que o original — trocar fatal por não-fatal muda quem limpa o que ficou a meio, e escolher o
+guarda mais largo «por ser fail-closed» já abriu uma regressão viva onde o estreito já estava
+garantido a montante. A correcção é código novo e passa pelo mesmo guião.
+
 **Banner que mente.** Os ~50 avisos de postura do arranque são a documentação operacional do
 nó. Se mudares o que um subsistema exige para compor e não actualizares a linha que o declara,
 o operador passa a ler uma afirmação falsa — e vai acreditar nela.
+
+---
+
+Um padrão novo não entra nesta lista antes de se ter perguntado se dava portão. A lista é o
+último recurso, não o primeiro: ver
+[`metricas-e-realimentacao.md`](metricas-e-realimentacao.md) §Um escape vira portão.

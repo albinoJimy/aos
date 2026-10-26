@@ -51,7 +51,7 @@ Uma task só integra quando **todas** fecham:
 [ ] Self-validation concluída
 [ ] Testes relevantes executados (nomeados, não "os testes")
 [ ] Revisão independente concluída
-[ ] Problemas críticos resolvidos — não adiados
+[ ] Achados CONFIRMADOS resolvidos — não adiados (os PLAUSÍVEIS vão ao relatório)
 [ ] Changeset auditado
 [ ] Dependências satisfeitas
 ```
@@ -169,6 +169,11 @@ Limitações conhecidas:
 Riscos residuais:
 - ...
 
+Indicadores:
+- Verde à primeira:        sim / não (e porquê)
+- Achados:                 N levantados → N confirmados → N plausíveis
+- Etapas saltadas:         nenhuma / as declaradas pelo veredicto (exit 3)
+
 Completude: COMPLETO / PARCIAL / NÃO VERIFICADO
 
 Estado final: DONE / NEEDS ATTENTION
@@ -198,6 +203,7 @@ Depois de fechar, actualiza o conhecimento quando houver mesmo o que registar:
 | Comportamento operacional importante | o banner de arranque em `packages/cmd/aos/`, e o runbook em `docs/` |
 | Armadilha de execução ou ambiente | `.claude/skills/run-aos/SKILL.md` §Gotchas |
 | Aprendizagem de uma falha | ADR, se mudou uma decisão; senão, o comentário no sítio onde a falha ia reaparecer |
+| **Defeito que escapou a um portão** | **um portão novo ou alargado** — ver [`metricas-e-realimentacao.md`](metricas-e-realimentacao.md) |
 
 Não registes ruído temporário, e não contradigas um ADR em vigor sem um ADR de supersessão
 explícito. Antes de reescrever conhecimento existente, confirma que a versão anterior deixou
