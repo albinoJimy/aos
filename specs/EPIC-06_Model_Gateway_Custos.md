@@ -5474,26 +5474,191 @@ apaga ficheiros desse espaço (ver o AOS-554).
 chamador. O que falha é a **integridade do run**, não a admissão: quem pode submeter aquele
 `run_id` pode mudar-lhe o conteúdo a meio.
 
+### Severidade, medida (2026-10-26)
+
+A ficha nasceu P2. A medição campo a campo mudou o eixo, e fica registada porque é ela que justifica
+o fecho: **dois dos onze campos não-conferidos ALARGAM autoridade**, e não é suposição.
+
+- O `Objective` entra no tail como **CONFIÁVEL** (`SegmentAuthority(TailObjective, …) → taint.Trusted`):
+  é o único texto de quem submete que entra trusted, e uma re-submissão punha-o num run que já tem
+  saída de tools untrusted no contexto.
+- `req.Tools` tem `json:"tools,omitempty"` e uma lista-branca **nil é SEM RESTRIÇÃO**
+  (`referencemonitor.RunAllowsTool`): um re-POST que simplesmente **omita** `tools` apagava a
+  lista-branca do run. Um run que é o trabalho de um nó de um plano arranca com a lista estreita que
+  o plano lhe pinou, e passava a poder chamar tudo o que o token do run autoriza — nunca acima do
+  token, pelo que é alargamento face ao **plano**, não bypass da mediação.
+
+E o `run_id` continuava o mesmo, e com ele a reserva de quota, o nível de autonomia, a residência
+selada e o log do run. O defeito está na **v0.1.69**, que é a que corre em produção.
+
+### Decisão: o corpo divergente é RECUSADO (e o `objective` e os `inputs` são IGNORADOS)
+
+A sobreposição pelo selo já torna a divergência inócua — o run corre com o que está selado. A recusa
+não é a defesa; é a **atribuição**, e é o molde que esta mesma porta já aplica em três sítios (o
+`conteudo_por_handle`, o `inputs[].from_run` e o `requires_first_turn_trusted`): aceitar o campo e
+ignorá-lo daria a quem submete a ideia de que o run mudou, «que seria a afirmação ao contrário».
+
+Duas excepções, com a razão **medida** e não suposta — ficam sobrepostas do selo, sem comparação:
+
+- o `Objective` do registo está **REDIGIDO** pela ingestão (AOS-091/AOS-208), que corre **depois**
+  desta conferência, e o do corpo é cru: não são comparáveis aqui, e correr a ingestão outra vez só
+  para comparar escreveria um segundo registo de audit. Ignorá-lo não é silêncio enganoso nesta
+  rota: um `POST /runs` de um `run_id` que o nó já conhece **já responde 201 uniforme por desenho**
+  (`isIdempotentResubmit`) — «o run_id é conhecido, nada mudou» é o que a resposta quer dizer;
+- os `Inputs` do registo trazem as **referências** que `selarEntradasDoPlano` cunhou, e o selo corre
+  **antes** do registo (`hostRun`): os do corpo vêm sem referência.
+
+O código HTTP é o **409** que a rota já usa para `ErrRunExistenteRecusado` — a mesma classe («o run
+existe e este nó não o pode continuar com o que está selado para ele»), com o corpo uniforme da rota
+e a causa só no log do operador. Não se inventou código novo; `tecnica/12_Contratos_de_Interface.md`
+não documenta os estados do `POST /runs`, pelo que a fonte é o contrato em código (`submitErrorStatus`).
+
 ### Critérios de Aceitação
 
-- [ ] A re-hospedagem pela via do `POST /runs` reconstitui o Goal do que está **selado** para o run
+- [x] A re-hospedagem pela via do `POST /runs` reconstitui o Goal do que está **selado** para o run
       — o registo de retoma, que já existe e já o tem —, e não do corpo do pedido. Decide-se no
       ticket se o corpo divergente é **recusado** (fail-closed, com a causa) ou **ignorado**, e
-      declara-se a escolha com a razão.
-- [ ] Um run sem registo de retoma (o nó não compôs `ResumeRecords`, ou o titular está vazio) não
+      declara-se a escolha com a razão. *(`Node.goalDoRunExistente` devolve
+      `registo.GoalWith(corpo.Credential)`; decisão e razão acima.)*
+- [x] Um run sem registo de retoma (o nó não compôs `ResumeRecords`, ou o titular está vazio) não
       passa a ser re-hospedável do corpo por omissão: a ausência do registo decide-se pelo lado
-      seguro, e isso fica dito.
-- [ ] O comentário do caso «(2-ter-ter)» deixa de prometer uma conferência do Goal que não faz; o
-      que a conferência cobre fica nomeado campo a campo.
-- [ ] Teste: um run em `running` re-submetido com `objective`, `inputs` e `tools` diferentes não
-      continua com os do corpo. Num layout por handle, não cunha handles novos.
-- [ ] A varredura de crash-resume e a retoma pela API continuam a repor o Goal como hoje — nenhuma
-      das duas regride.
+      seguro, e isso fica dito. *(**Duas** causas, porque o remédio é diferente:
+      `no_nao_sela_registo_de_retoma` quando o nó não compõe `ResumeRecords` — ele vive dentro do
+      four-eyes gate, que só existe com `AOS_APPROVERS`, enquanto a máquina de estados que diz que o
+      run está `running` é composta sempre —, e `sem_registo_de_retoma` quando o nó os compõe e este
+      run não tem. É o que as outras duas vias já fazem — a retoma pela API devolve
+      `ErrNoResumeRecord` e o crash-resume salta-o —, e por isso **não é «recuperável»**: um run sem
+      selo não é reconstituível por via nenhuma, e a recusa não cria o run preso, expõe-o. O log diz
+      exactamente isso, por causa, em vez de oferecer remédios que não se aplicam.)*
+- [x] O comentário do caso «(2-ter-ter)» deixa de prometer uma conferência do Goal que não faz; o
+      que a conferência cobre fica nomeado campo a campo. *(As três classes estão em
+      `packages/cmd/aos/aos559_rehospedagem_confere_o_selo.go`, com a razão por campo.)*
+- [x] Teste: um run em `running` re-submetido com `objective`, `inputs` e `tools` diferentes não
+      continua com os do corpo. Num layout por handle, não cunha handles novos. *(O `objective` é
+      medido no Goal que a hospedagem recebe; as `tools` e o resto são recusados pela porta, com
+      controlo positivo e controlo negativo da implementação anterior. Os `Inputs` passam a vir do
+      registo, já com as referências, pelo que `haEntradasPorSelar` é falso e o selo não cunha.)*
+- [x] A varredura de crash-resume e a retoma pela API continuam a repor o Goal como hoje — nenhuma
+      das duas regride. *(As duas chegam com `resuming=true`, que salta o bloco inteiro; suite do
+      `cmd/aos` verde com `-race`.)*
+
+### O que a revisão adversarial apanhou — na própria correcção
+
+Registado porque é o eixo que o fecho deste ticket não teria sem ele: **os dois bloqueantes eram da
+correcção, não do defeito.**
+
+1. **A substituição do Goal matava o run `failed`.** `rs.runsProdutores` é calculado do CORPO
+   (`inputs[].from_run`) e descreve as entradas DO CORPO — que passam a ser descartadas. E
+   `atravessarArestasDoPlano` indexa `goal.Inputs` **por eles**, dentro do `hostRun`, cujo defer
+   **sela o run `failed`**: um comprimento diferente saía como `travessia_arestas_incoerentes`, e um
+   comprimento igual re-atravessava entradas cujo conteúdo a primeira travessia já RESOLVEU (deixou
+   de ser uma referência) e recusava. Uma re-submissão **legítima e fiel** matava um run
+   recuperável, que é o oposto do contrato desta via. A aresta foi atravessada na primeira
+   hospedagem e o seu resultado está no selo: uma re-hospedagem não a atravessa, e os produtores são
+   descartados — a mesma forma que as outras duas vias já têm. Teste próprio, com controlo negativo
+   num run novo.
+2. **A obrigatoriedade do registo matava a via inteira num nó sem aprovadores**, sem o distinguir de
+   um acidente de um run. Daí as duas causas e os dois remédios (acima).
+
+E quatro achados importantes, todos de forma e todos corrigidos: o `ConteudoPorHandle` não existe no
+registo, pelo que conferi-lo contra o campo do selo só sabia **recusar** — confere-se contra o
+LAYOUT selado (`HasPlanInputsByHandle`), e a 1.8.0 só se alcança a pedido, pelo que a equivalência é
+exacta; o `CompletionRequires` é o único campo conferido com `omitempty` no registo, pelo que `[]`
+volta `nil` e um corpo com `completion_requires: []` divergia de si próprio (normaliza-se, e só
+quando as duas estão vazias); a razão escrita para ignorar o `Objective` estava errada (a ingestão
+volta a correr de qualquer modo) e a divergência passou a ficar **atribuída no log**, sem o texto de
+nenhum dos dois; e a classe «só do selo» deixou de copiar em silêncio — o corpo tem de trazer esses
+campos no valor-zero ou exactamente os selados.
+
+### Resíduos declarados
+
+- O `max_turns` é **clampado à porta** antes de chegar ao Goal, e o registo selou o valor clampado:
+  se o tecto (`AOS_MAX_TURNS`) mudar entre as duas hospedagens, uma re-submissão fiel diverge e é
+  recusada. Fail-closed e recuperável — o run fica `running` e repor o tecto volta a admiti-la.
+- Rodar o mandato ou a chave do mandato entre as duas hospedagens torna o run não re-hospedável por
+  esta via, porque o `Principal` é conferido. É a consequência gémea da que o `resume.go` já declara
+  para a retoma, e é deliberada.
+- O `Objective` divergente é **ignorado e registado**, não recusado: o do registo está redigido pela
+  ingestão e o do corpo é cru, e compará-los exigiria correr a ingestão sobre o do corpo — uma
+  segunda chamada, com o seu próprio registo de audit.
+- Num nó **sem `AOS_APPROVERS`** esta via deixa de admitir qualquer re-submissão de um run em curso.
+  É a decisão deste ticket e não um efeito lateral: nesse nó nenhum run é reconstituível por via
+  nenhuma, e o que a via fazia era reconstituí-lo do corpo.
+- A conferência **não lê** o snapshot `run.toolset.frozen`: é o mesmo limite que o AOS-557 declarou,
+  e o selo do registo cobre o que esta via precisa (a lista-branca, que o snapshot não tem).
 
 ### Fora de âmbito
 
 - O ciclo de vida do espaço de handles (AOS-554).
 - A conferência do perfil da rota e da fixação do modelo, que já existe e não muda.
+- A **reprodução** dos turnos já capturados: esta via não leva plano de replay, e é a outra metade
+  da promessa «tem o contrato da retoma». Achado ao fechar este ticket e aberto como **AOS-560**.
+
+---
+
+## AOS-560 — A re-hospedagem de um `run_id` em curso não leva plano de replay: os turnos já capturados voltam a interrogar o modelo
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 — Model Gateway e Custos |
+| Fase | Resíduo do AOS-520 |
+| Tipo | fix |
+| Prioridade | P2 |
+| Estimativa | S |
+| Dependências | AOS-559 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos/service.go` (`NodeService.submitObservando`, o caso «(2-ter-ter)», e o `replayPlanFrom(ctx)` em (4)); `packages/cmd/aos/resume.go`; `packages/cmd/aos/crash_resume.go` |
+
+### Contexto
+
+Achado ao fechar o AOS-559, e **fora do âmbito dele** — que é a ORIGEM dos campos do Goal, não a
+reprodução dos turnos.
+
+A terceira via de re-hospedagem (o `POST /runs` de um `run_id` cujo estado durável é `running`,
+AOS-520) declara, no comentário do caso «(2-ter-ter)», que «hospedá-lo por esta via é uma retoma por
+outro nome, e tem o contrato da retoma». Com o AOS-559 o Goal passou a ser o do selo, o que fecha
+metade dessa afirmação. **A outra metade continua aberta: esta via não leva plano de replay.**
+
+Medido: `withReplayPlan` é escrito em DOIS sítios, e nenhum é o `POST /runs` —
+`packages/cmd/aos/resume.go:380` (a retoma pela API) e `packages/cmd/aos/crash_resume.go:245` (a
+varredura). As duas calculam-no com `NodeService.replayPlanFor` antes de re-submeter, e o
+`submitObservando` só o re-anexa ao `runCtx` se ele vier no ctx de entrada
+(`packages/cmd/aos/service.go:950`). Pela terceira via não vem.
+
+Logo um run que deu N turnos e foi re-hospedado por `POST /runs` recomeça no turno 1 **ao vivo**:
+os turnos já capturados voltam a interrogar o modelo, em vez de serem reproduzidos das capturas.
+
+### Por medir (hipóteses, não factos)
+
+O que segue é consequência plausível da medição acima e **não foi verificado** — é o primeiro
+trabalho do ticket:
+
+- os `turn.recorded` da segunda execução deduplicam por `(run_id, step)`, pelo que o ledger não os
+  vê e nem o tecto por-run nem a quota por principal contam o gasto. É a MESMA forma que a revisão
+  do AOS-457 mediu para o run terminado re-submetido (20 re-submissões, 20 chamadas ao modelo, gasto
+  contado 0), e é por isso que ela é a hipótese e não uma suposição livre;
+- a resposta do modelo ao vivo pode não ser a capturada, pelo que a trajectória do run fica com
+  turnos cujo conteúdo não é o que o `GET /runs/{id}/replay` verifica;
+- os efeitos externos continuam protegidos pela idempotência do step-ledger, e não pelo
+  `already-applied` que só o plano de replay dá.
+
+### Critérios de Aceitação
+
+- [ ] Medido, com números, o que acontece hoje a um run com N≥1 turnos re-hospedado por esta via:
+      quantas chamadas ao modelo, quanto gasto contado, e o que o veredicto de fidelidade do
+      `GET /runs/{id}/replay` diz do run depois.
+- [ ] Decidido e implementado um dos dois: ou a via calcula o plano de replay como as outras duas
+      (e então é de facto «a retoma por outro nome»), ou **recusa** — e aí o comentário deixa de
+      prometer o contrato da retoma, e o caminho legítimo de um run em curso passa a ser a
+      varredura de crash-resume, que o nó já faz.
+- [ ] Qualquer que seja a decisão, o comentário do caso «(2-ter-ter)» diz o que a via faz, sem
+      prometer o que não faz.
+- [ ] A varredura de crash-resume e a retoma pela API não regridem.
+
+### Fora de âmbito
+
+- A origem dos campos do Goal (AOS-559, fechado).
+- O ciclo de vida do espaço de handles (AOS-554).
 
 ---
 
@@ -5546,3 +5711,6 @@ chamador. O que falha é a **integridade do run**, não a admissão: quem pode s
 | 1.14 | 2026-10-22 | +AOS-546: o modelo do run vê media — a parte de conteúdo genérica de entrada (fase R1a do ADR-043, proposto) | Equipa AOS |
 | 1.15 | 2026-10-22 | AOS-546 feito: em produção na v0.1.68 com `AOS_MEDIA_NO_TURNO=on`; o modelo do run viu uma planta e listou os 5 cômodos, replay com fidelidade 1 | Equipa AOS |
 | 1.16 | 2026-10-26 | +AOS-559: a re-hospedagem de um `run_id` em curso (a terceira via do AOS-520) confere o alias do modelo, a marca de fixação e o digest do perfil — e aceita do CORPO o objectivo, as entradas, a lista-branca e o contrato, apesar de o comentário prometer que «confere-se o Goal com o que está SELADO». O registo de retoma TEM o Goal certo e não é usado nesta via, ao contrário da varredura de crash-resume e da retoma pela API. Achado ao medir o AOS-557 | Equipa AOS |
+| 1.19 | 2026-10-26 | AOS-559 revisto (duas passagens adversariais) e corrigido: **os dois bloqueantes eram da própria correcção** — a substituição do Goal deixava `rs.runsProdutores` a descrever entradas descartadas, e a travessia da aresta, que corre dentro do `hostRun`, SELAVA o run `failed` numa re-submissão legítima; e a obrigatoriedade do registo matava a via inteira num nó sem `AOS_APPROVERS` (onde `ResumeRecords` não é composto), sem o distinguir de um acidente de um run. Mais quatro de forma: o `ConteudoPorHandle` confere-se contra o LAYOUT selado e não contra um campo que o registo nunca tem; o `CompletionRequires` normaliza-se (único conferido com `omitempty`); a divergência do `Objective` passa a ficar atribuída no log, com a razão corrigida; e a classe «só do selo» recusa um valor que o selo não tenha em vez de o copiar em silêncio | Equipa AOS |
+| 1.18 | 2026-10-26 | +AOS-560: a terceira via de re-hospedagem não leva plano de replay — os turnos já capturados voltam a interrogar o modelo, porque o `withReplayPlan` só é escrito pela retoma pela API e pela varredura de crash-resume. Achado ao fechar o AOS-559, que fechou a outra metade da mesma promessa (a origem do Goal) | Equipa AOS |
+| 1.17 | 2026-10-26 | AOS-559 implementado: o Goal da terceira via é `registo.GoalWith(credencial)`, a ausência do registo recusa (`sem_registo_de_retoma`), e o corpo que divirja recusa com o campo no log (`corpo_diverge_do_selo`, 409 — o código que a rota já usa). As três classes de cada campo estão declaradas no código, com a razão medida por campo, e a classe «recusado se divergir» é a **por omissão** (a comparação é por reflexão sobre o `Goal`, pelo que um campo novo entra nela sem ninguém se lembrar). Medido e registado: o `Objective` entra trusted e uma lista-branca nil é sem restrição — o que sobe o eixo do defeito de «integridade do conteúdo» para «alargamento de autoridade face ao plano». Com o `Principal` na classe conferida, esta via passa a ter os quatro eixos de identidade que a retoma pela API já conferia | Equipa AOS |

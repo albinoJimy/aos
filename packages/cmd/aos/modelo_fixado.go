@@ -31,10 +31,14 @@ package main
 //	(i)  o `run_id` não tem estado durável — é um run NOVO. Não se lê história nenhuma: não há.
 //	     É aqui que a escolha corre, e só aqui uma recusa fecha o run `failed`.
 //	(ii) o `run_id` já existe (`running`) — um `POST /runs` de um run em curso. É uma RETOMA por
-//	     outro nome, e tem o contrato da retoma: lê-se o que está selado para o run
+//	     outro nome, e tem o contrato da retoma: o Goal é RECONSTITUÍDO do registo de retoma
 //	     ([Node.goalDoRunExistente]) e, se este nó não o pode continuar com o que está selado, a
 //	     submissão é RECUSADA ANTES DE HOSPEDAR — o run fica como estava, recuperável. Nunca é
 //	     selado `failed` por aqui, e nunca passa para o titular em silêncio.
+//
+//	     ATÉ AO AOS-559 este caminho conferia só o alias, a marca e o digest, e devolvia o Goal
+//	     DO CORPO com esses três sobrepostos. O que ele reconstitui, campo a campo, e o que
+//	     recusa estão em `aos559_rehospedagem_confere_o_selo.go`.
 
 import (
 	"context"
@@ -44,7 +48,6 @@ import (
 
 	integration "github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
-	modelgateway "github.com/aos-ref/platform/model-gateway"
 	"github.com/aos-ref/platform/model-gateway/policy/canary"
 	"github.com/aos-ref/substrate/eventstore"
 )
@@ -78,7 +81,7 @@ const reasonModelPinRefused = "model_pin_refused"
 
 // Causas de recusa de um run NOVO pela fixação do modelo. Vocabulário FECHADO
 // ([causasDaFixacaoDoModelo]). As da retoma de um run já fixado são as do perfil fixado
-// ([modelgateway.PinnedRouteProfileCauses]).
+// (`modelgateway.PinnedRouteProfileCauses`).
 const (
 	// causaPlanoDoCandidatoSemCandidato — o plano de que o run é trabalho foi atribuído ao
 	// candidato, e este nó não o está a servir (interruptor desligado, fatia a zero, registo
@@ -105,25 +108,21 @@ const (
 	causaHistoriaDoRunIlegivel = "historia_do_run_ilegivel"
 )
 
-// fixado devolve o modelo em que o log diz que o run está fixado por escolha: o do registo de
-// retoma com a marca, ou — se o run ainda não tem registo — o do `run.model_pinned`.
+// contradiz diz que o LOG do run se contradiz a si próprio sobre em que modelo o run está fixado, e
+// então não se escolhe um dos lados: um registo de retoma SEM a marca num run que tem um
+// `run.model_pinned`; ou o registo e o evento a dizer aliases ou digests de perfil diferentes.
 //
-// `contradiz` diz que o log se contradiz, e então não se escolhe um dos lados: um registo de retoma
-// SEM a marca num run que tem um `run.model_pinned`; ou o registo e o evento a dizer aliases ou
-// digests de perfil diferentes.
-func (h historiaDoRun) fixado() (alias, digest, marca string, ok, contradiz bool) {
-	switch {
-	case h.registo != nil && h.registo.ModelPinnedBy != "":
-		if h.fixacao != nil && (h.fixacao.Alias != h.registo.Model.ModelID || h.fixacao.ProfileDigest != h.registo.RouteProfileDigest) {
-			return "", "", "", false, true
-		}
-		return h.registo.Model.ModelID, h.registo.RouteProfileDigest, h.registo.ModelPinnedBy, true, false
-	case h.registo != nil && h.fixacao != nil:
-		return "", "", "", false, true
-	case h.fixacao != nil:
-		return h.fixacao.Alias, h.fixacao.ProfileDigest, h.fixacao.Function, true, false
+// NÃO DEVOLVE O VALOR FIXADO, e até ao AOS-559 devolvia: quem o lê é a conferência da retoma
+// ([Node.conferirPerfilFixado]), sobre o registo, que é a MESMA dos outros dois caminhos de
+// re-hospedagem. Devolver aqui o alias e o digest deixava dois sítios a derivar o mesmo facto.
+func (h historiaDoRun) contradiz() bool {
+	if h.registo == nil || h.fixacao == nil {
+		return false
 	}
-	return "", "", "", false, false
+	if h.registo.ModelPinnedBy == "" {
+		return true
+	}
+	return h.fixacao.Alias != h.registo.Model.ModelID || h.fixacao.ProfileDigest != h.registo.RouteProfileDigest
 }
 
 // causasDaFixacaoDoModelo devolve o vocabulário fechado, pela ordem em que está escrito acima.
@@ -380,21 +379,27 @@ func causaDoRunExistenteRecusado(err error) string {
 	return ""
 }
 
-// goalDoRunExistente é o caminho (ii): o Goal com que um run que JÁ EXISTE pode ser re-hospedado
-// neste nó, ou a recusa. Corre ANTES de o run ser hospedado, com ou sem a pasta de perfis.
+// goalDoRunExistente é o caminho (ii): o Goal com que um run que JÁ EXISTE é re-hospedado neste nó,
+// ou a recusa. Corre ANTES de o run ser hospedado, com ou sem a pasta de perfis.
 //
 //   - A história não se lê ⇒ recusa (`historia_do_run_ilegivel`).
 //   - O log contradiz-se (registo de retoma sem a marca e um `run.model_pinned`; ou o registo e o
 //     evento com aliases ou digests diferentes) ⇒ recusa (`fixacao_diferente_da_gravada`).
-//   - O run tem registo de retoma ⇒ a conferência é A DA RETOMA ([Node.conferirPerfilFixado]): o
-//     alias fixado tem de ser servido por este nó, com o perfil fixado, e a marca tem de ser de uma
-//     versão conhecida. Um nó sem a pasta de perfis recusa o run fixado no candidato.
-//   - O run só tem o `run.model_pinned` (caiu antes do registo de retoma) ⇒ a mesma conferência,
-//     sobre o evento.
+//   - O NÓ não compõe `ResumeRecords` ⇒ recusa (`no_nao_sela_registo_de_retoma`, AOS-559): não sela
+//     o Goal de run nenhum, e nenhum run é reconstituível nele.
+//   - O run NÃO tem registo de retoma ⇒ recusa (`sem_registo_de_retoma`, AOS-559): sem selo não há
+//     Goal que reconstituir, e o corpo não é o selo. É o que as outras duas vias já fazem com o
+//     mesmo run — ver o cabeçalho de `aos559_rehospedagem_confere_o_selo.go`, que explica porque é
+//     que nenhuma das duas é «recuperável».
+//   - A conferência do modelo e do perfil é A DA RETOMA, sobre o MESMO registo
+//     ([Node.conferirPerfilFixado]): o alias fixado tem de ser servido por este nó, com o perfil
+//     fixado, e a marca tem de ser de uma versão conhecida. Um nó sem a pasta de perfis recusa o
+//     run fixado no candidato.
 //   - O Goal submetido traz a marca ⇒ tem de ser a selada, com o mesmo alias e o mesmo digest;
-//     senão recusa (`marca_sem_fixacao_gravada`).
-//   - Fixação gravada que o nó serve ⇒ o Goal sai com o alias, o digest e a marca SELADOS.
-//   - História sem fixação ⇒ o Goal sai como entrou: o titular de sempre.
+//     senão recusa (`marca_sem_fixacao_gravada`). O `POST /runs` não tem campo para nenhum dos
+//     três, pelo que isto só alcança um submissor em-processo — e é para esse que fica.
+//   - O corpo diverge do selo num campo conferido ⇒ recusa (`corpo_diverge_do_selo`, AOS-559).
+//   - Fiel ⇒ o Goal é o SELADO, com a credencial fresca do corpo.
 func (n *Node) goalDoRunExistente(ctx context.Context, goal agentruntime.Goal) (agentruntime.Goal, error) {
 	recusa := func(causa string, err error) (agentruntime.Goal, error) {
 		return goal, &runExistenteRecusadoError{causa: causa, err: err}
@@ -403,41 +408,41 @@ func (n *Node) goalDoRunExistente(ctx context.Context, goal agentruntime.Goal) (
 	if err != nil {
 		return recusa(causaHistoriaDoRunIlegivel, err)
 	}
-	alias, digest, marca, fixado, contradiz := h.fixado()
-	if contradiz {
+	if h.contradiz() {
 		return recusa(causaFixacaoDiferenteDaGravada, nil)
 	}
-	if h.registo != nil {
-		// O MESMO contrato da retoma pela API e do crash-resume, sobre o MESMO registo.
-		if perr := n.conferirPerfilFixado(*h.registo); perr != nil {
-			return recusa(causaDoPerfilFixado(perr), nil)
-		}
-	} else if fixado {
-		if !marcaDeEscolhaConhecida(marca) || !n.aliasServido(alias) {
-			return recusa(modelgateway.PinnedCauseModelNotServed, nil)
-		}
-		var assinados *perfisAssinados
-		if n != nil {
-			assinados = n.perfisDaRota
-		}
-		if perr := assinados.perfis().CheckPinnedProfile(alias, digest); perr != nil {
-			return recusa(causaDoPerfilFixado(perr), nil)
-		}
+	// AOS-559: o registo de retoma é o selo, e é obrigatório. AS DUAS AUSÊNCIAS SÃO SEPARADAS porque
+	// o remédio do operador é diferente — um nó que não compõe `ResumeRecords` não sela run NENHUM
+	// (o four-eyes gate não está composto), e aí a via inteira recusa; um nó que os compõe e não tem
+	// o deste run perdeu-o na escrita fail-soft. Nos dois casos nenhuma via reconstitui o run: a
+	// retoma pela API devolve [ErrNoResumeRecord] e o crash-resume salta-o. Esta reconstituía-o DO
+	// CORPO.
+	if n == nil || n.ResumeRecords == nil {
+		return recusa(causaNoNaoSelaRegistoDeRetoma, nil)
 	}
-	if !fixado {
-		if goal.ModelPinnedBy != "" {
-			return recusa(causaMarcaSemFixacaoGravada, nil)
-		}
-		return goal, nil
+	if h.registo == nil {
+		return recusa(causaSemRegistoDeRetoma, nil)
 	}
-	if goal.ModelPinnedBy != "" && (goal.ModelPinnedBy != marca || goal.Model.ModelID != alias || (digest != "" && goal.RouteProfileDigest != digest)) {
+	// O MESMO contrato da retoma pela API e do crash-resume, sobre o MESMO registo.
+	if perr := n.conferirPerfilFixado(*h.registo); perr != nil {
+		return recusa(causaDoPerfilFixado(perr), nil)
+	}
+	selado := h.registo.GoalWith(goal.Credential)
+	// A guarda do AOS-520 sobre a marca fica, e ANTES da conferência do corpo: um Goal que afirme
+	// uma fixação continua a ter de trazer a selada, e é essa a causa que o operador lê.
+	//
+	// O DIGEST SÓ SE COMPARA SE O SELO TIVER UM, como antes do AOS-559: num run que começou sem
+	// perfil fixado o registo devolve [agentruntime.RouteProfileDigestUnpinned], e exigir que o Goal
+	// o trouxesse seria apertar esta guarda por acidente da forma do registo.
+	seloSemPerfil := selado.RouteProfileDigest == agentruntime.RouteProfileDigestUnpinned
+	if goal.ModelPinnedBy != "" && (goal.ModelPinnedBy != selado.ModelPinnedBy || goal.Model.ModelID != selado.Model.ModelID ||
+		(!seloSemPerfil && goal.RouteProfileDigest != selado.RouteProfileDigest)) {
 		return recusa(causaMarcaSemFixacaoGravada, nil)
 	}
-	goal.Model.ModelID, goal.ModelPinnedBy = alias, marca
-	if digest != "" {
-		goal.RouteProfileDigest = digest
+	if campo := campoDoCorpoQueDiverge(goal, selado); campo != "" {
+		return recusa(causaCorpoDivergeDoSelo, fmt.Errorf("o corpo nao e o que esta selado para o run: campo %s", campo))
 	}
-	return goal, nil
+	return selado, nil
 }
 
 // escolherModeloDoRun fixa o modelo do run que está a ser hospedado. É o ponto ÚNICO por onde

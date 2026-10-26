@@ -488,6 +488,10 @@ func TestAOS520_No_OPlanoAnteriorAAberturaEDoTitular(t *testing.T) {
 // `run.model_pinned`, o registo de retoma fica sem a marca, e o livro não gasta um lugar.
 //
 // E o caso do run que tem registo de retoma mas ainda não deu turno nenhum: também não é novo.
+//
+// AOS-559: o caso SEM registo de retoma deixou de ser hospedado. Sem selo não há Goal que
+// reconstituir — e re-hospedá-lo era reconstituí-lo DO CORPO —, pelo que a re-submissão é recusada
+// com a sua causa, e o run fica `running`, como as outras recusas desta via.
 func TestAOS520_No_RunEmCursoReSubmetidoNaoENovo(t *testing.T) {
 	ctx := context.Background()
 	for _, caso := range []struct {
@@ -519,6 +523,11 @@ func TestAOS520_No_RunEmCursoReSubmetidoNaoENovo(t *testing.T) {
 			a.fechar(t)
 
 			b := aos520cNo(t, sub, "on", aos520cCand(100))
+			if !comRegisto {
+				// AOS-559: o run está `running` e o log do nó não tem o selo dele.
+				aos520cReSubmissaoRecusada(t, b, runID, causaSemRegistoDeRetoma)
+				return
+			}
 			b.correr(t, runID, nil)
 			modelos := aos520cModelosPedidos(t, b.aos486No, 0)
 			if len(modelos) == 0 || !aos520cTodos(modelos, aos486Modelo) {
@@ -625,9 +634,12 @@ func aos520cReSubmissaoRecusada(t *testing.T, n *aos520No, runID, causa string) 
 //   - num nó com a pasta e sem o registo do candidato;
 //   - num nó com OUTRO perfil para o alias do candidato.
 //
-// Em todos: recusa ANTES de hospedar, o run fica `running`, zero pedidos, nenhum registo novo. E com
-// e sem registo de retoma gravado (sem ele, o que está selado é o `run.model_pinned`). Reposto o
-// candidato, o MESMO `POST /runs` continua o run — no candidato.
+// Em todos: recusa ANTES de hospedar, o run fica `running`, zero pedidos, nenhum registo novo.
+// Reposto o candidato, o MESMO `POST /runs` continua o run — no candidato.
+//
+// AOS-559: com o registo de retoma gravado, a causa continua a ser a do perfil fixado. SEM ele a
+// recusa é mais cedo e tem outra causa — não há selo de que reconstituir o Goal —, e aí nenhum nó o
+// re-hospeda: repor o candidato não o torna continuável, porque o que falta não é o perfil.
 func TestAOS520_No_SondaP6_RunFixadoReSubmetidoOndeNaoEServido(t *testing.T) {
 	outroPerfil := strings.Replace(aos520PerfilCand, "modelo-novo-4.5", "modelo-b-1.0", 1)
 	for _, comRegisto := range []bool{true, false} {
@@ -638,18 +650,32 @@ func TestAOS520_No_SondaP6_RunFixadoReSubmetidoOndeNaoEServido(t *testing.T) {
 			aos520cTurnoUmECrashCom(t, a, runID, comRegisto)
 			a.fechar(t)
 
+			naoServido, perfilDiferente := modelgateway.PinnedCauseModelNotServed, modelgateway.PinnedCauseProfileDifferent
+			if !comRegisto {
+				naoServido, perfilDiferente = causaSemRegistoDeRetoma, causaSemRegistoDeRetoma
+			}
+
 			aos520Interruptor(t, "")
 			semPasta := aos520Compor(t, sub, "", "", aos505NoEsperado)
-			aos520cReSubmissaoRecusada(t, semPasta, runID, modelgateway.PinnedCauseModelNotServed)
+			aos520cReSubmissaoRecusada(t, semPasta, runID, naoServido)
 			semPasta.fechar(t)
 
 			semRegisto := aos520cNo(t, sub, "on")
-			aos520cReSubmissaoRecusada(t, semRegisto, runID, modelgateway.PinnedCauseModelNotServed)
+			aos520cReSubmissaoRecusada(t, semRegisto, runID, naoServido)
 			semRegisto.fechar(t)
 
 			outro := aos520cNo(t, sub, "off", aos520Registo{"candidato", outroPerfil, 100})
-			aos520cReSubmissaoRecusada(t, outro, runID, modelgateway.PinnedCauseProfileDifferent)
+			aos520cReSubmissaoRecusada(t, outro, runID, perfilDiferente)
 			outro.fechar(t)
+
+			if !comRegisto {
+				// AOS-559: sem o selo, o run não é re-hospedável por via nenhuma — nem a retoma pela
+				// API o reconstitui ([ErrNoResumeRecord]). Repor o candidato não muda isso.
+				b := aos520cNo(t, sub, "off", aos520cCand(100))
+				aos520cReSubmissaoRecusada(t, b, runID, causaSemRegistoDeRetoma)
+				b.fechar(t)
+				return
+			}
 
 			// RECUPERÁVEL: reposto o registo do candidato, o run continua — no candidato.
 			b := aos520cNo(t, sub, "off", aos520cCand(100))
@@ -667,8 +693,10 @@ func TestAOS520_No_SondaP6_RunFixadoReSubmetidoOndeNaoEServido(t *testing.T) {
 // SONDA P2 — UMA MARCA DE UMA VERSÃO FUTURA, RE-SUBMETIDA. O registo de retoma do run traz a marca
 // de uma versão da função que este binário não conhece (escreveu-o um nó mais recente). O `POST
 // /runs` desse run é recusado antes de hospedar e o run fica `running`: não é reinterpretado, não é
-// servido pelo titular, e não é morto. O mesmo quando só há o `run.model_pinned`, com a função
-// desconhecida.
+// servido pelo titular, e não é morto.
+//
+// E quando só há o `run.model_pinned` o run é recusado na mesma, com a causa do AOS-559: sem registo
+// de retoma não há selo de que reconstituir o Goal, e a marca do evento sozinha não o substitui.
 func TestAOS520_No_SondaP2_MarcaDeVersaoFuturaReSubmetida(t *testing.T) {
 	ctx := context.Background()
 	for _, soEvento := range []bool{false, true} {
@@ -688,7 +716,11 @@ func TestAOS520_No_SondaP2_MarcaDeVersaoFuturaReSubmetida(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			aos520cReSubmissaoRecusada(t, n, runID, modelgateway.PinnedCauseModelNotServed)
+			causa := modelgateway.PinnedCauseModelNotServed
+			if soEvento {
+				causa = causaSemRegistoDeRetoma
+			}
+			aos520cReSubmissaoRecusada(t, n, runID, causa)
 		})
 	}
 }
@@ -734,6 +766,10 @@ func TestAOS520_No_SondaP1_LeituraAMaisAFalhar_ORunNovoCompleta(t *testing.T) {
 // O QUE ESTÁ SELADO PARA UM RUN QUE JÁ EXISTE, ramo a ramo ([Node.goalDoRunExistente]). O registo de
 // retoma e o `run.model_pinned` são semeados no Event Store do nó composto; o que se confere é o
 // Goal com que o run seria re-hospedado, ou a causa da recusa.
+//
+// AOS-559: o corpo do `pedido` é FIEL ao que o `registo` selou — é o que uma re-submissão legítima
+// manda —, porque um corpo que divirja do selo é agora recusado. Essa conferência tem o seu próprio
+// teste; aqui o que se percorre são os ramos da fixação do modelo.
 func TestAOS520_No_GoalDoRunExistente_RamoARamo(t *testing.T) {
 	ctx := context.Background()
 	n := aos520cNo(t, aos520NovoSubstrato(t), "on", aos520cCand(100))
@@ -754,7 +790,7 @@ func TestAOS520_No_GoalDoRunExistente_RamoARamo(t *testing.T) {
 		}
 	}
 	pedido := func(runID string) agentruntime.Goal {
-		return agentruntime.Goal{RunID: runID, Principal: referencemonitor.Principal{NHIID: durAgent}, Objective: aos490Objectivo}
+		return agentruntime.Goal{RunID: runID, Principal: referencemonitor.Principal{NHIID: durAgent}, Objective: aos490Objectivo, MaxTurns: 3}
 	}
 	recusa := func(nome string, goal agentruntime.Goal, causa string) {
 		t.Helper()
@@ -767,17 +803,17 @@ func TestAOS520_No_GoalDoRunExistente_RamoARamo(t *testing.T) {
 		}
 	}
 
-	// --- Só o `run.model_pinned` (o run caiu antes do registo de retoma).
+	// --- Só o `run.model_pinned` (o run caiu antes do registo de retoma). AOS-559: o evento diz em
+	// que modelo o run está fixado, mas NÃO tem o Goal — e sem Goal selado não se re-hospeda. A
+	// recusa é a mesma seja o que for que o evento diga do alias ou do perfil.
 	evento("so-evento", aos520AliasCand, digestCand, versaoDaEscolha)
-	if g, err := n.node.goalDoRunExistente(ctx, pedido("so-evento")); err != nil || g.Model.ModelID != aos520AliasCand || g.ModelPinnedBy != versaoDaEscolha || g.RouteProfileDigest != digestCand {
-		t.Fatalf("so o evento: %v %+v marca=%q digest=%q; quer o que esta selado", err, g.Model, g.ModelPinnedBy, g.RouteProfileDigest)
-	}
+	recusa("so o evento, com a fixacao que este no serve", pedido("so-evento"), causaSemRegistoDeRetoma)
 	evento("evento-funcao-futura", aos520AliasCand, digestCand, "aos-canary/v9")
-	recusa("so o evento, com a funcao de uma versao desconhecida", pedido("evento-funcao-futura"), modelgateway.PinnedCauseModelNotServed)
+	recusa("so o evento, com a funcao de uma versao desconhecida", pedido("evento-funcao-futura"), causaSemRegistoDeRetoma)
 	evento("evento-alias-retirado", "alias-retirado", digestCand, versaoDaEscolha)
-	recusa("so o evento, com um alias que o no nao serve", pedido("evento-alias-retirado"), modelgateway.PinnedCauseModelNotServed)
+	recusa("so o evento, com um alias que o no nao serve", pedido("evento-alias-retirado"), causaSemRegistoDeRetoma)
 	evento("evento-outro-perfil", aos520AliasCand, outroDigest, versaoDaEscolha)
-	recusa("so o evento, com outro perfil para o alias", pedido("evento-outro-perfil"), modelgateway.PinnedCauseProfileDifferent)
+	recusa("so o evento, com outro perfil para o alias", pedido("evento-outro-perfil"), causaSemRegistoDeRetoma)
 
 	// --- O log que se contradiz.
 	registo("registo-sem-marca-e-evento", aos486Modelo, digestTit, "")
@@ -816,17 +852,18 @@ func TestAOS520_No_GoalDoRunExistente_RamoARamo(t *testing.T) {
 	registo("registo-outro-perfil", aos520AliasCand, outroDigest, versaoDaEscolha)
 	recusa("registo fixado noutro perfil", pedido("registo-outro-perfil"), modelgateway.PinnedCauseProfileDifferent)
 
-	// --- História sem fixação: o Goal sai como entrou; e com uma marca que nada selou, recusa.
+	// --- Registo SEM fixação: o Goal sai do selo, sem marca e no modelo do titular que o registo
+	// guardou (AOS-559 — antes saía o Goal do corpo, com o modelo vazio). E com uma marca que nada
+	// selou, recusa.
 	registo("sem-fixacao", aos486Modelo, digestTit, "")
-	if g, err := n.node.goalDoRunExistente(ctx, pedido("sem-fixacao")); err != nil || g.ModelPinnedBy != "" || g.Model.ModelID != "" {
-		t.Fatalf("historia sem fixacao: %v %+v marca=%q; o Goal sai como entrou", err, g.Model, g.ModelPinnedBy)
+	if g, err := n.node.goalDoRunExistente(ctx, pedido("sem-fixacao")); err != nil || g.ModelPinnedBy != "" || g.Model.ModelID != aos486Modelo {
+		t.Fatalf("registo sem fixacao: %v %+v marca=%q; quer o modelo do selo e nenhuma marca", err, g.Model, g.ModelPinnedBy)
 	}
 	forjado := pedido("sem-fixacao")
 	forjado.Model.ModelID, forjado.ModelPinnedBy = aos520AliasCand, versaoDaEscolha
-	recusa("historia sem fixacao e um Goal com a marca", forjado, causaMarcaSemFixacaoGravada)
-	if g, err := n.node.goalDoRunExistente(ctx, pedido("nunca-visto")); err != nil || g.ModelPinnedBy != "" {
-		t.Fatalf("sem historia nenhuma: %v marca=%q", err, g.ModelPinnedBy)
-	}
+	recusa("registo sem fixacao e um Goal com a marca", forjado, causaMarcaSemFixacaoGravada)
+	// Sem história nenhuma não há nem evento nem registo: a recusa é a do selo em falta.
+	recusa("sem historia nenhuma", pedido("nunca-visto"), causaSemRegistoDeRetoma)
 
 	// --- A história que não se lê: recusa, com a causa — nunca «na dúvida, o titular».
 	for nome, falha := range map[string]string{"o stream do run": "de-acordo", "o stream dos registos de retoma": aos520StreamDasAprovacoes} {

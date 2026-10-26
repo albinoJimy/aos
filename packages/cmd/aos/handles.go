@@ -515,10 +515,13 @@ func selarEntradasDoPlano(ctx context.Context, p *planoDeHandles, goal agentrunt
 	// mesma coisa, e fica dito. Um Goal em que alguma entrada já traz handle desarma o desfazer
 	// por inteiro: [armazemDeHandles.gravar] reaproveita o ficheiro do mesmo conteúdo no mesmo
 	// run, pelo que apagar podia tirar o chão a uma entrada que veio do registo de retoma. Nenhum
-	// dos dois casos é alcançável hoje — o wire do submit não transporta handles, o registo leva-os
-	// todos, a re-submissão do mesmo `run_id` é recusada (AOS-457), e dentro de uma hospedagem as
-	// entradas selam ANTES de qualquer turno, pelo que o run ainda não escreveu artefacto nenhum
-	// com que pudesse colidir.
+	// O SEGUNDO CASO PASSOU A SER ALCANÇÁVEL NO AOS-559, e é por isso que o desarmar existe: o
+	// `POST /runs` de um run que JÁ EXISTE e está em curso é re-hospedado com o Goal do REGISTO DE
+	// RETOMA, que leva as entradas já seladas. O ciclo abaixo salta-as (`Handle != ""`), pelo que
+	// não cunha nada de novo, e o desfazer fica desarmado — apagar aqui tirava o chão a uma entrada
+	// que veio do registo. O PRIMEIRO continua inalcançável: o wire do submit não transporta
+	// handles. E a colisão com artefactos do próprio run também não: dentro de uma hospedagem as
+	// entradas selam ANTES de qualquer turno.
 	jaSelada := false
 	for i := range entradas {
 		jaSelada = jaSelada || entradas[i].Handle != ""
