@@ -1292,8 +1292,9 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	// do modelo; é essa a razão estrutural de ele não poder subir para o observador, que corre
 	// noutra goroutine antes desta. O argumento «uma recusa da fixação do modelo deixaria handles
 	// selados de um run que nunca arranca» NÃO distingue as duas posições, e dizê-lo era medir um
-	// custo que as duas têm por igual: essa mesma janela já existe aqui, pelos portões do
-	// [agentruntime.Runtime.Run] logo a seguir — ver o bloco do selo, abaixo, e o AOS-557. O que o
+	// custo que as duas têm por igual: essa mesma janela já existia aqui, pelos portões do
+	// [agentruntime.Runtime.Run] logo a seguir — e o AOS-557 fechou-a para os dois que eram
+	// accionáveis por quem submete, correndo-os antes do selo; ver o bloco do selo, abaixo. O que o
 	// observador deixa de ver está fechado onde a medição se lê — ver
 	// [NodeService.SubmitObservando] e [sementeSemReferencias].
 	//
@@ -1303,16 +1304,59 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	// um run que nunca corre é inofensiva: o que ela declarava deixou de existir e nenhum run a
 	// pode usar.
 	//
-	// O QUE CONTINUA EM ABERTO SÃO DUAS COISAS, e a segunda é o **AOS-557**. A primeira é o
-	// processo morrer entre os selos e o registo de retoma: não há `defer` que sobreviva. A segunda
-	// é a janela entre ESTE selo e o primeiro efeito do run: o [agentruntime.Runtime.Run] tem
-	// portões fail-closed que recusam sem um único efeito, e dois deles são accionáveis por quem
-	// submete (`contratoPossivel` e `origemPossivel` — a porta aceita um contrato de conclusão que
-	// o nó não pode cumprir, e di-lo em [validarContratoDeConclusao]). Aí as entradas foram todas
-	// seladas, o run fecha sem turno, e nada apaga os bytes. NÃO se desfaz aqui, e a razão é
-	// dirimente: o registo de retoma já foi gravado, pelo que apagar deixaria um run RETOMÁVEL cujas
-	// entradas não têm bytes — perda silenciosa de capacidade em vez de bytes a mais, que é a troca
-	// errada. Fechá-lo é correr esses portões ANTES do selo, e isso é o AOS-557.
+	// OS PORTÕES ACCIONÁVEIS POR QUEM SUBMETE JÁ CORRERAM (AOS-557, logo acima): o contrato de
+	// conclusão, a origem declarada da saída, o modo do veredicto que os precede e as
+	// pré-condições do Goal (id do run e principal) são função só do Goal e da oferta do nó, e
+	// recusavam DEPOIS deste selo — um run condenado deixava aqui handles cunhados e bytes que
+	// ninguém apaga. Não se desfazia, e a razão continua a ser dirimente: o registo de retoma é
+	// gravado a seguir, pelo que apagar deixaria um run RETOMÁVEL cujas entradas não têm bytes —
+	// perda silenciosa de capacidade em vez de bytes a mais, que é a troca errada.
+	//
+	// O QUE **NÃO** SUBIU, UM A UM, E A RAZÃO DE CADA (AOS-557). O [agentruntime.Runtime.Run] tem
+	// SETE sítios de recusa antes do primeiro turno (o enunciado do ticket conta seis portões por
+	// nome e deixou de fora dois: as pré-condições do Goal e o modo do veredicto). Subiram dois
+	// desses sítios — o das pré-condições do Goal e o que decide o modo, o contrato e a origem.
+	// Ficam quatro, e nenhum deles fica a dever bytes a este selo:
+	//
+	//   - A COMPOSIÇÃO DO RUNTIME (`rt.validate`, na metade que confere o cliente de modelo, o
+	//     Reference Monitor e o gravador) é função do runtime e não do Goal, e o nó não tem por
+	//     onde a perguntar. A metade que é só do Goal — id do run e principal — SUBIU, e subiu
+	//     porque deixava resíduo: um Goal com `Subject` preenchido e `Principal.NHIID` vazio tem
+	//     titular não vazio, pelo que a quarentena o aceita e este selo CUNHA antes de o `Run`
+	//     recusar ([agentruntime.ErrNoPrincipal]). Inalcançável pela porta HTTP, alcançável por um
+	//     `Submit` programático — ver [agentruntime.RefuseAtStartup].
+	//   - A SEMENTE DO TAIL (`abrirTailDoRun`) NÃO PODE subir, e é o único caso em que «não pode»
+	//     quer dizer isso: num layout por handle ela EXIGE a referência de cada entrada
+	//     ([agentruntime.ErrPlanInputWithoutHandle]), que é precisamente o que este selo produz.
+	//     Corrê-la antes recusaria todos os runs. Ela leva DENTRO um segundo portão que é só do
+	//     Goal — o vocabulário do aviso de nova tentativa (AOS-506) —, e esse podia subir; não
+	//     subiu porque o `RetryNotice` é escrito pelo nó de um vocabulário fechado e não por quem
+	//     submete, pelo que nenhuma submissão o acciona.
+	//   - O LAYOUT (`layoutDoRun`) não deixa resíduo, e isso é demonstrável: pergunta o layout ao
+	//     MESMO `layoutFor` a que [agentruntime.HasPlanInputsByHandle] pergunta, com a MESMA versão
+	//     (o Goal chega aqui com ela fixada). Uma versão que ele recuse não é um layout por handle,
+	//     e este selo sai sem selar nada.
+	//   - O PORTÃO DA AUTORIDADE POR ARGUMENTO é INALCANÇÁVEL na composição deste nó: a
+	//     `PerArgumentAuthority` é declarada incondicionalmente e a cadeia de reescrita do efeito
+	//     inclui sempre a `reescritaDaAutoridade`, pelo que o `emCadeia` nunca devolve nil e as
+	//     duas condições que ele exige estão sempre satisfeitas. É a declaração do KERNEL, para uma
+	//     composição que não é a nossa.
+	//   - A JANELA (`openWindow`) é função da composição do [agentruntime.Runtime], que o nó não
+	//     vê: a fábrica de janelas é privada dele. Subir esta exigiria o runtime expor se a sua
+	//     janela abre para este Goal, e isso é mudar a porta do kernel por um portão que no nó
+	//     composto nunca recusou — não se faz aqui.
+	//
+	// E UMA PRECISÃO SOBRE «SEM UM ÚNICO EFEITO», que vale para o kernel e não para o caminho do
+	// nó: o [integration.SecuredRuntime.Run] PERSISTE o snapshot do tool set antes de chamar o
+	// `Runtime.Run`, pelo que os portões do kernel recusam depois dessa escrita durável. A
+	// conferência de cima evita-a também. O que ela não evita é o que corre ANTES dela nesta
+	// função — o claim `ready→running` da máquina de estados, que é a primeira escrita durável
+	// desta hospedagem.
+	//
+	// A JANELA DO CRASH CONTINUA ABERTA, e o AOS-557 **não** a fecha: o processo morrer entre estes
+	// selos e o registo de retoma deixa handles cunhados e bytes sem run que os use, e não há
+	// `defer` que sobreviva a isso. É outro problema, com outra forma — precisa de uma passagem que
+	// limpe o espaço de um run sem história —, e tem ticket próprio: o reaper por run, **AOS-554**.
 
 	// AOS-553: A TRAVESSIA DA ARESTA DO PLANO POR HANDLE (ADR-045). Uma entrada que o `aos-orq`
 	// DECLAROU como aresta (`inputs[].from_run`) — o que ele faz quando o run produtor correu num
@@ -1329,9 +1373,12 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	// layout, porque quem decide se há referência a resolver é o run PRODUTOR e não este. Fica
 	// junto do selo para as duas metades da aresta se lerem no mesmo sítio.
 	//
-	// NÃO ACRESCENTA JANELA NENHUMA às duas que o bloco abaixo declara: a travessia só LÊ do
-	// armazém do produtor, pelo que uma recusa dela não deixa bytes atrás de si. A ordem dos
-	// portões do [agentruntime.Runtime.Run] é a de antes, e fechá-la continua a ser o AOS-557.
+	// NÃO ACRESCENTA JANELA NENHUMA à que o bloco abaixo declara: a travessia só LÊ do armazém do
+	// produtor, pelo que uma recusa dela não deixa bytes atrás de si.
+	//
+	// E CORRE ANTES DA CONFERÊNCIA DE ARRANQUE (AOS-557, a seguir), de propósito: pô-la depois
+	// mudava a causa que um run com a aresta E o contrato maus reporta, sem mudar o desfecho. Como
+	// não deixa bytes, a ordem entre as duas não muda o resíduo de ninguém.
 	var terr error
 	if goal, terr = atravessarArestasDoPlano(ctx, s.node.planoHandles, s, rs.plano.pedido, rs.runsProdutores, goal); terr != nil {
 		err = fmt.Errorf("aos: run %q: %w", rs.runID, terr)
@@ -1339,6 +1386,29 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 		rs.err = err
 		s.mu.Unlock()
 		s.log("run %q RECUSADO pela travessia da aresta do plano (AOS-553): uma entrada vem por referencia de handle e nao se resolveu — o run fecha failed sem dar um turno, em vez de o modelo receber um token que este run nao abre: %v", rs.runID, terr)
+		return
+	}
+
+	// AOS-557: OS PORTÕES ACCIONÁVEIS POR QUEM SUBMETE CORREM AQUI, ANTES DO SELO. O contrato de
+	// conclusão e a origem da saída são função só do Goal e da oferta do nó, e o kernel recusava-os
+	// DEPOIS do selo — um run condenado deixava handles cunhados e bytes cifrados que ninguém
+	// apaga. É a MESMA função que decide nos dois sítios, contra a mesma regra; o que difere é a
+	// oferta, e porque é fiel (e porque isto só corre no caminho de ARRANQUE) está em
+	// [NodeService.recusaAntesDoSelo]. O portão do `Run` MANTÉM-SE: é ele a garantia.
+	if rerr := s.recusaAntesDoSelo(ctx, rs, goal); rerr != nil {
+		// SEM EMBRULHO, ao contrário dos vizinhos deste bloco, e a razão é dirimente: este erro é
+		// servido em TEXTO no `GET /runs/{id}` (`resp.Error`), e até este ticket o texto de uma
+		// recusa de arranque era o erro NU que o `Run` devolvia. Acrescentar-lhe um prefixo
+		// mudaria a resposta a quem submete por uma recusa que é a mesma. Os vizinhos embrulham
+		// porque a recusa deles não tem um «antes» com que ter de coincidir.
+		err = rerr
+		s.mu.Lock()
+		rs.err = err
+		s.mu.Unlock()
+		// A CAUSA VEM NO ERRO, e a linha não a adivinha: a conferência recusa pelo contrato de
+		// conclusao, pela origem da saida ou porque a oferta do no nao se leu — tres causas, e
+		// afirmar uma delas no cabecalho seria atribuir mal duas em cada tres.
+		s.log("run %q RECUSADO pela conferencia de arranque ANTES do selo (AOS-557): o run fecha failed sem dar um turno e SEM selar entrada nenhuma — o portao do kernel recusava-o igualmente, mas depois de os handles estarem cunhados: %v", rs.runID, rerr)
 		return
 	}
 

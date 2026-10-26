@@ -845,6 +845,60 @@ func (s *SecuredRuntime) Monitor() *referencemonitor.Monitor { return s.rm }
 // ToolSets expõe o registo de tool sets congelados por run (para inspecção).
 func (s *SecuredRuntime) ToolSets() *RunToolSets { return s.toolsets }
 
+// OfferedToolNames devolve os NOMES das tools que o catálogo (REG) tem ACTIVAS neste instante —
+// a OFERTA do nó (AOS-557). É uma LEITURA: não congela nada, não escreve evento, não abre span e
+// não toca no registo de tool sets.
+//
+// # Para que serve, e porque é por nome
+//
+// Serve a quem hospeda um run e precisa de saber, ANTES de o [SecuredRuntime.Run] arrancar, se as
+// tools que o run DECLARA (o contrato de conclusão, a origem da saída) existem de todo — para não
+// produzir efeitos de arranque num run que o `Run` ia recusar sem dar um turno. Quem decide é o
+// kernel, com a MESMA função dos seus próprios portões ([agentruntime.RefuseAtStartup]), e essa
+// função só lê o nome.
+//
+// # Porque é que esta oferta é fiel à que o `Run` vai ver
+//
+// É a MESMA fonte: o [toolset.FreezeToolSet] que o `Run` chama começa por `ActiveEntries` no mesmo
+// catálogo, e projecta cada entrada activa num spec cujo `Name` é o `Entry.ID` — um por entrada,
+// sem descartar nenhuma. As suas duas recusas (id ambíguo, byte de controlo num campo projectado)
+// abortam o congelamento INTEIRO e com ele o run, pelo que nunca produzem um conjunto congelado
+// mais pequeno do que este. O selector do run só RESTRINGE, e o arranque de um run no nó passa
+// `nil`.
+//
+// Logo: com o congelamento a correr do catálogo vivo, o conjunto de nomes é o MESMO. Com DUAS
+// ressalvas, e as duas importam a quem recuse um run com base nisto:
+//
+//   - NÃO VALE PARA UM RUN RE-HOSPEDADO, cujo tool set vem do snapshot DURÁVEL e não do catálogo:
+//     ali o snapshot ganha deliberadamente ao catálogo vivo (ver [SecuredRuntime.Run]) e os dois
+//     conjuntos podem divergir. Quem usa esta oferta para recusar tem de excluir TODAS as
+//     re-hospedagens — e nem todas chegam com a forma de uma retoma.
+//   - SÃO DUAS LEITURAS EM INSTANTES DIFERENTES. Esta corre antes do `Run`, o congelamento corre
+//     dentro dele. Um catálogo que mude entre os dois instantes pode fazer a oferta de cima
+//     divergir da congelada — numa REMOÇÃO a divergência cai do lado seguro (quem recusou aqui
+//     seria recusado lá), numa ADIÇÃO não. O catálogo do nó `aos` é imutável depois do arranque
+//     (é construído do manifesto, ou é o vazio), pelo que lá a janela não existe; num embedder com
+//     um catálogo vivo, existe.
+//
+// Em todos estes casos a garantia continua a ser o portão do `Run`, que decide contra o conjunto
+// congelado.
+//
+// Sem catálogo composto devolve [ErrNoCatalog] — o mesmo erro com que o construtor o recusa.
+func (s *SecuredRuntime) OfferedToolNames(ctx context.Context) ([]string, error) {
+	if s == nil || s.catalog == nil {
+		return nil, ErrNoCatalog
+	}
+	entries, err := s.catalog.ActiveEntries(ctx)
+	if err != nil {
+		return nil, err
+	}
+	nomes := make([]string, 0, len(entries))
+	for _, e := range entries {
+		nomes = append(nomes, e.ID)
+	}
+	return nomes, nil
+}
+
 // RebuildLedger repõe o step-ledger em memória a partir dos eventos duráveis do run.
 // Deve ser chamado antes de retomar um run após crash/failover (AOS-180). Sem ledger
 // durável é um no-op.

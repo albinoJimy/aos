@@ -361,9 +361,12 @@ sem uma alocação.
   de o `aos-orq` **pedir** o layout 1.8.0 (`conteudo_por_handle` no `POST /runs`), que ele não envia
   hoje — é do AOS-556, cujo critério «o interruptor da 1.8.0 passa a accionável» o cobre. Até lá a
   travessia é exercida por testes e não por um plano real.
-- **A janela entre o selo das entradas e o primeiro efeito do run continua aberta**, e é o
-  **AOS-557**. A travessia não a alarga: ela só lê, pelo que uma recusa dela não deixa bytes atrás
-  de si; o que deixa bytes é o selo, que corre depois.
+- **A janela entre o selo das entradas e o primeiro efeito do run foi FECHADA pelo AOS-557** para os
+  dois portões accionáveis por quem submete — o contrato de conclusão e a origem da saída —, que
+  passaram a correr ANTES do selo, com a oferta do catálogo e pela mesma função que decide no `Run`.
+  A travessia nunca a alargou: ela só lê, pelo que uma recusa dela não deixa bytes atrás de si; o
+  que deixa bytes é o selo, que corre depois dela. **Continua aberta a janela do CRASH** — o
+  processo morrer entre o selo e o registo de retoma —, que é o **AOS-554**.
 - **O `well_formed` de um handle de `tool_result` é `false`**, porque o resultado de uma tool não
   traz media type e o nó não o adivinha. O AOS-551 declarou que o facto «é lido por quem atravessa
   a aresta do plano» — e esta decisão **não o lê**: a travessia não precisa da forma dos bytes, só

@@ -500,9 +500,13 @@ func selarEntradasDoPlano(ctx context.Context, p *planoDeHandles, goal agentrunt
 	// compensação. Uma declaração de um run que nunca corre é inofensiva — o que ela
 	// declarava deixou de existir, e nenhum run a pode usar.
 	//
-	// DUAS JANELAS CONTINUAM ABERTAS, declaradas em [NodeService.hostRun]: o processo morrer entre
-	// os selos e o registo de retoma, e os portões fail-closed do [agentruntime.Runtime.Run], que
-	// recusam DEPOIS deste selo e sem um único efeito — essa é o **AOS-557**.
+	// UMA JANELA CONTINUA ABERTA, declarada em [NodeService.hostRun]: o processo morrer entre os
+	// selos e o registo de retoma — não há `defer` que sobreviva a isso, e o ticket é o reaper por
+	// run, **AOS-554**. A outra, os portões fail-closed do [agentruntime.Runtime.Run] que recusavam
+	// DEPOIS deste selo, foi fechada pelo **AOS-557**: os dois accionáveis por quem submete correm
+	// agora ANTES ([NodeService.recusaAntesDoSelo]), e os que ficam não deixam bytes aqui — o bloco
+	// do selo no `hostRun` nomeia-os um a um, com a razão de cada. Não se repete aqui a CONTAGEM:
+	// tê-la nos dois sítios já produziu duas contas diferentes do mesmo conjunto.
 	//
 	// CORRE SEM `a.mu`, ao contrário do desfazer de dentro de [armazemDeHandles.selar]: o
 	// concorrente seria outra hospedagem do mesmo run, que o guarda de duplicados recusa.
