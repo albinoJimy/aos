@@ -26,6 +26,13 @@ fonte de código por rever.
 | **Reviewer** | revisão independente, procura de defeitos, comparação com requisitos | ver o raciocínio de quem implementou | `general-purpose` ou `Skill(code-review)` |
 | **Integrator** | integração, conflitos, validação transversal, estado final | aceitar alteração inesperada sem investigar | agente principal |
 
+Os nomes da última coluna, como `Skill(code-review)`, `Skill(security-review)` e o
+`isolation: "worktree"` do lançamento de subagentes, são primitivas do **Claude Code** e existem
+neste posto. Noutro runtime podem ter outros nomes ou não existir: ali traduz-se o **papel e a
+proibição**, que é o que esta tabela define, e declara-se a tradução em vez de a fazer em
+silêncio. O que não se traduz é a independência — sem agente separado, diz-se que a revisão foi
+própria.
+
 **Sobre o Reviewer.** A independência é o mecanismo, não a etiqueta. Um subagente a quem
 entregas a tua justificação vai avaliá-la, não o código. Dá-lhe o diff e os requisitos; guarda
 o raciocínio para ti.

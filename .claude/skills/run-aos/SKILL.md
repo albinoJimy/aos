@@ -95,7 +95,7 @@ seven-hour-old binary (from before the whole epic), and none of the new boot ban
 `serve.log`; with a forced `build`, the same smoke went 9/9 **and** the banners appeared.
 
 That is worst exactly where `smoke` is the only evidence that counts — wiring, boot
-banners, HTTP surface (see `agentic-engineering` §7). Those are the changes the unit
+banners, HTTP surface (see `software-factory` §1.7). Those are the changes the unit
 suites do not catch, so a stale binary leaves the suite green *and* the smoke green over
 old code, with nothing to tell you apart.
 
