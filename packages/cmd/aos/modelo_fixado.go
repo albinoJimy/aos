@@ -417,7 +417,9 @@ func (n *Node) goalDoRunExistente(ctx context.Context, goal agentruntime.Goal) (
 	// o deste run perdeu-o na escrita fail-soft. Nos dois casos nenhuma via reconstitui o run: a
 	// retoma pela API devolve [ErrNoResumeRecord] e o crash-resume salta-o. Esta reconstituía-o DO
 	// CORPO.
-	if n == nil || n.ResumeRecords == nil {
+	// `n` nunca é nil aqui: o [Node.lerHistoriaDoRun] acima já teria recusado com
+	// `historia_do_run_ilegivel`.
+	if n.ResumeRecords == nil {
 		return recusa(causaNoNaoSelaRegistoDeRetoma, nil)
 	}
 	if h.registo == nil {
