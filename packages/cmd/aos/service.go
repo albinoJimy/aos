@@ -906,20 +906,35 @@ func (s *NodeService) submitObservando(ctx context.Context, goal agentruntime.Go
 			// descartadas — e [atravessarArestasDoPlano] indexa `goal.Inputs` POR eles. Com as
 			// entradas a vir do selo as duas listas deixam de ser do mesmo ciclo, e o resultado não
 			// é uma recusa de admissão: a travessia corre dentro do [NodeService.hostRun], cujo
-			// defer SELA O RUN `failed` — um comprimento diferente sai como `travessia_composicao`,
-			// e um comprimento igual re-atravessa entradas cujo conteúdo a primeira travessia já
+			// defer SELA O RUN `failed` — um comprimento diferente sai como
+			// `travessia_arestas_incoerentes` ([tCausaComposicao]), e um comprimento igual
+			// re-atravessa entradas cujo conteúdo a primeira travessia já
 			// RESOLVEU (deixou de ser uma referência) e recusa. Uma re-submissão LEGÍTIMA E FIEL
 			// matava um run recuperável, que é o oposto do contrato desta via. A aresta foi
 			// atravessada na PRIMEIRA hospedagem e o seu resultado está no selo: uma re-hospedagem
 			// não a atravessa. É também a forma que as outras duas vias já têm (chegam com `nil`).
+			// E AS ARESTAS QUE O CORPO DECLAROU FICAM ATRIBUÍDAS, pela mesma razão: a porta aceitou
+			// e VALIDOU cada `inputs[].from_run`, e a re-hospedagem anula-os. Descartá-los em
+			// silêncio era o aceitar-e-ignorar que esta conferência condena (achado da 2.ª
+			// passagem da revisão).
+			if declaradas := arestasDeclaradas(rs.runsProdutores); declaradas > 0 {
+				s.log("POST de um run que ja existe (AOS-559): run %q — %d aresta(s) `inputs[].from_run` declarada(s) no corpo foram DESCARTADAS: a aresta foi atravessada na PRIMEIRA hospedagem e o resultado dela esta no selo, pelo que uma re-hospedagem nao a atravessa",
+					runID, declaradas)
+			}
 			rs.runsProdutores = nil
 			// A DIVERGÊNCIA DO OBJECTIVO FICA ATRIBUÍDA, porque é o único campo que o corpo fornece,
 			// que alarga autoridade (entra no tail como CONFIÁVEL) e que esta conferência não pode
 			// comparar — o do selo está redigido pela ingestão e o do corpo é cru. Sem esta linha a
 			// única coisa silenciosa era exactamente a que mais interessa ver. Nem um nem outro
 			// texto vai ao log: o objectivo é input do utilizador.
+			//
+			// «SELADO» E NÃO «O DO SELO TAL E QUAL»: a ingestão corre mais abaixo, sobre o Goal já
+			// substituído, pelo que o run continua com o objectivo selado RE-INGERIDO — como nas
+			// outras duas vias, que também o re-ingerem. Sob a política de remoção isso é
+			// byte-idêntico (o texto já está minimizado); com tokenização por-titular deixaria de o
+			// ser, e aí o turno 1 remontaria outros bytes. Fica nomeado onde alguém o vai ler.
 			if existente.Objective != goal.Objective {
-				s.log("POST de um run que ja existe (AOS-559): run %q — o `objective` do corpo NAO e o que esta selado e foi IGNORADO; o run continua com o objectivo SELADO. Os dois nao sao comparaveis nesta rota (a ingestao redige o selado, AOS-091/AOS-208), pelo que a divergencia e registada e nao recusada", runID)
+				s.log("POST de um run que ja existe (AOS-559): run %q — o `objective` do corpo NAO e o que esta selado e foi IGNORADO; o run continua com o objectivo SELADO (re-ingerido pela ingestao, como nas outras duas vias). Os dois nao sao comparaveis nesta rota — a ingestao redige o selado e o do corpo e cru (AOS-091/AOS-208) —, pelo que a divergencia e registada e nao recusada", runID)
 			}
 			goal = existente
 			rs.existente = true

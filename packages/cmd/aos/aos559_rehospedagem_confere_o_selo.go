@@ -80,7 +80,9 @@ package main
 //     campos do Goal por reflexão, pelo que um campo NOVO que alguém acrescente ao `Goal` e à porta
 //     cai aqui sem ninguém se lembrar dele. Hoje são `RunID`, `Scope`, `System`, `MaxTurns`,
 //     `AllowedTools`, `CompletionRequires`, `OutputFromTool`, `OutputSourceBinding`,
-//     `ConteudoPorHandle`, `Principal` e `Subject`.
+//     `ConteudoPorHandle`, `Principal` e `Subject`. Um campo NÃO EXPORTADO recusa sem ser lido: a
+//     reflexão não o deixa ler e `Interface()` sobre ele entraria em PANIC no caminho de admissão
+//     do `POST /runs` — a promessa é «nunca aberto», e um panic não é nem fechado nem aberto.
 //
 // Dois desses onze não se comparam campo-a-campo, e a razão é de forma:
 //
@@ -90,9 +92,12 @@ package main
 //     equivalente selado é o LAYOUT em que o run ficou, e é com ele que se confere
 //     ([agentruntime.HasPlanInputsByHandle]) — a 1.8.0 só se alcança a pedido
 //     ([layoutDoRunNovo]), pelo que a equivalência é exacta nos dois sentidos.
-//   - `CompletionRequires` é o único campo conferido com `omitempty` no registo: uma lista VAZIA
-//     serializa sem a chave e volta `nil`, pelo que um corpo com `completion_requires: []`
-//     divergiria de si próprio. Normaliza-se — e SÓ quando as duas são vazias, porque um corpo sem
+//   - `CompletionRequires` é o único campo conferido que é SLICE **e** tem `omitempty` no registo,
+//     e é por isso o único com a assimetria: uma lista VAZIA serializa sem a chave e volta `nil`,
+//     pelo que um corpo com `completion_requires: []` divergiria de si próprio. (O `OutputFromTool`
+//     e o `OutputSourceBinding` também têm `omitempty`, mas são strings e o round-trip é
+//     simétrico — a afirmação «o único com `omitempty`» que aqui estava era falsa, e foi um achado
+//     da segunda passagem.) Normaliza-se — e SÓ quando as duas são vazias, porque um corpo sem
 //     contrato contra um selo COM contrato é a divergência que mais interessa recusar. O
 //     `AllowedTools` NÃO é normalizado, de propósito: ali `nil` é «sem restrição» e vazia é «nega
 //     todas», e o registo preserva a diferença.
@@ -106,19 +111,32 @@ package main
 // daria a quem submete a ideia de que o run mudou, «que seria a afirmação ao contrário». Onde a
 // comparação não é possível (classe 1), a atribuição é o LOG e não a recusa.
 //
-// # O PRINCIPAL CONFERE-SE DE GRAÇA, e isso não é acidente
+// # O PRINCIPAL CONFERE-SE PELA REGRA DA RETOMA, E NÃO CAMPO A CAMPO
 //
-// `Principal` está na classe 3, e é por aí que esta via passa a ter a conferência de identidade que
-// a retoma pela API faz no seu passo (2-quater): o `POST /runs` escreve em
-// `Principal.AgentID`/`UserID`/`MandateID`/`MandateSigner` o que resolveu da credencial VERIFICADA
-// à porta, e o registo selou os do run. Compará-los é comparar a credencial fresca com a cadeia
-// selada — agente, humano, mandato e chave do mandato, os quatro eixos que o `resume.go` enumera.
-// Uma credencial que não verifique deixa-os vazios e também divergem: fail-closed.
+// `Principal` está na classe 3, mas NÃO por `reflect.DeepEqual` sobre a struct: tem a sua própria
+// função ([principalDivergeDoSelo]), e a razão é a diferença entre o que identifica o RUN e o que
+// identifica QUEM CHAMA.
 //
-// CONSEQUÊNCIA DECLARADA, gémea da que o `resume.go` já declara: rodar a chave do mandato torna os
-// runs em curso sob a anterior não re-hospedáveis por esta via. É o preço de a re-hospedagem exigir
-// a mesma autoridade, e o operador escolhe o momento da rotação. (O `MandateAdmitsRequester` do
-// AOS-439 continua a correr à porta, para todo o `POST /runs`, e não se repete aqui.)
+// O que identifica o run são os quatro eixos que o `POST /runs` resolve da credencial VERIFICADA à
+// porta e que o registo selou: agente, humano, mandato e chave do mandato. Compará-los é comparar a
+// credencial fresca com a cadeia selada, e é EXACTAMENTE a regra do passo (2-quater) do
+// `resume.go` — cada um só quando o selo o tem, porque um selo escrito num nó que não verificava
+// credencial tem-nos vazios, e esse run continua a ser retomável, como lá.
+//
+// O `NHIID` E O `REQUESTEDBY` NÃO SE COMPARAM, e isto foi um achado da SEGUNDA passagem da revisão:
+// em modo soberano o `NHIID` do Goal é o principal OIDC de QUEM CHAMA o nó, sobreposto na porta
+// ([apiHandler.handleSubmit] di-lo: «o campo de corpo auto-declarado `req.PrincipalNHI` aqui é
+// IGNORADO»), e não o agente do run. Comparar a struct inteira amarrava a re-hospedagem ao MESMO
+// chamador autenticado — e `AOS_PLAN_DRAINERS` é uma LISTA: o segundo drenador a pegar no run
+// recebia 409 e não havia corpo nenhum que o resolvesse, porque o campo não vem do corpo. E não
+// comprava integridade: o Goal que segue é o SELADO, pelo que o run continua sob a identidade com
+// que foi selado, venha quem vier. Custava a recuperação, no caminho que existe para recuperar.
+//
+// CONSEQUÊNCIA DECLARADA, gémea da que o `resume.go` já declara: rodar o mandato ou a sua chave
+// torna os runs em curso sob a anterior não re-hospedáveis por esta via. É o preço de a
+// re-hospedagem exigir a mesma autoridade, e o operador escolhe o momento da rotação. (O
+// `MandateAdmitsRequester` do AOS-439 continua a correr à porta, para todo o `POST /runs`, e não se
+// repete aqui.)
 //
 // # SEM SELO NÃO SE RE-HOSPEDA, e as duas ausências não são a mesma
 //
@@ -163,6 +181,7 @@ import (
 	modelgateway "github.com/aos-ref/platform/model-gateway"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 )
 
 // Causas de recusa de [ErrRunExistenteRecusado] acrescentadas pelo AOS-559. Vocabulário fechado,
@@ -194,13 +213,15 @@ func remedioDoRunExistenteRecusado(err error) string {
 	case causaSemRegistoDeRetoma:
 		return "este run NAO tem registo de retoma (a escrita e fail-soft e falhou, ou o run morreu antes dela): nao ha selo de que reconstituir o Goal, e o corpo nao e o selo. NAO e recuperavel — a retoma da API recusa-o pela mesma razao e a varredura de crash-resume salta-o. O run fica em `running`"
 	case causaCorpoDivergeDoSelo:
-		return "re-submeta o corpo que esta SELADO para o run (o campo que diverge vem a seguir); o run continua em `running` e e re-hospedavel com o corpo certo"
+		// NAO promete um corpo que resolva: em tres divergencias nao existe nenhum, e esta funcao
+		// existe exactamente para nao dar remedios que nao se aplicam (achado da 2.a passagem).
+		return "o campo que diverge vem a seguir. Se for um campo do pedido, re-submeta o corpo que esta SELADO para o run; se for `Principal`, `ConteudoPorHandle` ou `MaxTurns` NAO ha corpo que passe — a identidade vem da credencial VERIFICADA e nao de campos do pedido, o layout esta selado, e o tecto de turnos resolve-se repondo AOS_MAX_TURNS. Em qualquer dos casos o run continua em `running`, e a varredura de crash-resume retoma-o sem depender de quem chama"
 	case causaFixacaoDiferenteDaGravada:
 		return "o log do run contradiz-se sobre em que modelo esta fixado (o registo de retoma e o run.model_pinned nao dizem o mesmo): nao se escolhe um dos lados — investigue o stream do run"
 	case causaMarcaSemFixacaoGravada:
 		return "o Goal submetido afirma uma fixacao de modelo que o log do run nao tem; submeta-o sem a marca"
 	case causaHistoriaDoRunIlegivel:
-		return "o no nao conseguiu LER do seu log se o run existia (o stream do run, ou o dos registos de retoma): nao se decide sobre o que nao se leu — reponha o Event Store e re-submeta; o run continua em `running`"
+		return "o no nao conseguiu LER do seu log se o run existia (o stream do run, ou o dos registos de retoma): nao se decide sobre o que nao se leu. Duas classes, e a causa concreta vem a seguir: um Event Store que nao responde (reponha-o e re-submeta), ou um registo de retoma RECUSADO por nao ser o que o no escreveu — adulterado, em claro, de outro run, ou fora do Put — e ai o remedio nao e o substrato, e sim investigar quem escreveu no stream de governacao. O run continua em `running`"
 	}
 	// O vocabulário FECHADO do perfil fixado ([modelgateway.PinnedRouteProfileCauses]) tem o mesmo
 	// remédio, e enumerá-lo caso a caso deixaria uma causa nova dele a cair no remédio genérico.
@@ -210,6 +231,52 @@ func remedioDoRunExistenteRecusado(err error) string {
 		}
 	}
 	return "o run continua em `running`"
+}
+
+// arestasDeclaradas conta as arestas do plano que o corpo declarou (`inputs[].from_run` nao vazio).
+//
+// Serve so para o log: uma re-hospedagem descarta-as, porque a aresta foi atravessada na PRIMEIRA
+// hospedagem e o resultado dela esta no selo. A contagem e a MESMA que
+// [atravessarArestasDoPlano] usa para decidir se ha travessia a fazer.
+func arestasDeclaradas(produtores []string) int {
+	n := 0
+	for _, r := range produtores {
+		if r != "" {
+			n++
+		}
+	}
+	return n
+}
+
+// principalDivergeDoSelo diz se a identidade do corpo não é a que está selada para o run.
+//
+// A REGRA É A DO PASSO (2-quater) DO `resume.go`, e não uma comparação da struct: os quatro eixos
+// que o `POST /runs` resolve da credencial VERIFICADA — agente, humano, mandato e chave do mandato
+// — comparam-se CADA UM só quando o selo o tem. Um selo com o eixo vazio foi escrito por um nó que
+// não verificava credencial, e esse run continua re-hospedável, exactamente como na retoma.
+//
+// O `NHIID` e o `RequestedBy` ficam DE FORA: em modo soberano identificam quem CHAMA o nó, não o
+// agente do run, e amarrá-los ao selo tornava o run não re-hospedável pelo segundo drenador sem
+// comprar integridade nenhuma — o Goal que segue é o selado. O porquê está no cabeçalho.
+//
+// Os restantes campos do `Principal` (`AgentClass`, `Board`, `Authority`, `DelegationChain`,
+// `SubjectAuthority`) não são escritos pela porta em sítio nenhum: como a classe 2, o corpo tem de
+// os trazer no valor-zero ou iguais aos selados.
+func principalDivergeDoSelo(corpo, selado referencemonitor.Principal) bool {
+	for _, eixo := range [][2]string{
+		{corpo.AgentID, selado.AgentID},
+		{corpo.UserID, selado.UserID},
+		{corpo.MandateID, selado.MandateID},
+		{corpo.MandateSigner, selado.MandateSigner},
+	} {
+		if eixo[1] != "" && eixo[0] != eixo[1] {
+			return true
+		}
+	}
+	corpo.NHIID, corpo.RequestedBy = selado.NHIID, selado.RequestedBy
+	corpo.AgentID, corpo.UserID = selado.AgentID, selado.UserID
+	corpo.MandateID, corpo.MandateSigner = selado.MandateID, selado.MandateSigner
+	return !reflect.ValueOf(corpo).IsZero() && !reflect.DeepEqual(corpo, selado)
 }
 
 // camposIgnorados são os campos do [agentruntime.Goal] da CLASSE 1: o corpo fornece-os e o valor
@@ -268,17 +335,26 @@ func campoDoCorpoQueDiverge(corpo, selado agentruntime.Goal) string {
 	c, s := reflect.ValueOf(corpo), reflect.ValueOf(selado)
 	t := c.Type()
 	for i := 0; i < t.NumField(); i++ {
-		nome := t.Field(i).Name
-		igual := reflect.DeepEqual(c.Field(i).Interface(), s.Field(i).Interface())
+		campo := t.Field(i)
+		nome := campo.Name
+		// Um campo não exportado não se lê por reflexão: recusa, para a classe por omissão
+		// continuar a ser «fechado» em vez de um panic.
+		if !campo.IsExported() {
+			return nome
+		}
 		switch {
 		case nome == "ConteudoPorHandle" || camposIgnorados[nome]:
 			// Já conferido acima, ou sem comparação possível.
-		case camposSoDoSelo[nome]:
-			// Ou o corpo não o diz, ou diz exactamente o que o selo diz.
-			if !c.Field(i).IsZero() && !igual {
+		case nome == "Principal":
+			if principalDivergeDoSelo(corpo.Principal, selado.Principal) {
 				return nome
 			}
-		case !igual:
+		case camposSoDoSelo[nome]:
+			// Ou o corpo não o diz, ou diz exactamente o que o selo diz.
+			if !c.Field(i).IsZero() && !reflect.DeepEqual(c.Field(i).Interface(), s.Field(i).Interface()) {
+				return nome
+			}
+		case !reflect.DeepEqual(c.Field(i).Interface(), s.Field(i).Interface()):
 			return nome
 		}
 	}

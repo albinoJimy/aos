@@ -243,6 +243,14 @@ func TestAOS559_RunEmCursoSemSeloERecusado(t *testing.T) {
 // CONTROLO NEGATIVO no mesmo teste: a MESMA chamada num run NOVO (sem selo, logo sem
 // `rs.existente`) continua a recusar pela travessia. Sem ele, este teste passaria com uma
 // implementação que nunca atravessasse a aresta.
+//
+// O QUE ISTO NÃO EXERCITA, declarado: os dois casos recusam ambos em `travessia_sem_espaco_de_
+// handles`, porque este nó não compõe espaço de handles e esse guarda vem antes dos outros. Os
+// dois mecanismos que o comentário da correcção nomeia — comprimento diferente ⇒
+// `travessia_arestas_incoerentes`, e comprimento igual ⇒ re-travessia de conteúdo já resolvido ⇒
+// `travessia_entrada_sem_referencia` — exigem um nó COM espaço composto, que é a fase R2 e está
+// fora do âmbito deste ticket. O que o par prova é a propriedade que importa: com `rs.existente` a
+// travessia fica inerte, e sem ele não fica.
 func TestAOS559_ReHospedagemNaoAtravessaAArestaDoPlano(t *testing.T) {
 	entradas := []agentruntime.PlanInput{{From: "no-a", Output: "out", Digest: "sha256:ja-resolvido", Content: []byte("o conteudo que a 1.a travessia resolveu")}}
 	corpo := func(runID, tok string) agentruntime.Goal {
@@ -296,6 +304,69 @@ func TestAOS559_ReHospedagemNaoAtravessaAArestaDoPlano(t *testing.T) {
 	})
 }
 
+// A IDENTIDADE CONFERE-SE PELA REGRA DA RETOMA (AOS-559, achado da segunda passagem da revisão).
+//
+// Os quatro eixos que o `POST /runs` resolve da credencial VERIFICADA comparam-se cada um SÓ quando
+// o selo o tem — a regra do passo (2-quater) do `resume.go`. O `NHIID` e o `RequestedBy` NÃO se
+// comparam: em modo soberano identificam QUEM CHAMA o nó, e amarrá-los ao selo tornava o run não
+// re-hospedável pelo segundo drenador (`AOS_PLAN_DRAINERS` é uma lista) sem comprar integridade
+// nenhuma, porque o Goal que segue é o selado.
+func TestAOS559_IdentidadeConfereSePelaRegraDaRetoma(t *testing.T) {
+	quatroEixos := referencemonitor.Principal{
+		NHIID: "oidc:drenador-a", RequestedBy: "quem-pediu", AgentID: "agente-do-run",
+		UserID: "humano", MandateID: "mandato-v2", MandateSigner: "chave-1",
+	}
+	for _, caso := range []struct {
+		nome    string
+		selo    referencemonitor.Principal
+		corpo   referencemonitor.Principal
+		diverge bool
+	}{
+		{"o mesmo chamador", quatroEixos, quatroEixos, false},
+		{"OUTRO chamador, a mesma credencial do run", quatroEixos,
+			referencemonitor.Principal{NHIID: "oidc:drenador-b", RequestedBy: "outro-pedido", AgentID: "agente-do-run",
+				UserID: "humano", MandateID: "mandato-v2", MandateSigner: "chave-1"}, false},
+		{"outro agente", quatroEixos, func() referencemonitor.Principal {
+			p := quatroEixos
+			p.AgentID = "outro-agente"
+			return p
+		}(), true},
+		{"outro humano na raiz", quatroEixos, func() referencemonitor.Principal {
+			p := quatroEixos
+			p.UserID = "outro-humano"
+			return p
+		}(), true},
+		{"outro mandato", quatroEixos, func() referencemonitor.Principal {
+			p := quatroEixos
+			p.MandateID = "mandato-v3"
+			return p
+		}(), true},
+		{"a chave do mandato rodada", quatroEixos, func() referencemonitor.Principal {
+			p := quatroEixos
+			p.MandateSigner = "chave-2"
+			return p
+		}(), true},
+		{"a credencial fresca nao verifica (eixos vazios)", quatroEixos,
+			referencemonitor.Principal{NHIID: "oidc:drenador-a"}, true},
+		// A REGRA DO `resume.go`: um selo com o eixo vazio foi escrito por um nó que não verificava
+		// credencial, e esse run continua re-hospedável.
+		{"o SELO nao tem os eixos (no sem credencial verificada)",
+			referencemonitor.Principal{NHIID: "nhi:agente"}, quatroEixos, false},
+		// Os campos que a porta nunca escreve seguem a regra da classe 2.
+		{"um campo que a porta nunca escreve, afirmado pelo corpo", quatroEixos, func() referencemonitor.Principal {
+			p := quatroEixos
+			p.AgentClass = "classe-afirmada"
+			return p
+		}(), true},
+	} {
+		t.Run(caso.nome, func(t *testing.T) {
+			if got := principalDivergeDoSelo(caso.corpo, caso.selo); got != caso.diverge {
+				t.Fatalf("principalDivergeDoSelo = %v; quer %v", got, caso.diverge)
+			}
+		})
+	}
+}
+
 // aos559GoalCheio é um Goal com TODOS os campos num valor não-zero e distinto. Serve para descobrir,
 // pelo comportamento, que campos a conferência compara — ver
 // [TestAOS559_AClasseDeCadaCampoDoGoal].
@@ -332,10 +403,11 @@ func aos559GoalCheio() agentruntime.Goal {
 	}
 }
 
-// A CLASSE DE CADA CAMPO DO GOAL, descoberta pelo COMPORTAMENTO e não por uma lista escrita à mão
-// (AOS-559). Parte-se do Goal vazio contra o selo cheio e pergunta-se repetidamente qual é o campo
-// que diverge, copiando de cada vez o valor selado para o corpo: a sequência que sai É o conjunto
-// dos campos conferidos.
+// A CLASSE DE CADA CAMPO DO GOAL (AOS-559). A SEQUÊNCIA dos campos conferidos é descoberta pelo
+// COMPORTAMENTO — parte-se do Goal vazio contra o selo cheio e pergunta-se repetidamente qual é o
+// campo que diverge, copiando de cada vez o valor selado para o corpo —, e é essa sequência que se
+// compara com a lista esperada. A lista é escrita à mão, de propósito: é a declaração de intenção
+// contra a qual o comportamento é medido.
 //
 // É o critério «nenhum campo fica a entrar do corpo sem classe» tornado executável: alguém que
 // acrescente um campo ao `Goal` e à porta e não pense nele vê este teste falhar — porque a classe
@@ -408,6 +480,11 @@ func TestAOS559_AClasseDeCadaCampoDoGoal(t *testing.T) {
 // e NENHUM erro. Está aqui com a assinatura da função original — `(Goal, error)` — para o controlo
 // negativo poder provar as duas coisas que importam: que o pedido era ADMITIDO, e que o run
 // continuava com o valor do CORPO.
+//
+// ÂMBITO DA FIDELIDADE, declarado: modela o ramo em que o log tem uma fixação e o corpo não traz a
+// marca — o único que os casos abaixo percorrem, porque nenhum deles mexe nos três campos que a
+// regra sobrepunha. Os outros ramos da função antiga (história sem fixação, e a recusa
+// `marca_sem_fixacao_gravada`) não estão modelados, e não precisam de estar para o que se mede.
 func aos559RegraAnterior(corpo, selado agentruntime.Goal) (agentruntime.Goal, error) {
 	corpo.Model.ModelID, corpo.ModelPinnedBy = selado.Model.ModelID, selado.ModelPinnedBy
 	if selado.RouteProfileDigest != "" {
@@ -476,10 +553,9 @@ func TestAOS559_CampoDoCorpoQueDiverge_ControloNegativoDaImplementacaoAnterior(t
 			caso.muda(&corpo)
 			// A implementação ANTERIOR não devolvia erro — ADMITIA — e o Goal que seguia levava o
 			// valor do CORPO.
-			antes, aerr := aos559RegraAnterior(corpo, selado)
-			if aerr != nil {
-				t.Fatalf("o controlo negativo nao modela a regra anterior: ela nao recusava, e deu %v", aerr)
-			}
+			// A regra anterior nunca recusava — é por isso que o `error` é sempre nil, e é essa a
+			// metade do controlo que importa: o pedido era ADMITIDO.
+			antes, _ := aos559RegraAnterior(corpo, selado)
 			if reflect.DeepEqual(caso.olhar(antes), caso.olhar(selado)) {
 				t.Fatalf("o controlo negativo nao distingue nada: a regra anterior devolveu o valor do SELO em %s", caso.campo)
 			}
