@@ -136,6 +136,15 @@ type runState struct {
 	// plano é o pedido de plano de que o run é trabalho, VERIFICADO pelo nó no `POST /runs`
 	// (AOS-520, [origemDoPlano]). O valor-zero é um run que não é trabalho de um pedido verificado.
 	plano origemDoPlano
+	// runsProdutores é o run produtor de cada entrada do plano (`inputs[].from_run`), pela MESMA
+	// ordem dos `Goal.Inputs`, tal como o `POST /runs` o leu do corpo (AOS-553). SÓ TEM USO na
+	// travessia da aresta do plano, e lá é conferido contra o `plano` acima
+	// ([runDoNoProdutor]): não dá autoridade nenhuma por si.
+	//
+	// Fica AQUI, como o `plano`, e não no Goal: não viaja no Goal nem no contexto, e um run
+	// RETOMADO não precisa dele — a travessia corre uma vez, na primeira hospedagem, e o registo
+	// de retoma já leva os bytes resolvidos e o handle que os sela.
+	runsProdutores []string
 
 	// outcome — escrito UMA vez sob o mutex do serviço, antes de close(done).
 	result   agentruntime.Result
@@ -708,7 +717,7 @@ func imputadoA(goal agentruntime.Goal) string {
 // vazio (a derivação só corre com o gate soberano composto) — e é também aí que o tecto não está
 // em vigor, pelo que as duas condições coincidem por construção.
 func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resuming bool) error {
-	return s.submitObservando(ctx, goal, resuming, origemDoPlano{}, nil)
+	return s.submitObservando(ctx, goal, resuming, origemDoPlano{}, nil, nil)
 }
 
 // SubmitObservando é o [NodeService.Submit] com um observador do Goal HOSPEDADO (AOS-506).
@@ -737,21 +746,21 @@ func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resumi
 //
 // O observador só lê: recebe uma cópia do Goal e nada do que faça muda o run.
 func (s *NodeService) SubmitObservando(ctx context.Context, goal agentruntime.Goal, aoHospedar func(agentruntime.Goal)) error {
-	return s.submitObservando(ctx, goal, false, origemDoPlano{}, aoHospedar)
+	return s.submitObservando(ctx, goal, false, origemDoPlano{}, nil, aoHospedar)
 }
 
 // submitDoPlano é o [NodeService.SubmitObservando] de um run NOVO que o `POST /runs` provou ser
 // trabalho do pedido de plano `plano` (AOS-520). É a ÚNICA via por que a origem do plano chega à
 // hospedagem: quem a compõe é o handler, do que o nó verificou no seu log, e ela fica no estado do
 // run — não viaja no Goal nem no contexto. `aoHospedar` nil ⇒ sem observador.
-func (s *NodeService) submitDoPlano(ctx context.Context, goal agentruntime.Goal, plano origemDoPlano, aoHospedar func(agentruntime.Goal)) error {
-	return s.submitObservando(ctx, goal, false, plano, aoHospedar)
+func (s *NodeService) submitDoPlano(ctx context.Context, goal agentruntime.Goal, plano origemDoPlano, runsProdutores []string, aoHospedar func(agentruntime.Goal)) error {
+	return s.submitObservando(ctx, goal, false, plano, runsProdutores, aoHospedar)
 }
 
 // submitObservando é o corpo do [NodeService.submit]; `aoHospedar` nil ⇒ sem observador. `plano` é
 // a origem verificada do run num pedido de plano; o valor-zero em todas as vias menos a do
 // `POST /runs` com o vínculo verificado.
-func (s *NodeService) submitObservando(ctx context.Context, goal agentruntime.Goal, resuming bool, plano origemDoPlano, aoHospedar func(agentruntime.Goal)) error {
+func (s *NodeService) submitObservando(ctx context.Context, goal agentruntime.Goal, resuming bool, plano origemDoPlano, runsProdutores []string, aoHospedar func(agentruntime.Goal)) error {
 	if goal.RunID == "" {
 		return ErrEmptyRunID
 	}
@@ -823,7 +832,7 @@ func (s *NodeService) submitObservando(ctx context.Context, goal agentruntime.Go
 			}
 		}
 	}
-	rs := &runState{runID: runID, done: make(chan struct{}), principal: imputadoA(goal), titular: goal.Titular(), plano: plano}
+	rs := &runState{runID: runID, done: make(chan struct{}), principal: imputadoA(goal), titular: goal.Titular(), plano: plano, runsProdutores: runsProdutores}
 	s.runs[runID] = rs // RESERVA — bloqueia duplicados enquanto adquirimos o lease
 	s.mu.Unlock()
 
@@ -1304,6 +1313,35 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	// dirimente: o registo de retoma já foi gravado, pelo que apagar deixaria um run RETOMÁVEL cujas
 	// entradas não têm bytes — perda silenciosa de capacidade em vez de bytes a mais, que é a troca
 	// errada. Fechá-lo é correr esses portões ANTES do selo, e isso é o AOS-557.
+
+	// AOS-553: A TRAVESSIA DA ARESTA DO PLANO POR HANDLE (ADR-045). Uma entrada que o `aos-orq`
+	// DECLAROU como aresta (`inputs[].from_run`) — o que ele faz quando o run produtor correu num
+	// layout por handle e o kernel designou a própria referência como origem da saída — resolve-se
+	// aqui, do armazém do run produtor, sob as seis conferências de `travessia_da_aresta.go`. A
+	// porta é a aresta declarada e NUNCA a forma dos bytes: um texto com forma de referência não
+	// decide nada, e o porquê está no corpo daquela função.
+	//
+	// ANTES DO SELO, e tem de ser: é o selo a seguir que põe estes bytes no espaço DESTE run e lhes
+	// cunha o token que o tail da 1.8.0 mostra. Resolver depois selava a referência como se fosse
+	// conteúdo — o lixo silencioso que este ticket fecha.
+	//
+	// E DEPOIS DA FIXAÇÃO DO LAYOUT, embora não dependa dela: a travessia é a mesma em qualquer
+	// layout, porque quem decide se há referência a resolver é o run PRODUTOR e não este. Fica
+	// junto do selo para as duas metades da aresta se lerem no mesmo sítio.
+	//
+	// NÃO ACRESCENTA JANELA NENHUMA às duas que o bloco abaixo declara: a travessia só LÊ do
+	// armazém do produtor, pelo que uma recusa dela não deixa bytes atrás de si. A ordem dos
+	// portões do [agentruntime.Runtime.Run] é a de antes, e fechá-la continua a ser o AOS-557.
+	var terr error
+	if goal, terr = atravessarArestasDoPlano(ctx, s.node.planoHandles, s, rs.plano.pedido, rs.runsProdutores, goal); terr != nil {
+		err = fmt.Errorf("aos: run %q: %w", rs.runID, terr)
+		s.mu.Lock()
+		rs.err = err
+		s.mu.Unlock()
+		s.log("run %q RECUSADO pela travessia da aresta do plano (AOS-553): uma entrada vem por referencia de handle e nao se resolveu — o run fecha failed sem dar um turno, em vez de o modelo receber um token que este run nao abre: %v", rs.runID, terr)
+		return
+	}
+
 	var herr error
 	if goal, herr = selarEntradasDoPlano(ctx, s.node.planoHandles, goal); herr != nil {
 		err = fmt.Errorf("aos: run %q: %w", rs.runID, herr)

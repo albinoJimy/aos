@@ -1126,7 +1126,7 @@ func TestAOS501_EntregaDoRun(t *testing.T) {
 	outro := strings.Replace(envelope, "1250", "9999", 1)
 	soEspacos := " \n\t "
 	// O caso bom.
-	ent, causa := entregaDoRun("doc_read", aos501RunDoLeitor, estado(ancora(nil), &envelope, ""))
+	ent, causa := entregaDoRun("doc_read", aos501RunDoLeitor, estado(ancora(nil), &envelope, ""), false)
 	if causa != "" || ent.conteudo != documento || ent.extraccao != plannerevents.PayloadExtractionSandboxStdoutText ||
 		ent.digestDaAncora != digestDoConteudo(envelope) || ent.bytesDaAncora != len(envelope) || ent.passo != "step-000001-tool-1" {
 		t.Fatalf("a entrega de um envelope que confere e o documento, com a ancora do envelope: %+v (%q)", ent, causa)
@@ -1188,7 +1188,7 @@ func TestAOS501_EntregaDoRun(t *testing.T) {
 		}{estado(ancora(func(a *agentruntime.OutputSource) { a.StepID = passo }), &envelope, ""), causaOrigemSemVinculo}
 	}
 	for nome, c := range casos {
-		ent, causa := entregaDoRun("doc_read", aos501RunDoLeitor, c.st)
+		ent, causa := entregaDoRun("doc_read", aos501RunDoLeitor, c.st, false)
 		if causa != c.causa {
 			t.Errorf("%s: causa=%q; quero %q", nome, causa, c.causa)
 		}
@@ -1217,7 +1217,7 @@ func TestAOS501_EntregaDoRun(t *testing.T) {
 	} {
 		servido := c.servido
 		a := ancora(func(a *agentruntime.OutputSource) { a.Digest, a.Bytes = digestDoConteudo(servido), len(servido) })
-		if _, causa := entregaDoRun("doc_read", aos501RunDoLeitor, estado(a, &servido, "")); causa != c.causa {
+		if _, causa := entregaDoRun("doc_read", aos501RunDoLeitor, estado(a, &servido, ""), false); causa != c.causa {
 			t.Errorf("%s, com a ancora dos proprios bytes: causa=%q; quero %q", nome, causa, c.causa)
 		}
 	}

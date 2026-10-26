@@ -41,8 +41,9 @@ package main
 // O `abrir` do armazém de artefactos reconfere o DIGEST, o que amarra o cifrado ao conteúdo mas
 // NÃO ao run: um blob selado sob o mesmo titular, copiado para a pasta de outro run, abre e passa
 // (resíduo 9 do ADR-034). Aqui o run vai AUTENTICADO com os bytes: o que se sela é
-// `"handle:" + run_id + 0x00 + conteúdo`, e a abertura exige esse prefixo exacto antes de devolver
-// um byte.
+// `"handle:" + sha256(run_id) + conteúdo` ([ligacaoDoRun]), e a abertura exige esse prefixo exacto
+// antes de devolver um byte. A auto-delimitação vem do COMPRIMENTO FIXO dos 64 hexadecimais, e não
+// de um separador — ver o porquê em [ligacaoDoRun].
 //
 // PORQUE DENTRO DO PLAINTEXT E NÃO COMO AAD DO AEAD: o [audit.SealContent] sela com AAD `nil` e
 // não tem parâmetro por onde a passar; dar-lhe um mudaria a porta partilhada por todos os
@@ -128,15 +129,18 @@ const (
 	hCausaSequencia = "sequencia_de_handles_inconsistente"
 )
 
-// handleResultados é o vocabulário fechado, pela ordem em que sai no `/metrics`.
+// handleResultados é o vocabulário fechado, pela ordem em que sai no `/metrics`. A cauda é a da
+// TRAVESSIA DA ARESTA DO PLANO ([causasDaTravessia], AOS-553): entra no MESMO vocabulário por
+// a mesma razão que a selagem e a resolução partilham um — dois divergiriam no PR seguinte, e quem
+// lê o `/metrics` não tem por que saber de que lado do código a recusa nasceu.
 func handleResultados() []string {
-	return []string{
+	return append([]string{
 		hSelado, hResolvido,
 		hCausaVazio, hCausaGrande, hCausaRun, hCausaVolume, hCausaCifra, hCausaDisco, hCausaRegisto,
 		hCausaSequencia, handleCausaDesconhecido, handleCausaSemEvento, handleCausaNaoTextual, handleCausaAninhado,
 		handleCausaParcial, handleCausaSlot, handleCausaArgs, handleCausaDuplicadas,
 		handleCausaDemasiadas, handleCausaBytesDaCall, handleCausaSemRun, handleCausaIlegivel,
-	}
+	}, causasDaTravessia()...)
 }
 
 var (

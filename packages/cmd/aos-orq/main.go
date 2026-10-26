@@ -610,6 +610,9 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento, medicao *medicaoD
 			contratoDeConclusao: anuncio.aceita, medicao: medicao,
 			// AOS-542: a mesma condição que relaxou a P4 neste `serve`.
 			primeiroTurnoExigido: conferido.snap.ConsumerFirstTurnTrusted,
+			// AOS-553: o nó atravessa a aresta do plano por handle. Sem o anúncio, uma saída
+			// designada que seja uma referência fecha o nó com `origem_por_handle`.
+			travessiaPorHandle: anuncio.travessiaPorHandle,
 			// AOS-499: só em `observe`, e só declara a um nó que anuncie (ver [executorDeNos.submeter]).
 			medirOrigem: modoDaSaida == saidaPorReferenciaObserve, origemAnunciada: anuncio.origem,
 			// AOS-501: só com a postura activa um nó com origem declarada é submetido.

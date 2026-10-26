@@ -325,6 +325,7 @@ func composeEDespachar(
 		// AOS-495: o contrato de conclusão dos nós elegíveis, se o nó `aos` anunciou aceitá-lo.
 		ex.contratoDeConclusao = exe.contratoDeConclusao
 		ex.primeiroTurnoExigido = exe.primeiroTurnoExigido
+		ex.travessiaPorHandle = exe.travessiaPorHandle // AOS-553: a aresta do plano por handle
 		ex.medicao = exe.medicao
 		ex.medirOrigem, ex.origemAnunciada = exe.medirOrigem, exe.origemAnunciada
 		ex.entregaActiva = exe.entregaActiva // AOS-501: a entrega por referência das saídas declaradas

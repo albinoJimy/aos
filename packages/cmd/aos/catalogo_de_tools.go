@@ -103,6 +103,31 @@ type respostaDoCatalogo struct {
 	// depois (AOS-540 + AOS-542). É a condição de o `aos-orq` deixar um nó consumidor ter tools de
 	// efeito (a regra P4 do validador do plano). Presente só com as duas coisas; campo aditivo.
 	PlanInputDeferral *anuncioDoAdiamento `json:"plan_input_deferral,omitempty"`
+	// HandleTraversal anuncia que este nó ATRAVESSA A ARESTA DO PLANO por handle (AOS-553,
+	// ADR-045): uma entrada cujo `content` seja a referência de um handle é resolvida do armazém do
+	// run produtor, sob as conferências de `travessia_da_aresta.go`, e re-selada no run consumidor.
+	//
+	// É A CONDIÇÃO DE O `aos-orq` ENTREGAR UMA REFERÊNCIA. Sem o anúncio ele fecha o nó do plano
+	// com `origem_por_handle` em vez de entregar um token que o consumidor não abriria — que é o
+	// comportamento do AOS-556 e o que fica num nó anterior a este ticket. Presente só com o
+	// layout por handle habilitado E o espaço de handles composto; campo aditivo.
+	HandleTraversal *anuncioDaTravessia `json:"handle_traversal,omitempty"`
+}
+
+// anuncioDaTravessia é o anúncio do AOS-553. `PlanInput` é sempre verdadeiro quando o anúncio
+// existe: um nó sem as duas condições não o envia.
+type anuncioDaTravessia struct {
+	PlanInput bool `json:"plan_input"`
+}
+
+// anuncioDaTravessiaDoNo compõe o anúncio, ou nil. Exige as DUAS coisas, e pelo que foi COMPOSTO e
+// não pela variável crua: o layout por handle habilitado ([Node.conteudoPorHandle], que já inclui o
+// produtor do `tool_result`) e o espaço de handles aberto — sem ele não há de onde resolver.
+func anuncioDaTravessiaDoNo(n *Node) *anuncioDaTravessia {
+	if n == nil || !n.conteudoPorHandle || n.planoHandles == nil {
+		return nil
+	}
+	return &anuncioDaTravessia{PlanInput: true}
 }
 
 // anuncioDoAdiamento é o anúncio do AOS-542. FirstTurnTrusted é sempre verdadeiro quando o
@@ -216,5 +241,5 @@ func (h *apiHandler) handleToolCatalog(w http.ResponseWriter, r *http.Request) {
 	if tools == nil {
 		tools = []entradaDoCatalogo{}
 	}
-	writeJSON(w, http.StatusOK, respostaDoCatalogo{Tools: tools, CompletionContract: anuncioDoContratoDoNo(h.node), OutputSource: anuncioDaOrigemDoNo(h.node), RunRetry: anuncioDaNovaTentativaDoNo(h.cfg.runRetryMax, h.cfg.runRetryEmpty), PlanInputDeferral: anuncioDoAdiamentoDoNo(h.node)})
+	writeJSON(w, http.StatusOK, respostaDoCatalogo{Tools: tools, CompletionContract: anuncioDoContratoDoNo(h.node), OutputSource: anuncioDaOrigemDoNo(h.node), RunRetry: anuncioDaNovaTentativaDoNo(h.cfg.runRetryMax, h.cfg.runRetryEmpty), PlanInputDeferral: anuncioDoAdiamentoDoNo(h.node), HandleTraversal: anuncioDaTravessiaDoNo(h.node)})
 }

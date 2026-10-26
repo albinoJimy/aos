@@ -68,6 +68,7 @@ Invariante congelado (autoridade de `tecnica/18`): o **plano proposto pelo LLM �
 | AOS-400 | O prompt de decomposição declara o schema do `PlanDocument` que o decode exige | fix | M | P1 | AOS-241, AOS-273, AOS-391 |
 | AOS-408 | O gate de aprovação de plano fica composto no `aos-orq`: um plano de risco espera decisão humana antes de materializar | feature | L | P1 | AOS-236, AOS-237, AOS-390, AOS-388 |
 | AOS-409 | O `IsEffectTool` ganha o 4.º eixo — mutação — a partir de uma fonte de verdade que não seja o próprio plano | feature | M | P2 | AOS-231, AOS-408 |
+| AOS-553 | A travessia da aresta do plano por handle: o consumidor resolve pela declaração selada (fase R2 do ADR-043) | feat | M | P2 | AOS-551, AOS-552 |
 
 ---
 
@@ -10877,7 +10878,8 @@ Decisão D2 do dono tomada no mesmo dia; entra em `observe` antes de `on`.
 | Estimativa | M |
 | Dependências | AOS-551 e AOS-552 |
 | Responsável sugerido | Arquitecto de Plataforma |
-| Documentos de referência | `docs/adr/ADR-038-a-saida-de-um-no-de-passagem-directa-e-o-resultado-da-tool.md` (§3, a alternativa rejeitada e os seus gatilhos); `docs/reports/desenho-r2-entradas-por-handle-2026-10-23.md` (§3 e §7); `docs/adr/ADR-043-harness-por-capacidades.md` (§2.3) |
+| ADR próprio | **`docs/adr/ADR-045-a-travessia-da-aresta-do-plano-por-handle.md`** — o ADR que o **ADR-038 §3** exigiu ao rejeitar «o nó consumidor resolve a referência». Nasce com este ticket; o AOS-556 nasceu com o ADR-044, que é da política de fluxo e **não** da travessia |
+| Documentos de referência | `docs/adr/ADR-038-a-saida-de-um-no-de-passagem-directa-e-o-resultado-da-tool.md` (§3, a alternativa rejeitada e os seus gatilhos); `docs/reports/desenho-r2-entradas-por-handle-2026-10-23.md` (§3 e §7); `docs/adr/ADR-043-harness-por-capacidades.md` (§2.3); `docs/adr/ADR-035-submissor-do-plano-derivado-pelo-no.md` (o molde da autoridade) |
 
 ### Contexto
 
@@ -10893,16 +10895,120 @@ o nó seguinte recebe o JSON como `plan_input` untrusted e não consegue abrir o
 
 ### Critérios de Aceitação
 
-- [ ] O handle atravessa a aresta **pela declaração selada** do ADR-038 (`outputs[].from_tool` e a
+- [x] O handle atravessa a aresta **pela declaração selada** do ADR-038 (`outputs[].from_tool` e a
       âncora do kernel), nunca por um digest que o modelo forneça.
-- [ ] O nó consumidor resolve do armazém do run produtor com a declaração selada por autoridade. A
+      **FEITO.** O passo que o cumpre é o 4.º das seis conferências do **ADR-045 §2.1**: a âncora
+      selada do run produtor tem de designar **exactamente** esta referência (`sha256` e tamanho).
+      É ele que impede o corpo do pedido de nomear um handle INTERMÉDIO de um irmão do plano — um
+      resultado de tool que o plano nunca publicou. Medido antes de desenhar, e registado no ADR
+      §1.3: **o token não é autoridade** (MAC sem chave sobre `(run, digest, ordinal)`, e digests de
+      conteúdo circulam em claro na âncora e no `plan.output_source_declared`), pelo que a referência
+      do corpo é **selector** e nunca prova. O modelo nunca entra: a referência vem do `aos-orq`,
+      derivada da âncora, e um digest escrito pelo modelo não tem caminho até aqui.
+- [x] O nó consumidor resolve do armazém do run produtor com a declaração selada por autoridade. A
       escolha entre **reescrever na pasta do consumidor** e **abrir a do produtor** é tomada e
       registada: a decisão «sem deduplicação entre runs» (ADR-043 §2.3) foi tomada com o artefacto a
       ser só saída, e este é o primeiro caso em que o mesmo artefacto tem de ser legível por mais de
       um run.
-- [ ] As defesas do *confused deputy* do ADR-038 §3: o titular vem do **evento**, nunca do pedido; o
+      **FEITO, e a decisão é RE-SELAR na pasta do consumidor** — **ADR-045 §2.2**, com a tabela dos
+      seis eixos medidos. As duas linhas dirimentes: abrir a pasta do produtor tornava a amarra do
+      cifrado ao run um **PARÂMETRO** em vez da invariante que o `ErrHandleOutroRun` existe para ter
+      (`handleCriado` ganhava run de origem, `abrir` passava a receber dois runs, e o guarda da
+      declaração passava a aceitar uma que aponta para fora — é desmontar a barreira para passar por
+      ela); e punha o **replay do consumidor** a depender do stream e do blob de outro run
+      sobreviverem. O §2.3 do ADR-043 fica **reafirmado**, não emendado: a chave continua
+      `(run, sha256)`. Custo declarado: conteúdo duplicado até ao tecto por handle (256 KiB), e a
+      travessia gasta até 16 das 64 posições de `handleMaxPorRun`, deixando 48 tool calls — o que
+      estreita o resíduo que o AOS-556 declarou sobre esse tecto na 1.8.0.
+- [x] As defesas do *confused deputy* do ADR-038 §3: o titular vem do **evento**, nunca do pedido; o
       par `(run, digest)` é validado contra um `artifact.created` do stream declarado; o caminho de
       admissão não decifra por conta de uma referência de um corpo de pedido.
-- [ ] O caso **cross-titular** é decidido e nomeado: a cifra por titular bloqueia a abertura, que é a
+      **FEITO.** O evento é o **`handle.created`** e não o `artifact.created` que este critério
+      escreve: o espaço de handles tem evento e emissor PRÓPRIOS (`nhi:aos-node/handle`), distintos
+      dos do armazém de artefactos — foi a correcção central do desenho da R2, e é o que mantém este
+      conteúdo fora do `GET /runs/{id}/artifacts`. O enunciado fica como está (é o requisito
+      histórico); o que o cumpre é o evento certo.
+      As três defesas, uma a uma: **(a)** o titular sai do `sealed_subject` do evento, e é com ele
+      que se abre — o pedido não o escolhe; **(b)** o par `(run, digest)` é validado contra um
+      `handle.created` do stream do run produtor, **e o token re-cunha-se** de
+      `(run produtor, digest do evento, ordinal)` com `MintHandleToken` — sem isso, um evento cujo
+      token e digest não se correspondessem fazia a travessia abrir outro conteúdo do mesmo run;
+      **(c)** a admissão **não decifra por conta da referência**: a autoridade é o **pedido de plano
+      que o nó provou no seu próprio log** (molde do ADR-035, AOS-439/520 — quem chama é o drenador
+      com a reclamação viva daquele pedido), e o run produtor tem de ser `<pedido>~<from>` ou uma
+      tentativa dele. Seguido até quem fornece o valor: o drenador **já** lê a saída designada de
+      qualquer run do plano pelo `GET /runs/{id}`, pelo que o campo `from_run` não acrescenta
+      autoridade. **CORRECÇÃO DA REVISÃO ADVERSARIAL, e fica registada:** a primeira versão
+      justificava-o com «o drenador já lê a saída designada de qualquer run do plano pelo
+      `GET /runs/{id}`, logo isto não lhe dá nada» — **FALSO num run por handle**, onde essa rota
+      serve a REFERÊNCIA e não os bytes, e o conteúdo não é servido por rota nem tool nenhuma. A
+      travessia **acrescenta** poder: converte referência em texto em claro. O que a confina são
+      quatro perguntas a que o chamador não pode responder à sua escolha — QUAL conteúdo (a
+      âncora), DE QUE RUN (o pedido provado), DE QUEM (o evento), EM QUE ESTADO (concluiu) —, e
+      estão no **ADR-045 §2.1.1**. **SEGUNDA CORRECÇÃO DA MESMA PASSAGEM, pela revisão de
+      segurança:** o «DE QUE RUN» é mais fraco do que a primeira correcção afirmava. O `X` de
+      `<pedido>~<X>` é o `from` da entrada, que vem do corpo e **não** é validado contra o documento
+      aprovado — o nó não lê o documento (ADR-018). A propriedade imposta é «a saída designada de
+      ALGUM run deste pedido verificado». **Basta**, e está verificado porquê: é exactamente o
+      alcance que o nó JÁ concede a este chamador — o `submissor_do_plano.go` di-lo, «uma
+      reclamação viva serve para `<plano>~<qualquer-coisa>`, todos com o mesmo submissor»
+      (**ADR-035 §5**) —, pelo que quem detém a reclamação já CRIA qualquer run dessa forma. A
+      travessia não alarga os runs que ele alcança; alarga o que ele LÊ de um run que já alcança, e
+      o passo 4 limita-o à saída designada. As duas correcções ficam registadas porque o que tornou
+      a primeira difícil de ver foi estar escrita num ADR. O `from_run` acrescenta **precisão**, e ela é precisa porque o
+      run produtor pode ser uma TENTATIVA (`~<n>`), que o `node_id` sozinho não determina.
+      **E A PORTA DA TRAVESSIA É A ARESTA DECLARADA, NUNCA A FORMA DO CONTEÚDO** — o achado mais
+      sério da revisão, corrigido: `aos-handle/v1:h<n>.<16 hex>` é uma forma que qualquer texto
+      reproduz, e um nó anterior do plano publica o texto final do seu modelo, que um documento
+      untrusted pode ter ditado. Com a forma como porta, esse texto **recusava a admissão** do run
+      seguinte — até num nó sem espaço de handles, que não habilita nada desta fase. Conteúdo
+      untrusted a negar serviço no caminho de admissão, que é a classe exacta que o ADR-038 §3
+      mandou não abrir. Medido por `TestAOS553_UmTextoComFormaDeReferenciaNaoDecideNada`, com
+      não-vacuidade (o MESMO texto, com a aresta declarada, atravessa).
+- [x] O caso **cross-titular** é decidido e nomeado: a cifra por titular bloqueia a abertura, que é a
       propriedade que se quer — o que falta é a recusa ser explícita e não um erro de decifra.
-- [ ] Desligado por omissão, atrás do interruptor que já existe.
+      **FEITO:** `travessia_outro_titular`, decidida **antes de qualquer decifra**, comparando o
+      `sealed_subject` do evento com o titular deste run. A cifra continua a bloquear — e é o
+      controlo negativo do teste —; o que esta causa acrescenta é o nome, porque um erro de decifra
+      não distingue «outro titular» de «disco corrompido».
+- [x] Desligado por omissão, atrás do interruptor que já existe.
+      **FEITO.** O anúncio `handle_traversal.plan_input` do `GET /tools` exige o layout por handle
+      habilitado (`AOS_CONTEUDO_POR_HANDLE` **e** o produtor do `tool_result` composto) e o espaço
+      de handles aberto; sem ele o `aos-orq` fecha o nó com `origem_por_handle`, como no AOS-556. E
+      a travessia é **inerte** por construção: um Goal sem nenhuma entrada cuja forma seja a de uma
+      referência sai tal como entrou, sem uma leitura e sem uma alocação.
+
+### O que fica declarado, e não é deste ticket
+
+- **`NÃO VERIFICADO`: a prova em produção.** Nada disto correu em produção, e **não pode** antes de
+  o `aos-orq` **pedir** o layout 1.8.0 (`conteudo_por_handle` no `POST /runs`) — medido: ele não
+  envia o campo em nenhum sítio hoje, pelo que nenhum run de plano chega à 1.8.0 e o resíduo 5(a) do
+  AOS-556 é hoje inalcançável ATRAVÉS DO ORQ. Pedir o layout é do critério «o interruptor da 1.8.0
+  passa a accionável» do **AOS-556**. Até lá a travessia é exercida por testes, pelo caminho real de
+  admissão do nó, e não por um plano vivo.
+- **A ordem dos portões fail-closed do `hostRun` não foi tocada** — é o **AOS-557**. A travessia
+  corre imediatamente antes do selo das entradas e **não alarga** nenhuma das duas janelas que o
+  AOS-556 declarou: ela só LÊ do armazém do produtor, pelo que uma recusa dela não deixa bytes atrás
+  de si.
+- **Um nó multi-processo não atravessa:** a travessia lê o stream e o blob do run produtor do SEU
+  armazém. Produtor noutro nó ⇒ `travessia_sem_declaracao_do_produtor` ou
+  `travessia_conteudo_indisponivel`. Fail-closed e nomeado; o ADR-018 mantém a decomposição
+  multi-nó fora do `aos`.
+- **O resíduo do `well_formed=false`** que o AOS-551 deixou — «o facto é lido por quem atravessa a
+  aresta do plano» — **resolve-se por não haver leitor**: a travessia não precisa da forma dos
+  bytes, só da sua identidade (digest). Está dito no ADR-045 §5.
+- **Um `serve` que reinicie sem o anúncio recusa** um payload já publicado como referência, e o
+  consumidor não corre. É o desfecho certo — entregar um token que o nó já não resolve era pior —,
+  mas é perda de progresso de um plano a meio, e fica declarado.
+- **A travessia não passa por capability de leitura nem sela uma leitura sensível no WORM.** Ao
+  contrário da via HTTP do armazém de artefactos, que exige `read:artifact` e o selo da leitura, o
+  confinamento aqui é **estrutural** (o plano, a âncora, o titular) e não por política. Declarado
+  como resíduo no **ADR-045 §5**, e não como propriedade — a revisão adversarial mediu que a
+  primeira versão o apresentava como se fosse uma.
+- **Resíduo novo, da classe do resíduo (c) do AOS-556:** num consumidor FORA da 1.8.0 com uma aresta
+  atravessada (combinação permitida — o layout do consumidor não governa a travessia), a semente que
+  o observador do Goal captura leva a REFERÊNCIA e o `prompt_hash` real é do conteúdo resolvido,
+  pelo que uma nova tentativa acusa um `prompt_diferente` espúrio. A pré-condição que o AOS-556
+  pôs para esta classe (`sementeSemReferencias`) só vale em layouts POR HANDLE. É ruído numa
+  medição, conservador (lê-se sempre como DIFERE), e a combinação exige uma submissão que mistura
+  layouts — o `aos-orq` não o faz. Fecha-se com o resíduo (c), e não aqui.
