@@ -375,19 +375,24 @@ func TestAOS559_IdentidadeConfereSePelaRegraDaRetoma(t *testing.T) {
 // do `ConteudoPorHandle`, que o registo de retoma não tem.
 func aos559GoalCheio() agentruntime.Goal {
 	return agentruntime.Goal{
-		RunID:               "run-cheio",
-		Principal:           referencemonitor.Principal{NHIID: "nhi:selo", AgentID: "agente-selo", UserID: "humano-selo", MandateID: "mandato-selo", MandateSigner: "chave-selo"},
-		Subject:             "titular-selo",
-		Credential:          "token-selo",
-		Scope:               []string{"escopo:selo"},
-		Model:               agentruntime.ModelConfig{ModelID: "modelo-selo"},
-		System:              "system do selo",
-		Tools:               []agentruntime.ToolSpec{{Name: "tool-selo"}},
-		AllowedTools:        []string{"tool-selo"},
-		Skills:              []agentruntime.ToolSpec{{Name: "skill-selo"}},
-		Objective:           "objectivo do selo",
-		MemoryContext:       []byte("memoria do selo"),
-		Inputs:              []agentruntime.PlanInput{{From: "no-selo"}},
+		RunID:         "run-cheio",
+		Principal:     referencemonitor.Principal{NHIID: "nhi:selo", AgentID: "agente-selo", UserID: "humano-selo", MandateID: "mandato-selo", MandateSigner: "chave-selo"},
+		Subject:       "titular-selo",
+		Credential:    "token-selo",
+		Scope:         []string{"escopo:selo"},
+		Model:         agentruntime.ModelConfig{ModelID: "modelo-selo"},
+		System:        "system do selo",
+		Tools:         []agentruntime.ToolSpec{{Name: "tool-selo"}},
+		AllowedTools:  []string{"tool-selo"},
+		Skills:        []agentruntime.ToolSpec{{Name: "skill-selo"}},
+		Objective:     "objectivo do selo",
+		MemoryContext: []byte("memoria do selo"),
+		Inputs:        []agentruntime.PlanInput{{From: "no-selo"}},
+		// AOS-561, classe 1 como os `Inputs` e pela mesma razão. POPULADO de propósito: com o campo
+		// a zero nos dois lados a asserção da classe 1 passava mesmo que o campo fosse COMPARADO, e
+		// não mediria nada — achado da revisão adversarial. A forma é a do SELO: referência cunhada
+		// e sem bytes.
+		MediaInputs:         []agentruntime.MediaInput{{MediaType: "image/png", Digest: "sha256:selo", Handle: "aos-handle/v1:h1.0a1b2c3d4e5f6071"}},
 		RetryNotice:         agentruntime.RetryNoticeNoFunctionCall,
 		MaxTurns:            7,
 		AssemblyVersion:     agentruntime.AssemblyVersion180,

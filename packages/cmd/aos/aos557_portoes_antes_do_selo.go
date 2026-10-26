@@ -120,9 +120,19 @@ import (
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 )
 
-// haEntradasPorSelar diz se [selarEntradasDoPlano] vai CUNHAR pelo menos um handle para este
-// Goal: o layout põe as entradas do plano por handle, há entradas, e alguma ainda não traz
-// referência.
+// haEntradasPorSelar diz se ALGUM selo de arranque vai CUNHAR pelo menos um handle para este
+// Goal — isto é: vai ser escrito algum byte novo no espaço de handles antes de o run abrir?
+//
+// São DOIS selos, e a pergunta é sobre os dois (AOS-561). O de [selarEntradasDoPlano]: o layout
+// põe as entradas do plano por handle, há entradas, e alguma ainda não traz referência. E o de
+// [selarMediaDoPedido]: há entradas de media e alguma ainda não traz referência — este NÃO
+// depende do layout, porque uma entrada de media não é um segmento de tail em layout nenhum.
+//
+// O SEGUNDO TEVE DE ENTRAR AQUI, e não é zelo: sem ele um run com SÓ entradas de media — que é o
+// caso da via de entrada na 1.7.0, o layout em que a produção corre — selava os bytes e só depois
+// batia nos portões fail-closed do [agentruntime.Runtime.Run], deixando no espaço o conteúdo de um
+// run que nunca arranca. É o defeito que este ficheiro existe para fechar, reaberto pelo outro
+// lado.
 //
 // É DELIBERADAMENTE MAIS ESTREITA DO QUE A SAÍDA ANTECIPADA DO SELO, e não um duplicado dela. O
 // selo recusa a hospedagem quando o layout pede handles e o espaço não está composto, mesmo que
@@ -134,6 +144,12 @@ import (
 // há uma re-hospedagem que chega com as entradas por selar (ver o cabeçalho). Quem o diz é a
 // bandeira `rs.existente`.
 func haEntradasPorSelar(goal agentruntime.Goal) bool {
+	// PELA MESMA FUNCAO que o interruptor da via usa no caminho em-processo ([mediaPorSelar]): a
+	// pergunta e a mesma — vai ser escrito algum byte novo? — e duas copias dela divergiriam no
+	// PR seguinte, com uma a dizer que o run esta no ambito dos portoes e a outra que nao.
+	if mediaPorSelar(goal) {
+		return true
+	}
 	if len(goal.Inputs) == 0 || !agentruntime.HasPlanInputsByHandle(goal.AssemblyVersion) {
 		return false
 	}

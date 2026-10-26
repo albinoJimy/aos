@@ -92,6 +92,17 @@ type ingressLimits struct {
 	// apiMaxConns é o tecto de ligações abertas no listener da API (AOS-465), e tem de exceder o
 	// tecto de streams SSE: cada stream segura uma ligação durante minutos.
 	apiMaxConns int
+	// maxBody e o tecto do CORPO de um pedido (AOS-562). Existia como constante do binario
+	// ([DefaultMaxBodyBytes]) e a [APIOption] que o muda ([WithMaxBodyBytes]) so era alcancavel por
+	// TESTES — a mesma lacuna que o AOS-277 fechou para os tres primeiros numeros, medida outra vez
+	// e fechada aqui. Subi-lo e uma MUDANCA DE POSTURA (ver [ingressPostureBanner]) e o numero e de
+	// quem opera: por definir, fica o default de sempre. O valor EM VIGOR sai em TODAS as posturas
+	// do [ingressPostureBanner], afinado ou nao.
+	maxBody int64
+	// maxBodyDefinido diz se o valor acima veio da variavel ou do default. Vive AQUI pela MESMA
+	// razao que o `tuned`: o banner tem de derivar a ORIGEM do mesmo valor de retorno de que deriva
+	// o NUMERO, e nao de uma segunda leitura do ambiente.
+	maxBodyDefinido bool
 	// tuned diz se ALGUMA das variáveis foi definida. Vive AQUI (e não num parâmetro
 	// do banner) para que o texto do banner não possa divergir do que a leitura viu: a
 	// origem dos números e os números são o MESMO valor de retorno.
@@ -118,6 +129,7 @@ func ingressLimitsFromEnv() (ingressLimits, []APIOption, error) {
 		readBurst:                  DefaultReadRateBurst,
 		trajMaxConns:               DefaultMaxTrajectoryConns,
 		trajMaxConnsPerReader:      DefaultMaxTrajectoryConnsPerReader,
+		maxBody:                    DefaultMaxBodyBytes,
 	}
 
 	rawRate := strings.TrimSpace(os.Getenv("AOS_INGRESS_RATE"))
@@ -301,7 +313,27 @@ func ingressLimitsFromEnv() (ingressLimits, []APIOption, error) {
 			lim.trajMaxConns, origemDoLimite(rawTraj))
 	}
 
+	// TECTO DO CORPO DE UM PEDIDO (AOS-562). Inteiro de BYTES > 0, fail-closed como os outros: um
+	// valor ilegivel ou zero aborta o arranque em vez de cair para o default — um operador que se
+	// engana a escrever o tecto do corpo nao deve ficar com um no que aceita outro tamanho.
+	//
+	// NAO TEM TECTO MAXIMO, e e deliberado: o que contem um corpo grande e a admission que ja o
+	// contem (a rota e autenticada e tem rate-limit e tecto de runs em curso), e inventar aqui um
+	// maximo era por um numero sem fonte no caminho de quem opera. O que o banner faz e DECLARAR o
+	// valor EM VIGOR (em qualquer postura) e dizer que subi-lo e uma mudanca de postura; e o que o
+	// LIMITA nao e a autenticacao — a conferencia do corpo corre antes dela — mas os tectos
+	// AGREGADOS dos canais de entrada, que nao se movem com esta variavel.
+	rawBody := strings.TrimSpace(os.Getenv("AOS_INGRESS_MAX_BODY"))
+	if rawBody != "" {
+		n, err := strconv.ParseInt(rawBody, 10, 64)
+		if err != nil || n <= 0 {
+			return ingressLimits{}, nil, fmt.Errorf("%w: AOS_INGRESS_MAX_BODY=%q (inteiro de bytes > 0; por definir usa %d)", ErrBadIngressLimits, rawBody, DefaultMaxBodyBytes)
+		}
+		lim.maxBody, lim.maxBodyDefinido, lim.tuned = n, true, true
+	}
+
 	return lim, []APIOption{
+		WithMaxBodyBytes(lim.maxBody),
 		WithRateLimit(lim.ratePerSec, lim.burst),
 		WithMaxInFlight(lim.maxInFlight),
 		WithReadRateLimit(lim.readRatePerSec, lim.readBurst),
@@ -463,10 +495,30 @@ func origemDoLimite(raw string) string {
 // chamador escreve — medido: 60 submissões com o header a rodar, 60 admitidas, tecto a 2. O tecto
 // compõe-se nessa postura (vale contra rajada honesta) mas o banner tem de dizer QUAL das duas é.
 func ingressPostureBanner(lim ingressLimits, gateComposto, principalVerificavel bool) []string {
-	origem := "nos DEFAULTS do binario (nenhuma de AOS_INGRESS_RATE/AOS_INGRESS_BURST/AOS_INGRESS_MAX_INFLIGHT/AOS_INGRESS_MAX_INFLIGHT_PER_CALLER/AOS_INGRESS_READ_RATE/AOS_INGRESS_READ_BURST/AOS_TRAJECTORY_MAX_CONNS/AOS_TRAJECTORY_MAX_CONNS_PER_READER definida)"
+	// A ENUMERAÇÃO TEM DE CONTER TODAS AS VARIÁVEIS QUE PÕEM `tuned`, e o `AOS_INGRESS_MAX_BODY`
+	// faltava — achado da revisão adversarial do AOS-562: quem definisse SÓ essa lia «AFINADO por
+	// uma ou mais de ...» com oito nomes e nenhum deles definido, e a mudança de postura que
+	// acabara de acontecer era a única que o arranque não nomeava.
+	const afinaveis = "AOS_INGRESS_RATE/AOS_INGRESS_BURST/AOS_INGRESS_MAX_INFLIGHT/AOS_INGRESS_MAX_INFLIGHT_PER_CALLER/AOS_INGRESS_READ_RATE/AOS_INGRESS_READ_BURST/AOS_TRAJECTORY_MAX_CONNS/AOS_TRAJECTORY_MAX_CONNS_PER_READER/AOS_INGRESS_MAX_BODY"
+	origem := "nos DEFAULTS do binario (nenhuma de " + afinaveis + " definida)"
 	if lim.tuned {
-		origem = "AFINADO por uma ou mais de AOS_INGRESS_RATE/AOS_INGRESS_BURST/AOS_INGRESS_MAX_INFLIGHT/AOS_INGRESS_MAX_INFLIGHT_PER_CALLER/AOS_INGRESS_READ_RATE/AOS_INGRESS_READ_BURST/AOS_TRAJECTORY_MAX_CONNS/AOS_TRAJECTORY_MAX_CONNS_PER_READER"
+		origem = "AFINADO por uma ou mais de " + afinaveis
 	}
+	// O TECTO DO CORPO, SEMPRE DECLARADO (AOS-562). Sai em TODAS as posturas e não só quando é
+	// afinado: é o número que decide o que cabe num pedido, e o único sítio onde ele aparecia era o
+	// banner da via de media, que só existe com ela ligada — achado da revisão adversarial.
+	//
+	// A ORIGEM VEM DO VALOR DE RETORNO, e não de uma segunda leitura do ambiente. A primeira versão
+	// desta dobra chamava `os.Getenv` aqui — e isso é exactamente o que o cabeçalho deste ficheiro
+	// proíbe, pela razão que ele escreve: «a origem dos números e os números são o MESMO valor de
+	// retorno», para o texto do banner não poder divergir do que a leitura viu. Um teste que use
+	// `t.Setenv` depois de ler os limites fazia as duas fontes discordarem.
+	deOndeVeio := "default"
+	if lim.maxBodyDefinido {
+		deOndeVeio = "definida"
+	}
+	corpo := fmt.Sprintf(" TECTO DO CORPO DE UM PEDIDO (AOS-562): %d bytes (%s). Subi-lo e uma MUDANCA DE POSTURA: a rota que cria runs passa a aceitar corpos maiores em memoria por pedido em voo, e a conferencia do corpo corre ANTES da autenticacao, pelo que o trabalho que um chamador nao autenticado pode impor sobe na mesma proporcao — os tectos AGREGADOS dos canais de entrada (texto 512 KiB, media 1 MiB) e que o limitam, e esses nao se movem com esta variavel.",
+		lim.maxBody, deOndeVeio)
 	// DOBRA DO TECTO POR-CHAMADOR (AOS-456) — três posturas DISTINGUÍVEIS, e a do meio é a que
 	// a revisão adversarial da tentativa 1 apanhou: configurado e inerte.
 	porChamador := " TECTO POR-CHAMADOR (AOS-456): NAO CONFIGURADO — AOS_INGRESS_MAX_INFLIGHT_PER_CALLER vazia, logo o tecto de runs em curso e SO global e uma rajada de um chamador pode ocupar todos os lugares."
@@ -554,6 +606,6 @@ func ingressPostureBanner(lim ingressLimits, gateComposto, principalVerificavel 
 	return []string{
 		fmt.Sprintf("ingresso / admission (AOS-166/AOS-277/AOS-458): LIGADO e %s — POST /runs admite %.4g pedido(s)/segundo com burst de %.4g e no maximo %d run(s) EM CURSO nesta replica; exceder qualquer um responde 429. ALCANCE: cobre POST /runs e SO — o plano de CONTROLO (/steer,/pause,/approve,/resume) tem um balde DEDICADO que estas variaveis NAO afinam, as leituras (GET /runs/{id} e o resto do plano de DADOS) tem desde AOS-458 um balde de TAXA proprio (AOS_INGRESS_READ_RATE/AOS_INGRESS_READ_BURST) consumido no involucro da rota, e o stream SSE de trajectoria tem AINDA um tecto de LIGACOES em duas camadas (AOS_TRAJECTORY_MAX_CONNS global + AOS_TRAJECTORY_MAX_CONNS_PER_READER por leitor). O balde e POR-PROCESSO, em memoria e GLOBAL entre chamadores: NAO e por-IP nem por-principal (um so cliente ruidoso pode esgota-lo para todos) e N replicas valem N vezes este limite — nao ha limite de admissao agregado no cluster. O tecto de in-flight conta os runs REGISTADOS no loop de servico: um run SUSPENSO a espera de aval humano SAI dessa contagem e NAO ocupa lugar, e a RETOMA (/resume) re-hospeda SEM consultar o tecto. O 429 nao leva Retry-After.%s",
 			origem, lim.ratePerSec, lim.burst, lim.maxInFlight,
-			porChamador+porLeitorSSE+dobraDoTectoDaFila(lim, gateComposto, principalVerificavel)+dobraDasGeracoes(lim)+dobraDasLigacoes(lim)),
+			porChamador+porLeitorSSE+dobraDoTectoDaFila(lim, gateComposto, principalVerificavel)+dobraDasGeracoes(lim)+dobraDasLigacoes(lim)+corpo),
 	}
 }

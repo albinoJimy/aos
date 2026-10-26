@@ -494,6 +494,11 @@ type Config struct {
 	// layout por isto — quem escolhe é o campo `conteudo_por_handle` do `POST /runs`, e um
 	// nó que não habilite recusa esse campo com 400 (ADR-044 §2.9).
 	ConteudoPorHandle bool
+	// EntradaDeMedia habilita a VIA DE ENTRADA de media no `POST /runs` (AOS-561) a partir de
+	// `AOS_ENTRADA_DE_MEDIA`. Exige [Config.HandleDir] — sem o espaço de handles não há onde
+	// selar os bytes —, e essa exigência RECUSA O ARRANQUE ([ErrEntradaDeMediaSemHandles]) em vez
+	// de habilitar uma via que nenhuma submissão poderia usar.
+	EntradaDeMedia bool
 	// ArtifactDir e ArtifactMaxBytes ligam o armazém de artefactos do run (AOS-548, ADR-043 §2.3):
 	// a pasta do volume e o tecto em bytes. Pasta vazia ⇒ desligado.
 	ArtifactDir      string
@@ -1148,6 +1153,10 @@ type Node struct {
 	// não é alcançável de forma útil, e a porta recusa o pedido em vez de o aceitar e
 	// entregar um tail de erros de tool. NÃO move run nenhum: quem escolhe é o pedido.
 	conteudoPorHandle bool
+	// entradaDeMedia (AOS-561): este nó habilita a VIA DE ENTRADA de media — a env
+	// `AOS_ENTRADA_DE_MEDIA=on` E o espaço de handles, onde os bytes são selados. A porta
+	// RECUSA `media_inputs` num nó sem isto, em vez de os aceitar e não selar nada.
+	entradaDeMedia bool
 
 	// stateGates é a costura por-run (AOS-218) que resolve o [control.StateGate] durável
 	// (AOS-017) que o canal de steer usa para materializar running↔paused. O loop de
@@ -3629,7 +3638,11 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		// `AOS_TAINT_ESCALA` sem aprovadores, que deixaria runs suspensos para sempre): o nó
 		// corre, não habilita, recusa o pedido com 400, e o banner diz qual das duas metades
 		// falta.
-		conteudoPorHandle:      cfg.ConteudoPorHandle && seloDeResultado != nil,
+		conteudoPorHandle: cfg.ConteudoPorHandle && seloDeResultado != nil,
+		// AOS-561: a via de entrada habilita SÓ com o espaço de handles composto. A env `on` sem
+		// `AOS_HANDLE_DIR` já recusou o arranque ([nodeConfigFromEnv]); esta conjunção fecha o
+		// caminho em-processo, onde a Config é montada à mão.
+		entradaDeMedia:         cfg.EntradaDeMedia && planoHandles != nil,
 		media:                  cfg.MediaNoTurno,  // AOS-546: a media_view (nil ⇒ desligada); runs novos no layout 1.7.0
 		artefactos:             armazem,           // AOS-548: o armazém de artefactos (nil ⇒ desligado)
 		handles:                espacoDeHandles,   // AOS-550: o espaço próprio de handles (nil ⇒ desligado)

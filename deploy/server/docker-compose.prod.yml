@@ -419,6 +419,15 @@ services:
       # pelo cliente ha mais tempo. Tem de exceder AOS_TRAJECTORY_MAX_CONNS: um stream SSE entre
       # eventos esta a trabalhar e nao se despeja, e sem folga o plano de controlo fica sem vaga.
       AOS_API_MAX_CONNS: "${AOS_API_MAX_CONNS:-1024}"
+      # AOS-562 — o tecto do CORPO de um pedido, em bytes. DELIBERADAMENTE VAZIA: vazio =>
+      # ausente => o default do binario (1 MiB), e o no e byte a byte o de antes. SUBI-LA E UMA
+      # MUDANCA DE POSTURA, nao um detalhe — a rota que cria runs passa a aceitar corpos maiores
+      # em memoria por pedido em voo, e a conferencia do corpo corre ANTES da autenticacao, pelo
+      # que o trabalho que um chamador nao autenticado pode impor sobe na mesma proporcao. E
+      # precisa para uma entrada de media (AOS-561) acima de 768 KiB de conteudo, porque os
+      # bytes viajam em base64 (+33%): uma fotografia de 4 MiB pede ~6 MiB de corpo, E TAMBEM um
+      # tecto por handle maior. O numero e do dono; este ficheiro so o torna definivel.
+      AOS_INGRESS_MAX_BODY: "${AOS_INGRESS_MAX_BODY:-}"
       AOS_PLAN_MAX_PENDING: "${AOS_PLAN_MAX_PENDING:-1000}"
       AOS_PLAN_MAX_PENDING_PER_SUBMITTER: "${AOS_PLAN_MAX_PENDING_PER_SUBMITTER:-125}"
       # AOS-467 — tecto de geracoes de planeamento por pedido (default 5). A geracao que o passa e
@@ -584,6 +593,12 @@ services:
       # .env.example.
       AOS_HANDLE_DIR: "${AOS_HANDLE_DIR:-}"
       AOS_HANDLE_MAX_BYTES: "${AOS_HANDLE_MAX_BYTES:-}"
+      # AOS-561: A VIA DE ENTRADA — um ficheiro no pedido de um run. Vazio => ausente => off, e
+      # um POST /runs com media_inputs e RECUSADO com 400 (nunca aceito e ignorado). `on` EXIGE
+      # AOS_HANDLE_DIR, que e onde os bytes sao selados: `on` sem ela faz o no RECUSAR ARRANCAR
+      # (ErrEntradaDeMediaSemHandles). O tipo e conferido PELOS PRIMEIROS BYTES e o conteudo
+      # ingerido NAO E REDIGIDO — ver a entrada no deploy/node/README.md antes de a ligar.
+      AOS_ENTRADA_DE_MEDIA: "${AOS_ENTRADA_DE_MEDIA:-}"
       # O GATE DE TAINT ESCALA EM VEZ DE NEGAR (AOS-541). Vazio ou `off` ⇒ o de sempre (nega).
       # `on` ⇒ a tool call privilegiada com o contexto untrusted pára o run à espera da
       # aprovação de uma pessoa; aprovada, corre; expirada ou recusada, a retoma faz o run falhar. Exige

@@ -83,6 +83,8 @@ func clearIngressEnv(t *testing.T) {
 	t.Setenv("AOS_API_MAX_CONNS", "")
 	// AOS-467: idem — o compose exporta-a sempre (default 5).
 	t.Setenv("AOS_PLAN_MAX_GENERATIONS", "")
+	// AOS-562: o tecto do CORPO de um pedido, pela MESMA razão. À nascença, como o AOS-465.
+	t.Setenv("AOS_INGRESS_MAX_BODY", "")
 }
 
 // ---------------------------------------------------------------------------
@@ -106,12 +108,15 @@ func TestAOS277IngressEnvIsFailClosed(t *testing.T) {
 		if lim.tuned {
 			t.Fatal("sem variaveis definidas o banner nao pode anunciar limites AFINADOS")
 		}
-		// CINCO: rate-limit da submissão, max-in-flight, o rate-limit do plano de DADOS inteiro
-		// (AOS-458 — as leituras, que até lá não tinham tecto de taxa nenhum), e os dois tectos de
-		// streams SSE (AOS-459 — o global, que até lá não era afinável por ambiente, e a repartição
-		// por leitor).
-		if len(opts) != 9 {
-			t.Fatalf("esperava 9 opcoes de API (rate-limit + max-in-flight + read-rate-limit + os dois tectos de SSE + os dois tectos da FILA DE PLANOS do AOS-464 + o tecto de GERACOES do AOS-467 + o tecto de LIGACOES do AOS-465), vieram %d", len(opts))
+		// A CONTAGEM É O CONTRATO: cada número que o operador pode afinar tem de chegar às opções
+		// da API, e não só ao banner — postura anunciada = postura ligada. Cresce quando um eixo
+		// novo ganha superfície, e é isso que faz este teste falar a quem a acrescenta sem a ligar.
+		// Hoje: rate-limit da submissão, max-in-flight, o rate-limit do plano de DADOS inteiro
+		// (AOS-458 — as leituras, que até lá não tinham tecto de taxa nenhum), os dois tectos de
+		// streams SSE (AOS-459), os dois da fila de planos (AOS-464), o de gerações (AOS-467), o de
+		// ligações (AOS-465) e o tecto do CORPO de um pedido (AOS-562).
+		if len(opts) != 10 {
+			t.Fatalf("esperava 10 opcoes de API (rate-limit + max-in-flight + read-rate-limit + os dois tectos de SSE + os dois tectos da FILA DE PLANOS do AOS-464 + o tecto de GERACOES do AOS-467 + o tecto de LIGACOES do AOS-465 + o tecto do CORPO do AOS-562), vieram %d", len(opts))
 		}
 	})
 

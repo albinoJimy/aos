@@ -2868,6 +2868,221 @@ composição do `Runtime`, que o nó não vê.
 
 ---
 
+## AOS-561 — A VIA DE ENTRADA: um ficheiro no pedido de um run, conferido pelos bytes e selado no espaço de handles
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-02 — Agent Runtime e Execução Durável |
+| Fase | Harness por capacidades (ADR-043), a linha que falta ao roteiro |
+| Tipo | feat |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-550 (o espaço de handles, em produção desde a v0.1.69). **NÃO depende da fase R2**: não mexe em política, não liga o layout 1.8.0 e não precisa da cerimónia da chave |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/desenho-via-de-entrada-2026-10-25.md` (o desenho, pedido pelo dono; este ticket **corrige-lhe duas medições** — ver o Contexto); `docs/adr/ADR-043-harness-por-capacidades.md` (§2.6, o espaço de handles); `docs/adr/ADR-042-uma-tool-cujo-efeito-e-uma-chamada-a-um-modelo.md` (§2.4, a pasta semeada que esta via não substitui) |
+
+### Contexto
+
+**Nenhuma rota do nó aceitava um ficheiro.** A única via de media eram as tools de modelo
+(`ocr_read`, `media_view`, `video_read`) a ler de uma montagem só de leitura de uma pasta que o
+**operador** semeia (`AOS_OCR_SEED_DIR`). Tudo o que está provado em produção — a série vid1–vid5, a
+prova do OCR — depende de alguém com acesso ao servidor pôr lá o ficheiro.
+
+O roteiro R0–R6 do ADR-043 tem sete fases e **nenhuma mete um ficheiro no sistema**: todas assumem a
+pasta semeada. Três dos quatro exemplos do dono batem nisto. Este ticket é a linha que falta.
+
+**DUAS MEDIÇÕES DO DESENHO QUE ESTE TICKET CORRIGE**, e são a razão de ele não ser o que a §6 pedia:
+
+1. **O tecto que manda é o do HANDLE, não o do gateway.** O desenho manda alinhar os tectos de media
+   com `port.MaxImageBytes` (4 MiB) e «nunca maiores». Mas `handleMaxBytes` é
+   `agentruntime.MaxToolResultBytes` = **256 KiB**, imposto também pelo KERNEL em
+   `Quarantine.Seal` — e é no espaço de handles que a entrada é selada. Uma imagem de 4 MiB **não
+   cabe num handle**. O tecto efectivo é o mínimo do caminho, e são 256 KiB.
+2. **E isso inverte a inversão da §3.4.** O desenho conclui «sem subir o tecto do corpo nenhuma
+   fotografia entra». No tecto que realmente manda isso é falso: 256 KiB em base64 são ~341 KiB, que
+   **cabem** no corpo de 1 MiB. Uma entrada entra hoje, sem mexer em nada. O que não entra é uma
+   fotografia de telemóvel de 4 MiB — e para essa são precisas **duas** mudanças de postura, não uma:
+   o tecto do corpo (AOS-562) **e** o tecto por handle.
+
+**E A PEÇA A NÃO É ENTREGÁVEL SOZINHA**, o que funde as peças A e B da §6 num só ticket. Medido: um
+`plan_input` é, em **todos** os layouts até à 1.7.0 — que é aquele em que a produção corre, porque a
+media no turno está ligada —, um payload que entra no **contexto do modelo** (`tailFromPlanInput` põe
+o `Content` no corpo do segmento). Dar `media_type` a um `plan_input` e nada mais punha bytes de
+imagem no prompt; e o selo que a §6 nomeia para o impedir (`selarEntradasDoPlano`) só corre na
+**1.8.0**, que é a R2 e está desligada. Não salvava a produção. É o erro que custou quatro revisões
+ao AOS-551 — um leitor ou um validador de uma forma que nada escreve — pelo lado pior: uma porta que
+admite bytes para um destino que não os sabe usar.
+
+**Por isso a entrada de media é uma lista PRÓPRIA no mesmo pedido** (`media_inputs`), e o seu selo
+corre em **todos** os layouts: o que mantém bytes de imagem fora do contexto do modelo não é o
+layout, é o facto de serem media. Fica assim um produtor para esta lista, e não dois para o mesmo
+campo.
+
+### Critérios de Aceitação
+
+- [x] O `POST /runs` aceita `media_inputs` — `media_type`, `digest`, `content` em base64 padrão —
+      **desligado por omissão** (`AOS_ENTRADA_DE_MEDIA`). Num nó que não habilite a via, um pedido
+      que a traga é **RECUSADO com 400**, nunca aceito e ignorado.
+- [x] `AOS_ENTRADA_DE_MEDIA=on` sem `AOS_HANDLE_DIR` **recusa o arranque**: uma via ligada que
+      nenhuma submissão pode usar é pior do que uma via desligada.
+- [x] O vocabulário é **FECHADO** e é o do Model Gateway, pelas **mesmas constantes** (`image/png`,
+      `image/jpeg`) — não uma segunda cópia das strings, que divergiria.
+- [x] **O tipo é conferido PELOS BYTES**, pela mesma função que o gateway usa
+      (`port.ImagePart.Validate`). Um ficheiro que declare `image/png` e não o seja é recusado com
+      400, **antes de o run existir**. Não se corrige em silêncio e não se adivinha.
+- [x] O `digest` é `sha256:<hex>` dos **bytes descodificados** e é conferido na porta. É o mesmo
+      pré-imagem de que o espaço de handles deriva o nome do ficheiro, pelo que o digest da entrada e
+      o do seu handle são o **mesmo número**.
+- [x] Tectos **próprios, separados dos de texto**, contados antes de o run existir: **256 KiB por
+      entrada** (o menor dos dois tectos a jusante — o do espaço de handles e o do gateway), **1 MiB
+      no conjunto** e **16 entradas** (posições de handle, com folga de 4× contra as 64 do run). Um
+      teste amarra o invariante: subir um dos dois tectos a jusante sem mover o da entrada fá-lo
+      falar.
+- [x] **O tecto AGREGADO existe e MORDE, e é um número e não uma derivação** — três tentativas, cada
+      uma corrigida pela medição da seguinte, e as três ficam registadas no código porque o erro do
+      meio foi uma CORRECÇÃO a abrir um defeito pior:
+      (1) igual ao produto da contagem pelo tecto da entrada ⇒ **INERTE**, nunca disparava, e foi um
+      teste que o apanhou;
+      (2) **removido** ⇒ o que limitava o conjunto passava a ser o tecto do CORPO, que é do operador
+      e sobe, pelo que o trabalho pré-autenticação ficava preso a um botão dele — e o canal de
+      TEXTO prova o contrário, com o agregado 4× abaixo do produto de propósito;
+      (3) **derivado** (`4 ×` o tecto da entrada) ⇒ o produto é sempre o do gateway, pelo que o
+      agregado ultrapassava-o assim que o tecto por handle subisse, e **a mudança de postura que a
+      documentação prescreve ao dono fazia o invariante FALHAR**.
+      Fica um número com a sua razão — o tecto do trabalho pré-autenticação —, e um teste assere que
+      morde, que uma entrada no tecto cabe, e que a contagem deixa folga.
+- [x] Os bytes são **selados no espaço de handles do run antes de o run abrir**, cifrados pelo
+      cifrador por titular com o run nos dados associados, declarados num `handle.created` com
+      `tool=media_input` — é o que **distingue uma entrada ingerida de um `tool_result`** — e com o
+      tipo nos factos do handle.
+- [x] **O selo limpa os bytes do Goal.** O registo de retoma é escrito a seguir e serializa o Goal:
+      deixá-los lá gravava uma segunda cópia do conteúdo em claro no corpo de um evento, sem a cifra
+      por titular. O registo leva a referência, o digest e o tipo, e nenhum byte de conteúdo.
+- [x] Uma recusa a meio **não deixa bytes** no espaço de handles (molde do AOS-556), e o
+      `handle.created` das anteriores fica (o stream é append-only).
+- [x] Os **portões fail-closed do arranque (AOS-557) cobrem este selo**. Sem isto um run só com media
+      — o caso da via na 1.7.0 — selava os bytes antes deles, que é o defeito que o AOS-557 fechou
+      pelo outro lado.
+- [x] Uma entrada que já traz handle **não é re-selada** (re-hospedagem, AOS-559), e o desfazer fica
+      desarmado.
+- [x] **Nada do que a §3.5 do desenho proíbe nasce:** sem armazém novo, sem rota de leitura do
+      espaço de handles, sem `multipart`, sem rota de upload de duas fases, e a entrada **não** vai
+      ao armazém de artefactos (que é a SAÍDA, com rota de download).
+- [x] A entrada **não entra no contexto do modelo em layout nenhum** — não é um segmento de tail, e o
+      `prompt_hash` não depende dela. O modelo sabe dela pelo **objectivo**, que a nomeia pelo nome
+      que o **nó** cunha (`media_input-1..n`, previsível pela ordem de submissão), nunca por um nome
+      escolhido por quem submete.
+- [x] O banner de arranque declara a postura: vocabulário, tectos, **qual tecto manda em cada eixo**
+      com o número, que o conteúdo **não é redigido**, e que **nenhuma tool lê deste espaço** até ao
+      AOS-563.
+- [x] As duas variáveis novas estão documentadas em `deploy/node/README.md` com efeito, default e
+      impacto de segurança (gate AOS-203).
+
+### O que fica declarado como resíduo
+
+- **NENHUMA TOOL CONSOME A ENTRADA.** A `ocr_read` e a `media_view` continuam a resolver o `doc_id`
+  só contra a pasta semeada. Até ao **AOS-563** esta via **sela e declara**, e nenhum run a lê. É
+  deliberado e está no banner: o produtor vem primeiro, para que o leitor do AOS-563 possa ser
+  desmentido por bytes que existem.
+- **O conteúdo ingerido NÃO É REDIGIDO**, e é **decisão do dono**, não defeito deste ticket. A
+  fronteira de ingestão trata só o objectivo (`IngestObjective`) e bytes de imagem não passam por um
+  redactor de texto. Já era verdade para o que o operador semeia; o que muda é **quem o pode causar**,
+  que passa a ser quem submete. Redacção de imagem não existe, e desenhá-la não é trabalho desta via.
+- **A `taint.Origin` não distingue uma entrada ingerida.** Por uma razão medida e já registada: a
+  reconstrução da quarentena de um run adopta todos os handles com `OriginToolResult`, pelo que uma
+  origem diferente na selagem tornava o handle vivo e o reconstruído dois objectos diferentes. Quem
+  distingue é o `Tool` do `handle.created`, e as duas origens classificam untrusted de qualquer modo.
+- **A VIA NÃO SE ANUNCIA no `GET /tools`**, ao contrário dos campos recusáveis cujo molde a recusa
+  de 400 invoca (`completion_contract`, `output_source`, `run_retry`, `plan_input_deferral`,
+  `handle_traversal`). Achado da segunda passagem adversarial, e a metade que falta ao molde é
+  real: um submissor automatizado só descobre se o nó aceita media submetendo e colhendo um 400.
+  **Não se fecha aqui** pela razão que ordena este ticket e o AOS-563: anunciar uma capacidade
+  que nenhuma tool consome ainda é anunciar o que não se pode usar. **Gatilho:** o AOS-563, que a
+  torna utilizável — e aí o anúncio entra com ele, pela MESMA condição que a porta confere, para
+  a porta e o anúncio não poderem divergir.
+- **A pasta semeada não sai.** Sai quando esta via tiver prova em produção, não antes: é a origem de
+  tudo o que hoje funciona.
+- **Vídeo e PDF ficam fora.** O vídeo tem outros números e é ticket próprio; o PDF é **decisão do
+  dono** (§5 do desenho) e espera a R5 ou uma decisão de catálogo.
+- **A janela do crash entre o selo e o registo de retoma** continua aberta, como no AOS-551/557: o
+  ticket é o reaper por run, **AOS-554**.
+
+### Como ficou (2026-10-26)
+
+`packages/cmd/aos/aos561_entrada_de_media.go`: a porta (`validarMediaInputs`), o interruptor
+(`parseEntradaDeMediaFromEnv`), o selo (`selarMediaDoPedido`) e o banner. O kernel ganha
+`agentruntime.MediaInput` e `Goal.MediaInputs`, que **o runtime não lê** — é essa a propriedade que
+elas compram. O selo corre em `hostRun`, **antes** de `selarEntradasDoPlano`, e a ordem é um
+contrato: o nome cunhado é `<tool>-<ordinal>` com o ordinal global do run, pelo que selar a media
+primeiro dá-lhe nomes previsíveis pela ordem de submissão.
+
+**O que um teste encontrou e o código mudou:** o tecto agregado era inerte (ver os critérios), e os
+portões do AOS-557 não cobriam este selo. Os dois estavam escritos e verdes antes de a asserção
+existir.
+
+## AOS-563 — A `ocr_read` e a `media_view` resolvem o `doc_id` no espaço de handles do run
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-02 — Agent Runtime e Execução Durável |
+| Fase | Harness por capacidades (ADR-043), a linha que falta ao roteiro |
+| Tipo | feat |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | **AOS-561** (o produtor: sem ele este ticket é um leitor de um espaço que nada enche — o erro que custou quatro revisões ao AOS-551) |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/desenho-via-de-entrada-2026-10-25.md` (§3.3, a peça C); `docs/adr/ADR-042-uma-tool-cujo-efeito-e-uma-chamada-a-um-modelo.md` (§2.4, as regras de leitura da pasta semeada); `packages/cmd/aos/ocr_tool.go` (`lerConfinado`, que é o que não muda) |
+
+### Contexto
+
+O AOS-561 põe a entrada de media no espaço de handles do run e declara-a num `handle.created` com
+`tool=media_input` e o tipo nos factos. **Nenhuma tool a lê.** A `ocr_read` e a `media_view` resolvem
+o `doc_id` contra `AOS_OCR_SEED_DIR` e mais nada, pelo que a via de entrada sela conteúdo que nenhum
+run consome — e é o que o banner do AOS-561 declara.
+
+Este ticket fecha a volta: as duas tools passam a resolver o `doc_id` **primeiro** no espaço de
+handles do run, depois na pasta semeada.
+
+**PORQUE AS DUAS E NÃO A SUBSTITUIÇÃO.** A pasta semeada é o que o dono controla e é a origem de tudo
+o que está provado em produção (as séries vid1–vid5, a prova do OCR). Trocá-la por esta via numa só
+alteração junta uma capacidade nova com uma regressão possível no que já funciona.
+
+**E NUNCA AS DUAS PARA O MESMO `doc_id`.** Um `doc_id` que resolva nos dois sítios é ambíguo, e a
+ambiguidade decide-se fail-closed: o espaço do run ganha, e o caso é contado. Sem isto, um ficheiro
+semeado com o nome que o nó cunha (`media_input-1`) mudava o que uma tool lê sem ninguém o pedir.
+
+### Critérios de Aceitação
+
+- [ ] A `ocr_read` e a `media_view` resolvem o `doc_id` **primeiro** contra os handles de entrada de
+      media do run (os `handle.created` com `tool=media_input`), pelo **nome cunhado pelo nó**
+      (`HandleFacts.Name`), e só depois contra a pasta semeada.
+- [ ] **Nunca as duas para o mesmo `doc_id`:** uma colisão resolve pelo espaço do run e é contada no
+      `/metrics` com causa própria. Um teste prova que um ficheiro semeado com o nome cunhado não
+      muda o que a tool lê.
+- [ ] Os bytes vêm do espaço de handles pelo caminho que já existe — decifrados com o run nos dados
+      associados e **conferidos contra o digest** que um `handle.created` do próprio run declara. Sem
+      o evento não há bytes (o guarda (b) do AOS-550 mantém-se).
+- [ ] O tipo com que a parte vai ao gateway é o **conferido na porta** (dos factos do handle), não
+      uma segunda inferência dos bytes: duas derivações divergiriam.
+- [ ] A capability, o destino declarado e a classe de destino **não mudam** — `cap:fs.read`,
+      `external_read`. O que muda é **de onde** a tool lê os bytes, e isso é config trusted do
+      operador, não autorização. **Nenhuma cerimónia de chave.**
+- [ ] A leitura da pasta semeada fica **byte a byte igual**: as regras do ADR-042 §2.4 (`os.Root`, só
+      o nível de topo, só ficheiros regulares, uma só ligação física, o Stat do descritor, o tecto na
+      leitura) não são tocadas. Um teste prova que um run sem entradas de media lê o que lia.
+- [ ] Um `doc_id` que não resolva em nenhum dos dois falha com a causa que já existe, e a causa não
+      revela qual dos dois espaços foi consultado nem um byte de conteúdo.
+- [ ] O banner de arranque deixa de dizer que nenhuma tool lê deste espaço, e passa a declarar a
+      ordem de resolução.
+
+### O que fica declarado como resíduo
+
+- A `video_read` fica de fora: lê da mesma pasta, mas o tecto de um vídeo não é o de uma imagem (e
+  256 KiB não é um vídeo). A mesma máquina serve, com outros números, e é ticket próprio.
+- A prova em produção (a peça D do desenho — um `POST /runs` com uma fotografia e o OCR a correr sobre
+  ela) é **do dono**, e precisa também da mudança de postura do tecto do corpo (AOS-562) se a
+  fotografia passar de 256 KiB.
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |

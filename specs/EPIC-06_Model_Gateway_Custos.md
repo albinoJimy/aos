@@ -5738,3 +5738,63 @@ trabalho do ticket:
 | 1.19 | 2026-10-26 | AOS-559 revisto (duas passagens adversariais) e corrigido: **os dois bloqueantes eram da própria correcção** — a substituição do Goal deixava `rs.runsProdutores` a descrever entradas descartadas, e a travessia da aresta, que corre dentro do `hostRun`, SELAVA o run `failed` numa re-submissão legítima; e a obrigatoriedade do registo matava a via inteira num nó sem `AOS_APPROVERS` (onde `ResumeRecords` não é composto), sem o distinguir de um acidente de um run. Mais quatro de forma: o `ConteudoPorHandle` confere-se contra o LAYOUT selado e não contra um campo que o registo nunca tem; o `CompletionRequires` normaliza-se (único conferido com `omitempty`); a divergência do `Objective` passa a ficar atribuída no log, com a razão corrigida; e a classe «só do selo» recusa um valor que o selo não tenha em vez de o copiar em silêncio | Equipa AOS |
 | 1.18 | 2026-10-26 | +AOS-560: a terceira via de re-hospedagem não leva plano de replay — os turnos já capturados voltam a interrogar o modelo, porque o `withReplayPlan` só é escrito pela retoma pela API e pela varredura de crash-resume. Achado ao fechar o AOS-559, que fechou a outra metade da mesma promessa (a origem do Goal) | Equipa AOS |
 | 1.17 | 2026-10-26 | AOS-559 implementado: o Goal da terceira via é `registo.GoalWith(credencial)`, a ausência do registo recusa (`sem_registo_de_retoma`), e o corpo que divirja recusa com o campo no log (`corpo_diverge_do_selo`, 409 — o código que a rota já usa). As três classes de cada campo estão declaradas no código, com a razão medida por campo, e a classe «recusado se divergir» é a **por omissão** (a comparação é por reflexão sobre o `Goal`, pelo que um campo novo entra nela sem ninguém se lembrar). Medido e registado: o `Objective` entra trusted e uma lista-branca nil é sem restrição — o que sobe o eixo do defeito de «integridade do conteúdo» para «alargamento de autoridade face ao plano». Com o `Principal` na classe conferida, esta via passa a ter os quatro eixos de identidade que a retoma pela API já conferia | Equipa AOS |
+
+## AOS-564 — A re-hospedagem imputa a quota e o desfecho a QUEM RE-SUBMETE, quando o selo não tem credencial NHI verificada
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 — Model Gateway e Custos |
+| Fase | Remediação do AOS-559 |
+| Tipo | fix |
+| Prioridade | P2 |
+| Estimativa | S |
+| Dependências | AOS-559 (o código é dele) |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos/aos559_rehospedagem_confere_o_selo.go` (as três classes e `principalDivergeDoSelo`); `packages/cmd/aos/service.go` (`imputadoA`, a construção do `runState`) |
+
+### Contexto
+
+Achado **fora de âmbito** da revisão de segurança do AOS-561, verificado com comando próprio nesta
+sessão. **Não é defeito do AOS-561**: o código é do AOS-559 e já está em `HEAD` (`5d95ef32`). Fica
+registado em ticket em vez de corrigido ali, pela regra do âmbito.
+
+A terceira via de re-hospedagem (`POST /runs` de um `run_id` em `running`) declara, em
+`service.go`, que «`rs.principal` e `rs.titular` foram calculados do Goal DO CORPO, acima, e não são
+recalculados aqui — nem precisam: o `Principal` e o `Subject` estão na classe "recusado se
+divergir", pelo que um corpo admitido traz os do selo».
+
+**A premissa é verdadeira para quatro dos cinco eixos da identidade, e não para o quinto.**
+`principalDivergeDoSelo` compara `AgentID`, `UserID`, `MandateID` e `MandateSigner` — e
+**normaliza o `NHIID`** para o selado antes do `DeepEqual`, pelo que ele **não é comparado**. E é o
+`NHIID` que `imputadoA` devolve quando o `RequestedBy` é vazio (um run que não é trabalho de um
+plano), isto é: é ele que imputa a quota e indexa o desfecho.
+
+**Quando é que isso morde, medido.** Para um run cujo selo tem `AgentID`/`UserID`/`MandateID`
+vazios — um run hospedado com o gate soberano composto mas **sem credencial NHI verificada**
+(`credDoRunVerifica` falso) — os quatro eixos comparam vazio com vazio, o `NHIID` é normalizado, e
+um **segundo chamador autenticado** é admitido a re-hospedar o run do primeiro. O `rs.principal`
+fica o do corpo (o do segundo), pelo que a quota em dólares e o desfecho do run são imputados a
+quem re-submeteu e não a quem o criou.
+
+Não é acesso a conteúdo: o run corre com o Goal **selado**, e não há superfície de leitura nova. O
+que se perde é **atribuição** — que é precisamente o que o AOS-559 existe para garantir («a recusa
+não é a defesa; é a ATRIBUIÇÃO»).
+
+### Critérios de Aceitação
+
+- [ ] O `NHIID` entra na conferência de `principalDivergeDoSelo`, ou — se a normalização tiver uma
+      razão que este ticket não viu — `rs.principal` e `rs.titular` passam a ser recalculados do
+      Goal **selado** depois de `goal = existente`.
+- [ ] A escolha fica justificada contra o caso que a normalização existe para servir: um run cujo
+      `NHIID` legítimo difere entre hospedagens (medir se existe; se não existir, a normalização é
+      que está a mais).
+- [ ] Um teste prova que um segundo chamador autenticado **não** passa a ser o imputado de um run
+      que não criou, incluindo o caso do selo com os quatro eixos vazios.
+- [ ] A declaração de `service.go` deixa de afirmar que «um corpo admitido traz os do selo» sem
+      qualificar o `NHIID`.
+
+### O que fica declarado como resíduo
+
+- A via LEGADA (sem gate soberano) não autentica ninguém, e ali a atribuição nunca foi forte: este
+  ticket não a muda.
+

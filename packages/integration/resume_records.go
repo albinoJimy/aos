@@ -57,6 +57,12 @@ type ResumeRecord struct {
 	// Inputs são os payloads do plano (AOS-414): um run re-hospedado sem eles perderia o
 	// material sobre o qual o nó trabalha, e o modelo veria só o objectivo.
 	Inputs []agentruntime.PlanInput
+	// MediaInputs são as entradas de MEDIA do run (AOS-561): um run re-hospedado sem elas perdia
+	// as referências dos handles que a hospedagem anterior cunhou, e as tools que as consomem
+	// deixavam de as encontrar. Chegam aqui SEM os bytes — quem sela limpa-os do Goal
+	// ([selarMediaDoPedido] no nó) —, pelo que este registo nunca leva um byte de conteúdo de
+	// media. `omitempty`: um run sem elas serializa os bytes de sempre.
+	MediaInputs []agentruntime.MediaInput `json:"MediaInputs,omitempty"`
 	// RetryNotice é o aviso de nova tentativa do run (AOS-506, [agentruntime.Goal.RetryNotice]).
 	// Tem de sobreviver à retoma: a retoma re-hospeda o run desde o turno 1 e REPRODUZ os turnos
 	// já dados, e sem o aviso a semente era outra e o prompt do turno 1 divergia. Um registo
@@ -194,6 +200,7 @@ func (r ResumeRecord) GoalWith(credential string) agentruntime.Goal {
 		Tools:             r.Tools,
 		AllowedTools:      r.AllowedTools,
 		Inputs:            r.Inputs,
+		MediaInputs:       r.MediaInputs, // AOS-561: as referências dos handles já cunhados
 		RetryNotice:       r.RetryNotice, // AOS-506: a semente da retoma é a do run
 		Skills:            r.Skills,
 		Objective:         r.Objective,

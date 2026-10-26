@@ -779,6 +779,15 @@ type submitRequest struct {
 	// como segmentos `plan_input` marcados `taint=untrusted`, com a proveniência nos rótulos —
 	// NUNCA como objectivo, que é trusted. Ausente ⇒ nada muda.
 	Inputs []planInputWire `json:"inputs,omitempty"`
+	// MediaInputs são as entradas de MEDIA deste pedido (AOS-561): bytes tipados que quem submete
+	// envia com o run, conferidos PELOS BYTES na porta e selados no espaço de handles antes de o
+	// run existir. Ausente ⇒ nada muda. Num nó que não habilite a via (`AOS_ENTRADA_DE_MEDIA`
+	// desligada) um pedido que a traga é RECUSADO com 400 — nunca aceito e ignorado.
+	//
+	// NÃO SÃO `inputs`, e a razão é de forma: um `plan_input` é, em todos os layouts, um payload
+	// que entra no contexto do modelo ([agentruntime.TailFromPlanInput]), e bytes de imagem ali
+	// seriam bytes de imagem no prompt. Ver [agentruntime.Goal.MediaInputs].
+	MediaInputs []mediaInputWire `json:"media_inputs,omitempty"`
 	// PlanRequest liga o run ao PEDIDO DE PLANO de que é trabalho (AOS-439): `{run_id, generation}`.
 	// NÃO traz o submissor — o nó deriva-o do seu próprio log da fila, depois de verificar que o
 	// chamador tem a reclamação viva dessa geração (submissor_do_plano.go). Ausente ⇒ nada muda.
@@ -992,6 +1001,20 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	inputs, runsProdutores, ierr := validarPlanInputs(req.Inputs)
 	if ierr != "" {
 		writeError(w, http.StatusBadRequest, ierr)
+		return
+	}
+	// AOS-561: as entradas de MEDIA. Num nó que não habilite a via, RECUSA — e não aceita e
+	// ignora, pelo molde do `conteudo_por_handle` e pela mesma razão: aceitar o campo daria a quem
+	// submete a ideia de que os bytes entraram quando nada os teria selado.
+	if len(req.MediaInputs) > 0 && (h.node == nil || !h.node.entradaDeMedia) {
+		writeError(w, http.StatusBadRequest, "media_inputs: este no nao habilita a via de entrada de media (AOS_ENTRADA_DE_MEDIA desligada, ou sem AOS_HANDLE_DIR) — a submissao e recusada em vez de correr sem os bytes, que seria a afirmacao ao contrario")
+		return
+	}
+	// Fail-closed na fronteira, como o canal de texto: o tipo é conferido PELOS BYTES, os tectos
+	// de media são próprios, e o digest é dos bytes. Nada disto chega a criar um run.
+	mediaInputs, merr := validarMediaInputs(req.MediaInputs)
+	if merr != "" {
+		writeError(w, http.StatusBadRequest, merr)
 		return
 	}
 	// AOS-553: um `inputs[].from_run` num nó que NÃO atravessa a aresta do plano por handle é
@@ -1244,6 +1267,10 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		AllowedTools: req.Tools,
 		// AOS-414: os payloads do plano, já verificados contra o digest declarado.
 		Inputs: inputs,
+		// AOS-561: as entradas de media, já conferidas PELOS BYTES e com o digest verificado.
+		// Chegam aqui com os bytes em claro e SEM handle; quem as sela — e lhes limpa os bytes —
+		// é o nó, no arranque do run ([selarMediaDoPedido]).
+		MediaInputs: mediaInputs,
 		// AOS-494: o contrato de conclusão, já conferido com a lista-branca. O modo de aplicação
 		// fica por fixar: é o nó que o fixa no arranque do run ([Node.fixarConclusao]).
 		CompletionRequires: req.CompletionRequires,
