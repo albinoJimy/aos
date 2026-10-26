@@ -3172,6 +3172,163 @@ que falta — descrever fotografias —, como o AOS-529 deu ao modelo de visão 
 
 ---
 
+## AOS-558 — Spike da R3: o proxy LiteLLM fixado encaminha as APIs de imagem e de vídeo da OpenRouter, ou só o chat?
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa nem emenda ADR nenhum: muda o banco de ensaio, que vive fora da imagem do nó. O ADR-043 é citado porque é a §3 E dele que faz a pergunta, e é a §7 dele que registra o resultado como pré-condição resolvida. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-08 — Observabilidade e Evals |
+| Fase | ADR-043 (harness por capacidades) — pré-condição da fase **R3** (§7: «R2; spike do LiteLLM (§3 E)») |
+| Tipo | spike |
+| Prioridade | P2: a R3 não arranca sem ele, e a R4 e a R6 dependem da R3; nada em produção depende deste ticket |
+| Estimativa | S |
+| Dependências | AOS-512 (o banco de ensaio), AOS-516 (o falso na forma da OpenRouter e as duas rotas do proxy) e AOS-534 (o molde de um spike do proxy), feitos. **Não** depende da R2: a R2 é pré-condição da R3, não deste spike |
+| Bloqueia | O ticket do §2.2 do ADR-043 (a decisão sobre a alternativa (E)) e, por ele, a R3 |
+| Responsável sugerido | Engenheiro de Qualidade |
+| Documentos de referência | `docs/adr/ADR-043-harness-por-capacidades.md` (§3 E, §7, §9), `docs/reports/analise-critica-harness-flexivel-2026-10-22.md` (§6), `docs/reports/spike-litellm-imagem-video-2026-10-25.md` (o resultado), `packages/qa/banco-ensaio/README.md`, AOS-534 (o precedente de método) |
+
+### Contexto
+
+**A pergunta vem da §3 E do ADR-043.** A alternativa «(E) Um adaptador directo à OpenRouter, sem o
+LiteLLM» fica **em aberto**, e o ADR diz porquê e como se decide: «É um destino de egress novo (o
+guard-test AOS-069 recusa-o hoje). Decide-se no ticket do §2.2, pelo resultado de um spike que meça
+se o LiteLLM fixado encaminha as APIs de imagem e de vídeo.» A §7 põe esse spike como
+pré-condição da R3, ao lado da R2. Nunca arrancou: não havia ticket nem relatório.
+
+**O que havia era uma afirmação lida, não medida.** A análise de base escreve, na secção «o que
+falta medir ou desenhar»: «**O LiteLLM é um obstáculo real.** Só fala chat e não declara o
+endpoint.» É leitura da documentação — a §9 do ADR diz o mesmo da documentação da OpenRouter
+(«lida a 2026-10-22, não medida»). Se a medição confirmar, passa-se de «provavelmente» a «medido,
+assim»; se desmentir, muda o desenho de três fases.
+
+**Não é o AOS-534.** O AOS-534 mediu uma parte `video_url` de **entrada** dentro de
+`chat/completions`. Aqui a pergunta é sobre **endpoints que não são o do chat** — a geração de
+imagem e a **API assíncrona** de vídeo — e sobre o sentido da **saída**, que é o que a R3
+acrescenta. O AOS-534 entra como **molde do método**, não como conclusão.
+
+**Mede-se sem custo.** O banco de ensaio já põe a imagem de produção do proxy, fixada pelo digest,
+entre um cliente e um fornecedor falso num contentor (AOS-512, AOS-516), e o falso registra a forma
+do que recebe, nunca o conteúdo. **Nenhuma chamada real à OpenRouter:** seria egress novo e custo,
+e o que se quer medir é o comportamento do proxy.
+
+### Objectivo
+
+Dizer, com uma medida, o que o proxy fixado faz a um pedido de **geração de imagem** e a um pedido
+da **API de vídeo**, em cada forma de rota para a OpenRouter, nos dois sentidos — e deixar escrito
+o que ficou por medir.
+
+### Âmbito
+
+Só o elo do proxy.
+
+- **O falso do estado registra o CAMINHO de cada pedido**, por uma lista fechada
+  (`ClassificarCaminho`: chat, mensagens, `images/generations`, `images/edits`, `videos`,
+  `videos/<id>`, `videos/<id>/content`, `outro`); um caminho fora dela conta como `outro` e o
+  caminho em bruto nunca se grava. E registra as **chaves do topo** do corpo, por outra lista
+  fechada — é por aí que se vê se `modalities`, `provider`, `plugins`, `transforms` e
+  `image_config` sobrevivem ao `drop_params` — ao `true` que o banco escreve e ao `false` que o
+  proxy de produção corre desde 2026-10-11 (AOS-517), que falham de maneiras opostas (descarte
+  silencioso contra erro visível) e por isso se medem os dois.
+- **O falso sabe responder em duas formas novas**, para se poder medir o sentido de VOLTA: com
+  `--imagem-de-saida`, uma resposta de chat sem tools leva um `images` na forma da OpenRouter (um
+  PNG de 4×4 com sha256 conhecido, `PNGDoFalso`); e a família do vídeo é servida na forma da API de
+  vídeo da OpenAI (um job com `id` e `status`), que é a que o adaptador `openai` do proxy espera.
+- **O cenário `TestAOS558_ProxyReal_ImagemEVideoPeloProxy`**, no padrão das medições directas do
+  AOS-516 e do AOS-534: pedidos directos ao proxy real, pelas duas formas de rota
+  (`openrouter/<autor>/<modelo>` e `openai/<autor>/<modelo>` com a base da OpenRouter), a seis
+  casos — controlo só com texto, `images/generations`, chat com `modalities`+`provider`+`plugins`+
+  `transforms`, e os três passos do ciclo assíncrono de vídeo (criar, sondar o estado com o id que
+  o proxy devolveu, descarregar o conteúdo). Cada caso dá o **encaminhamento** (a que caminho
+  chegou ao fornecedor, ou `recusado_pelo_proxy`) e a **saída** (se os bytes que o falso emitiu
+  voltaram ao cliente com o mesmo sha256). **Mede, não julga:** uma recusa do proxy é um resultado.
+- **Um inventário das rotas que a imagem fixada declara**, lido da aplicação do proxy carregada
+  dentro do contentor — é a resposta directa à metade «só fala chat» da afirmação.
+- **Testes do registo do caminho e das chaves** que correm sem Docker.
+
+### Critérios de Aceitação
+
+- [x] O falso registra, por pedido, o caminho pela lista fechada e as chaves do topo do corpo;
+      nenhum valor de nenhuma chave, nem o caminho em bruto, nem o texto das mensagens aparece no
+      que registra; uma chave fora da lista conta como `outra`. Com testes que correm sem Docker.
+      *(`TestAOS558_ClassificarCaminho`, `TestAOS558_Falso_RegistaOCaminhoDeCadaPedido`,
+      `TestAOS558_Falso_RegistaAsChavesDoTopoSemValores`.)*
+- [x] O falso responde com uma imagem gerada na forma da OpenRouter e serve a família do vídeo na
+      forma da API de vídeo da OpenAI; sem `--imagem-de-saida` nada muda nas respostas de sempre, e
+      um GET sem corpo da família do vídeo não é recusado como «pedido ilegível».
+      *(`TestAOS558_Falso_RespondeComImagemNaFormaDaOpenRouter`,
+      `TestAOS558_Falso_SemAImagemDeSaidaNadaMuda`,
+      `TestAOS558_Falso_ServeAFamiliaDoVideoNaFormaDaOpenAI`,
+      `TestAOS558_Falso_ServeAGeracaoDeImagemNaFormaDaOpenAI`.)*
+- [x] O cenário com o proxy real corre pelas duas rotas e o seu relatório
+      (`AOS_BANCO_ENDPOINTS_REPORT`) diz, por rota e por caso, o código HTTP do proxy, o caminho a
+      que o pedido chegou ao fornecedor, as chaves do topo que lá chegaram e se os bytes de saída
+      são os emitidos. Fica vermelho só se o ensaio não se montar, se o proxy não chegar ao falso
+      no pedido de controlo só com texto, ou se uma chave aparecer numa saída.
+- [x] A medida registada neste ticket, numa nota com a data, com a conclusão para a pré-condição
+      da R3 e com o que ficou por medir.
+      *(Medido a **2026-10-25** no posto, com Docker, `TestAOS558_ProxyReal_ImagemEVideoPeloProxy`,
+      proxy `ghcr.io/berriai/litellm@sha256:154e23bb…` — **versão 1.96.2, lida de dentro do
+      contentor** — contra o falso na forma da OpenRouter, modelo `google/gemini-2.5-flash-image`.*
+      ***A imagem passa, nas duas rotas e nos dois sentidos:*** *`POST /v1/images/generations` sai
+      200 nas duas — na rota `openrouter/…` o proxy **traduz** a geração de imagem para
+      `chat/completions` (com `image_config`) e **extrai de volta** o `message.images[]`; na rota
+      `openai/…` encaminha nativamente para `…/images/generations`. Nos dois casos o PNG que o
+      fornecedor emitiu voltou ao cliente com o mesmo sha256
+      (`ab957d406e6adfd30a414d30cb6014e21e8bc0cd2ae0ae07e9a5abb293259eb0`). A FORMA da volta
+      também se mede: no endpoint dedicado a imagem voltou em `data[].b64_json` nas duas rotas —
+      logo a rota `openrouter/…` **traduz** e não devolve a resposta de chat em cru —, e no pedido
+      de chat voltou em `message.images[]`.*
+      ***O endpoint declara-se:*** *`modalities`, `provider` (`order`, `data_collection: deny`),
+      `plugins` e `transforms` chegaram todos ao fornecedor, nas duas rotas, com o `drop_params:
+      true` do banco; e com o `false` que produção corre desde 2026-10-11 nenhum deles é recusado —
+      o pedido sai (medido à parte, §3.2 do relatório).* ***O vídeo é o único buraco, e é só do adaptador `openrouter`:*** *na 1.96.2
+      só `openai`, `azure`, `gemini`, `vertex_ai` e `runwayml` têm configuração de vídeo
+      (`ProviderConfigManager.get_provider_video_config`), e numa rota `openrouter/…` **nada chega
+      ao fornecedor** em nenhum dos três passos — criar e sondar saem 500 de forma consistente, e o
+      download responde ao cliente **de forma instável** (200 vazio em duas corridas, 500 na
+      terceira: não se conclua daqui um comportamento determinista); pela rota `openai/…` — a forma de rota que
+      produção já usa — o **ciclo assíncrono completo atravessa o proxy** (criar → `videos`, sondar
+      com o id que o proxy devolve → `videos_id`, descarregar → `videos_id_content` com os bytes
+      intactos).* **Conclusão: a afirmação «só fala chat e não declara o endpoint» está errada nas
+      duas metades. A pré-condição da R3 fica resolvida: a R3 segue pelo proxy e a alternativa (E)
+      não tem justificação para a imagem.** *Relatório completo, com o que ficou **NÃO VERIFICADO**,
+      em `docs/reports/spike-litellm-imagem-video-2026-10-25.md`.)*
+
+### Fora de âmbito
+
+- **Que modelos geram imagem ou vídeo pela OpenRouter, com que preço por imagem e com que limites.**
+  Precisa do fornecedor real e de custo; é o que a R3 precisa para o preço por imagem.
+- **Se a OpenRouter aceita a forma que o proxy monta para o vídeo.** O falso respondeu na forma da
+  API de vídeo da OpenAI **por construção**, porque é a que o adaptador `openai` espera; a
+  OpenRouter documenta o vídeo como uma API própria (`/api/v1/videos`). **NÃO VERIFICADO** — é o
+  elo que falta à R6, e mede-se com o fornecedor real.
+- **Para onde vai uma sondagem de job que o proxy não consegue decifrar.** Na rota `openrouter/…`,
+  um `GET /v1/videos/<id>` com um id que o proxy não emitiu sai 500 ao cabo de ~4 s sem nada chegar
+  ao fornecedor, com o rasto a cair no mapeador do `openai`. **NÃO VERIFICADO** o destino que
+  tentou; para a R6 é uma pergunta de egress, não de funcionalidade.
+- **Qualquer mudança no nó, no gateway, no perfil de rota, no `tools.json` ou na allowlist de
+  egress.** O guard-test AOS-069 não se toca: este ticket não abre destino nenhum.
+- **A decisão de arquitectura que o resultado do vídeo levanta.** Fica nomeada ao dono na §5 do
+  relatório, com as três saídas (um fornecedor de vídeo que a 1.96.2 suporte; um adaptador directo,
+  que é a alternativa (E) e exige ADR; subir a versão do proxy, que é supply-chain). **Não foi
+  tomada aqui, e nenhuma das três se preparou.**
+
+### Notas
+
+- O PNG do falso é gerado em memória e o seu sha256 lê-se na própria execução: não há constante
+  fixada a envelhecer com a versão do Go.
+- Os bytes do conteúdo de vídeo do falso **não são um MP4**. O spike mede encaminhamento, não
+  descodificação; um fornecedor real recusá-los-ia.
+- O cenário é opcional e precisa de Docker e da imagem já descarregada; não descarrega nada.
+  Corre-se com `AOS_BANCO_PROXY=1 AOS_BANCO_FALSO_BIN=<binário linux do banco> go test -run '^TestAOS558_ProxyReal_ImagemEVideoPeloProxy$' -v -count=1 .`
+  em `packages/qa/banco-ensaio`.
+- `--imagem-de-saida` é, como `--exige-id`, só do subcomando interno `falso-provider`: o banco
+  recusa-o numa corrida normal.
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -3214,3 +3371,5 @@ que falta — descrever fotografias —, como o AOS-529 deu ao modelo de visão 
 | 1.35 | 2026-10-19 | AOS-536 feito: a `video_read` entra no `tools.json` de produção (#523) e está em produção na v0.1.61; qualificação real, assinatura e série `vid1`–`vid5` (5 de 5) registadas. O «Fora de âmbito» que excluía alterar a allowlist embebida e o `tools.json` foi ultrapassado pelas decisões do dono de 2026-10-19 | Equipa AOS |
 | 1.36 | 2026-10-22 | +AOS-547: o banco de ensaio mede o titular a ver fotografias, e o registo de uso run com `imagem` exige essa medida (ADR-043, fase R1a) | Equipa AOS |
 | 1.37 | 2026-10-22 | AOS-547 feito: medida real 74/74, registo do titular com `imagem` assinado e em produção na v0.1.68 | Equipa AOS |
+| 1.38 | 2026-10-25 | +AOS-558 (ADR-043, pré-condição da fase R3, spike): o proxy LiteLLM fixado encaminha as APIs de imagem e de vídeo da OpenRouter, ou só o chat? O falso do estado passa a registar o CAMINHO de cada pedido e as CHAVES DO TOPO do corpo (listas fechadas, sem valores), a responder com uma imagem gerada na forma da OpenRouter (`--imagem-de-saida`) e a servir a família do vídeo na forma da API de vídeo da OpenAI; um cenário com o proxy real mede o encaminhamento e a saída nas duas formas de rota, sem custo | Equipa AOS |
+| 1.39 | 2026-10-25 | AOS-558 medido (1.96.2, `google/gemini-2.5-flash-image`): **a imagem passa nas duas rotas e nos dois sentidos** (o adaptador `openrouter` traduz `images/generations` para chat e extrai de volta o `message.images[]`; o `openai` encaminha nativamente; o sha256 do PNG volta igual nos dois), **`modalities`/`provider`/`plugins`/`transforms` chegam ao fornecedor** com o `drop_params: true` ligado, e **o vídeo só falha no adaptador `openrouter`** (500 sem nada sair; pela rota `openai/…` o ciclo criar/sondar/descarregar atravessa o proxy). A afirmação «só fala chat e não declara o endpoint» está errada nas duas metades; a pré-condição da R3 fica resolvida. Fica NÃO VERIFICADO se a OpenRouter aceita a forma que o proxy monta para o vídeo — decisão de arquitectura nomeada ao dono na §5 do relatório | Equipa AOS |
