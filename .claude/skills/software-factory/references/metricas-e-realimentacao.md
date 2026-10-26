@@ -20,7 +20,7 @@ do instrumento: é ela que separa medição de intenção.
 | **Etapas saltadas** | `AOS_SKIPPED_STEP` no veredicto; exit `3` | veredicto dos gates |
 | **Tempo até merge** | abertura do PR → squash | artefacto do GitHub |
 | **Calibração** | achados `CONFIRMADO` / achados levantados | `sessoes.py medir` |
-| **Taxa de retrabalho** | achados pós-feito / entregas declaradas | `sessoes.py medir` |
+| **Retrabalho** | achados `CONFIRMADO` pós-feito, por entrega | `sessoes.py medir` |
 | **Escapes por portão** | achados com o portão que os devia ter apanhado | `sessoes.py medir` |
 
 ### O ledger dos três últimos
@@ -41,9 +41,20 @@ python scripts/ci/sessoes.py indicadores --desde 30
 indicador, porque três contadores mantidos à mão discordam entre si, que é a classe de defeito
 que o `scripts/ci/` existe para fechar. O `achado` leva o veredicto do vocabulário desta skill e
 **onde** apareceu: `revisao` se foi apanhado antes de entregar, `pos-feito` se entrou depois de
-alguém declarar feito. A `entrega` é o denominador do retrabalho — sem ela a taxa não existe, e
-o `indicadores` diz **`sem amostras`** em vez de `0%`, porque uma taxa sem denominador não é
+alguém declarar feito. A `entrega` é o denominador do retrabalho — sem ela não há indicador, e
+o `indicadores` diz **`sem amostras`** em vez de `0%`, porque uma razão sem denominador não é
 zero, é desconhecida.
+
+**Duas regras de leitura que a primeira utilização a sério deste ledger obrigou a fixar:**
+
+- **O retrabalho não é uma percentagem.** O numerador não está contido no denominador: uma
+  entrega pode trazer três achados a jusante. Lê-se **por entrega** (`1,0 por entrega  (1/1)`).
+  Imprimi-lo como `%` dava «500%», que não quer dizer nada. Percentagem só onde o numerador é
+  parte do denominador — é o caso da calibração, e só dela.
+- **O retrabalho conta só o `CONFIRMADO`.** Um achado `MORTO` que aparece depois de alguém
+  declarar feito não é retrabalho: é uma hipótese que morreu e não gerou trabalho nenhum.
+  Contá-lo inflacionava o indicador para o lado que faz a fábrica parecer pior do que é — e na
+  primeira medição real a diferença foi entre `5/1` e `1/1`.
 
 **O que este instrumento não é.** Não é um gate, e não entra no `run.sh` — no runner não haveria
 ledger que ler, e um gate que passa sempre é pior do que verificação nenhuma. Continua a

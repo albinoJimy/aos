@@ -213,6 +213,22 @@ def _taxa(num: int, den: int) -> str:
     return f"{100.0 * num / den:.0f}%  ({num}/{den})"
 
 
+def _razao(num: int, den: int, unidade: str) -> str:
+    """
+    Razão POR unidade, para o que não é um subconjunto.
+
+    O retrabalho não é uma percentagem: o numerador não está contido no
+    denominador — uma entrega pode trazer três achados a jusante. Imprimi-lo
+    como `%` dava «500%» na primeira utilização a sério deste ledger, que é um
+    número que não quer dizer nada. Uma percentagem só se escreve quando o
+    numerador é parte do denominador, como na calibração.
+    """
+    if den <= 0:
+        return "sem amostras"
+    valor = f"{num / den:.1f}".replace(".", ",")
+    return f"{valor} {unidade}  ({num}/{den})"
+
+
 # --- numeração de tickets ----------------------------------------------------
 
 def _max_no_corpus() -> int:
@@ -495,15 +511,22 @@ def cmd_indicadores(args) -> int:
     achados = [r for r in regs if r.get("tipo") == "achado"]
     entregas = [r for r in regs if r.get("tipo") == "entrega"]
     confirmados = [r for r in achados if r.get("veredicto") == "confirmado"]
-    pos_feito = [r for r in achados if r.get("onde") == "pos-feito"]
+    # RETRABALHO CONTA SÓ O CONFIRMADO, e a razão é a regra da §1.6 da skill: só
+    # o confirmado gera trabalho. Um `morto` que aparece depois de eu declarar
+    # feito não é retrabalho — é uma hipótese que morreu, e contá-la inflaciona
+    # o indicador exactamente para o lado que faria a fábrica parecer pior do
+    # que é. Na primeira utilização a sério contava os cinco pós-feito e dava
+    # 5/1; dos cinco, um só gerou trabalho.
+    retrabalho = [r for r in achados
+                  if r.get("onde") == "pos-feito" and r.get("veredicto") == "confirmado"]
 
     janela = f"últimos {args.desde:g} dia(s)" if args.desde else "todo o ledger"
     print(f"indicadores da fábrica — {janela}; {len(regs)} registo(s)")
     print()
     print(f"  calibração          {_taxa(len(confirmados), len(achados))}"
           f"   confirmados / achados levantados")
-    print(f"  taxa de retrabalho  {_taxa(len(pos_feito), len(entregas))}"
-          f"   achados pós-feito / entregas declaradas")
+    print(f"  retrabalho          {_razao(len(retrabalho), len(entregas), 'por entrega')}"
+          f"   achados CONFIRMADOS pós-feito / entregas")
 
     escapes = {}
     for r in achados:
