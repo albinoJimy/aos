@@ -1180,6 +1180,7 @@ var marcadoresDeDobra = []string{
 	marcadorDobraFila,
 	marcadorDobraGeracoes,
 	marcadorDobraLigacoes,
+	marcadorDobraCorpo,
 }
 
 const (
@@ -1188,6 +1189,11 @@ const (
 	marcadorDobraFila     = "TECTO DA FILA DE PLANOS (AOS-464)"
 	marcadorDobraGeracoes = "TECTO DE GERACOES POR PEDIDO (AOS-467)"
 	marcadorDobraLigacoes = "TECTO DE LIGACOES ACEITES (AOS-465)"
+	// marcadorDobraCorpo é a dobra do tecto do CORPO de um pedido (AOS-562). Registada à
+	// NASCENÇA, e não depois: o gate [TestAOS461TodasAsDobrasDoBannerEstaoREGISTADAS] apanhou-a
+	// na suite completa, que é exactamente o que ele existe para fazer — sem o registo, a dobra
+	// ANTERIOR (a das ligações) engolia-a e as asserções dela deixavam de distinguir o eixo.
+	marcadorDobraCorpo = "TECTO DO CORPO DE UM PEDIDO (AOS-562)"
 )
 
 // dobraDoEixo devolve a parte do banner que começa em `inicio` (um dos [marcadoresDeDobra]) e
