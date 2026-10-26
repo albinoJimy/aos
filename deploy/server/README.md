@@ -2528,8 +2528,12 @@ até ao fim do plano.
   — `sensitivity`, `admissible` — continua a ser escrito à mão no snapshot. Uma tool sem `egress`
   no `AOS_MODEL_TOOLS` aparece no catálogo como `unknown` (conta como externa), e o snapshot tem de
   a declarar `external` ou `unknown`. O digest é um pin do **contrato** (schema, scopes, egress):
-  não cobre a capability, o recurso nem a reversibilidade, e não prova que algo foi assinado — com
-  `AOS_MODEL_TOOLS_REGISTER` vazio, como em produção, nada é. Se o catálogo não se ler (rede,
+  não cobre a capability, o recurso nem a reversibilidade, e não prova que algo foi assinado **por
+  um publicador de confiança**. Em produção o `AOS_MODEL_TOOLS_REGISTER` está **LIGADO** (`=1` no
+  `/opt/aos/.env`, verificado a 2026-10-26) — esta linha dizia o contrário —, logo o catálogo é
+  assinado; mas por uma chave **efémera** que o nó gera no arranque e em que ele próprio confia
+  (dev-grade, auto-assinada). Importa para além do digest: a variável move o gate da **revalidação
+  de registry** para o **PDP** (ver `deploy/node/README.md`). Se o catálogo não se ler (rede,
   credencial, ou um nó anterior ao AOS-441, que responde 404) a recusa diz `catalogo de tools do
   no ilegivel` e não `diverge`: actualize o nó primeiro.
 

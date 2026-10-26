@@ -6154,8 +6154,13 @@ snapshot vem do Registry (REG)». O AOS-409 (DEF-275) só toca a fonte do 4.º e
   `reversibility` que não seja «reversible» ⇒ `irreversible`). O digest é um **pin do contrato**
   `KindTool` — schema de entrada, scopes e egress —, calculado pela fórmula do registo assinado; não
   cobre a capability, o recurso, a reversibilidade nem o binding de sandbox, e **não prova registo
-  assinado**: em produção o `AOS_MODEL_TOOLS_REGISTER` vem vazio e nada é assinado. Compõe-se uma
-  vez no arranque (`serveAPI`), do mesmo manifesto que o nó oferece ao modelo; sem
+  assinado por um publicador de confiança**. Em produção o `AOS_MODEL_TOOLS_REGISTER` está
+  **LIGADO** (`=1`, lido no `/opt/aos/.env` a 2026-10-26) — esta linha dizia o contrário —, logo o
+  catálogo assinado EXISTE; o que ele não é é prova de nada externo, porque a chave que o assina é
+  **efémera**: o nó gera-a no arranque e confia nela a si próprio (dev-grade, auto-assinada; ver
+  `deploy/node/README.md`, a entrada `AOS_MODEL_TOOLS_REGISTER`). E a variável MOVE O GATE da
+  revalidação de registry para o PDP, pelo que tomá-la por vazia descreve mal a postura em vigor.
+  Compõe-se uma vez no arranque (`serveAPI`), do mesmo manifesto que o nó oferece ao modelo; sem
   `AOS_MODEL_ENDPOINT` é vazio. Com o gate soberano composto exige a credencial das rotas irmãs
   (`/plans/claim`, `/plans/outcome`); sem ele serve pelo read-path legado, como o `GET /runs/{id}`.
 - **O `aos-orq` confere o snapshot com esse catálogo** (`conferirSnapshotComONo`, `snapshot.go`)
