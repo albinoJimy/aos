@@ -371,16 +371,19 @@ juntas.
 
 ## 3. Métricas e realimentação
 
-Uma fábrica que não se mede não melhora — repete. Seis indicadores, todos derivados de
-artefactos que já existem no repositório:
+Uma fábrica que não se mede não melhora — repete. Seis indicadores, e **três ainda sem
+instrumento** — o que se declara, não se esconde:
 
 ```text
-VERDE À PRIMEIRA      corridas de CI que passam sem segunda tentativa
-TAXA DE RETRABALHO    achados que voltaram DEPOIS de eu declarar feito
-ESCAPES POR PORTÃO    defeito encontrado depois do portão que o devia ter apanhado
-CALIBRAÇÃO            achados CONFIRMADOS / achados levantados
-ETAPAS SALTADAS       AOS_SKIPPED_STEP — o verde parcial, exit 3
-TEMPO ATÉ MERGE       da abertura do PR ao squash
+com instrumento
+  VERDE À PRIMEIRA    corridas de CI que passam sem segunda tentativa
+  ETAPAS SALTADAS     AOS_SKIPPED_STEP — o verde parcial, exit 3
+  TEMPO ATÉ MERGE     da abertura do PR ao squash
+
+sem instrumento — dependem de memória, e é dívida desta skill
+  TAXA DE RETRABALHO  achados que voltaram DEPOIS de eu declarar feito
+  ESCAPES POR PORTÃO  defeito encontrado depois do portão que o devia ter apanhado
+  CALIBRAÇÃO          achados CONFIRMADOS / achados levantados
 ```
 
 E a regra que fecha o ciclo:

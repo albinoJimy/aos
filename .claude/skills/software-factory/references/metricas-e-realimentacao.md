@@ -11,17 +11,29 @@ Lê este ficheiro quando fechares uma linha e for preciso converter o que aprend
 
 ## Seis indicadores
 
-Uma fábrica que não se mede não melhora — repete. Nenhum destes indicadores precisa de
-ferramenta nova: todos se leem de artefactos que já existem.
+Uma fábrica que não se mede não melhora — repete. Seis indicadores, **e três deles ainda não
+têm instrumento**. A distinção é o que separa medição de intenção, por isso está na tabela e
+não numa nota de pé de página.
 
-| Indicador | Onde se lê | O que diz |
+| Indicador | Onde se lê | Instrumento |
 |---|---|---|
-| **Verde à primeira** | `gh pr checks` do PR, primeira corrida | quanto do meu trabalho chega pronto |
-| **Taxa de retrabalho** | achados que entraram **depois** de eu dizer feito | se o meu «feito» significa alguma coisa |
-| **Escapes por portão** | defeito encontrado a jusante do portão que o devia apanhar | onde a rede tem buraco |
-| **Calibração** | achados `CONFIRMADO` / achados levantados | se a revisão procura ou se inventa |
-| **Etapas saltadas** | `AOS_SKIPPED_STEP` no veredicto; exit `3` | garantias que não tenho |
-| **Tempo até merge** | abertura do PR → squash | onde está a fila real |
+| **Verde à primeira** | `gh pr checks` do PR, primeira corrida | **existe** |
+| **Etapas saltadas** | `AOS_SKIPPED_STEP` no veredicto; exit `3` | **existe** |
+| **Tempo até merge** | abertura do PR → squash | **existe** |
+| **Taxa de retrabalho** | achados que entraram **depois** de eu dizer feito | **nenhum** — depende de memória |
+| **Escapes por portão** | defeito encontrado a jusante do portão que o devia apanhar | **nenhum** — depende de memória |
+| **Calibração** | achados `CONFIRMADO` / achados levantados | **nenhum** — depende de memória |
+
+**Os três sem instrumento são, hoje, exactamente o que esta skill condena.** Não há colector,
+não há ledger de achados, e nenhum script conhece os veredictos `CONFIRMADO`/`PLAUSÍVEL`/`MORTO`
+— verificado: zero ocorrências em `scripts/`, e o `sessoes.py` tem só `registar`, `ver`,
+`reservar` e `sair`. São notas que dependem de alguém se lembrar de as escrever, e esquecer-se é
+indistinguível de não haver nada a registar. Pela regra abaixo, isto devia ser um artefacto.
+
+Enquanto o instrumento não existir, **declara-o em vez de os citar como se fossem medidos**: a
+calibração de «dois terços morrem» é observação acumulada, não uma contagem. A diferença importa
+porque é a calibração que detecta se a revisão procura ou se inventa — e é o indicador que menos
+se pode confiar à memória de quem está a ser medido.
 
 Três notas sobre como se leem:
 
