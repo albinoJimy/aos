@@ -933,6 +933,15 @@ func (s *NodeService) submitObservando(ctx context.Context, goal agentruntime.Go
 			// outras duas vias, que também o re-ingerem. Sob a política de remoção isso é
 			// byte-idêntico (o texto já está minimizado); com tokenização por-titular deixaria de o
 			// ser, e aí o turno 1 remontaria outros bytes. Fica nomeado onde alguém o vai ler.
+			// AS ENTRADAS DE MEDIA DO CORPO FICAM ATRIBUÍDAS, pela MESMA razão das arestas acima, e é
+			// achado da revisão adversarial do AOS-561: a porta aceitou-as e CONFERIU-AS pelos bytes,
+			// e a re-hospedagem substitui o Goal pelo selado — pelo que elas não são seladas e nenhuma
+			// tool as verá. Descartá-las em silêncio, com um 201 na resposta, era o aceitar-e-ignorar
+			// que esta conferência condena e que a recusa de 400 da porta invoca como razão. Nenhum
+			// byte de conteúdo vai ao log: só a contagem.
+			if n := len(goal.MediaInputs); n > 0 {
+				s.log("POST de um run que ja existe (AOS-559/AOS-561): run %q — %d entrada(s) de media do corpo foram DESCARTADAS e NAO foram seladas: o run e re-hospedado com o Goal SELADO, e as entradas de media que ele tenha vieram da PRIMEIRA hospedagem", runID, n)
+			}
 			if existente.Objective != goal.Objective {
 				s.log("POST de um run que ja existe (AOS-559): run %q — o `objective` do corpo NAO e o que esta selado e foi IGNORADO; o run continua com o objectivo SELADO (re-ingerido pela ingestao, como nas outras duas vias). Os dois nao sao comparaveis nesta rota — a ingestao redige o selado e o do corpo e cru (AOS-091/AOS-208) —, pelo que a divergencia e registada e nao recusada", runID)
 			}
@@ -1464,6 +1473,45 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 		return
 	}
 
+	// AOS-561: AS ENTRADAS DE MEDIA SELAM PRIMEIRO, e a ordem e um CONTRATO: o nome que o no
+	// cunha e `<tool>-<ordinal>` com o ordinal GLOBAL do run, pelo que selar a media antes das
+	// entradas do plano da-lhe nomes previsiveis pela ordem de submissao — que e como o OBJECTIVO
+	// do run as pode nomear. Selar depois fazia o nome depender de quantas entradas de plano
+	// houvesse. Ver [selarMediaDoPedido].
+	// E O INTERRUPTOR DO OPERADOR VALE NO CAMINHO EM-PROCESSO TAMBÉM (achado da revisão
+	// adversarial): a porta HTTP recusa `media_inputs` num nó com a via desligada, mas um
+	// `Submit`/`SubmitObservando` não passa pela porta. Sem esta guarda, `AOS_ENTRADA_DE_MEDIA=off`
+	// não impedia nada por essa via — e um interruptor que só metade dos caminhos respeita não é um
+	// interruptor.
+	//
+	// A GUARDA PERGUNTA «VAI SELAR?», E NÃO «TEM MEDIA?», e a primeira versão perguntava a segunda —
+	// o que a tornava o molde exacto da «correcção ingénua» que o AOS-557 declara ser pior do que o
+	// defeito. Um run hospedado com a via LIGADA e retomado depois de o operador a desligar chega
+	// aqui com as entradas JÁ SELADAS, do seu registo de retoma: recusá-lo matava um run
+	// RECUPERÁVEL, e o interruptor passava a alcançar o que está em voo. O interruptor governa
+	// ADMITIR conteúdo novo, não CONTINUAR um run — a mesma regra que o `AOS_CONTEUDO_POR_HANDLE`
+	// já declara («runs retomados não mudam: continuam no layout do seu registo»). É por isso a
+	// MESMA pergunta que o âmbito dos portões do arranque faz ([haEntradasPorSelar]): vai ser
+	// escrito algum byte novo?
+	if mediaPorSelar(goal) && !s.node.entradaDeMedia {
+		err = fmt.Errorf("aos: run %q: %w", rs.runID, errMediaViaDesligada)
+		s.mu.Lock()
+		rs.err = err
+		s.mu.Unlock()
+		s.log("run %q RECUSADO: tem entradas de media e este no nao habilita a via (AOS_ENTRADA_DE_MEDIA desligada, ou sem AOS_HANDLE_DIR) — o run fecha failed sem dar um turno e sem selar nada", rs.runID)
+		return
+	}
+
+	var merr error
+	if goal, merr = selarMediaDoPedido(ctx, s.node.planoHandles, goal); merr != nil {
+		err = fmt.Errorf("aos: run %q: %w", rs.runID, merr)
+		s.mu.Lock()
+		rs.err = err
+		s.mu.Unlock()
+		s.log("run %q RECUSADO pela selagem das entradas de media (AOS-561): o run fecha failed sem dar um turno e sem deixar bytes no espaco de handles: %v", rs.runID, merr)
+		return
+	}
+
 	var herr error
 	if goal, herr = selarEntradasDoPlano(ctx, s.node.planoHandles, goal); herr != nil {
 		err = fmt.Errorf("aos: run %q: %w", rs.runID, herr)
@@ -1654,6 +1702,7 @@ func resumeRecordFromGoal(goal agentruntime.Goal) (integration.ResumeRecord, err
 		Tools:             goal.Tools,
 		AllowedTools:      goal.AllowedTools,
 		Inputs:            goal.Inputs,
+		MediaInputs:       goal.MediaInputs, // AOS-561: já seladas e sem os bytes
 		RetryNotice:       goal.RetryNotice, // AOS-506: a retoma semeia o tail com o mesmo aviso
 		Skills:            goal.Skills,
 		Objective:         goal.Objective,

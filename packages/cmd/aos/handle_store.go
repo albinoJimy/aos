@@ -69,6 +69,7 @@ import (
 	"unicode/utf8"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	"github.com/aos-ref/platform/model-gateway/port"
 	"github.com/aos-ref/substrate/eventstore"
 )
 
@@ -471,10 +472,15 @@ func (a *armazemDeHandles) abrir(ctx context.Context, subject, runID, digest str
 // binário. Um tipo que o nó não saiba parsear fica `false` — o nó não afirma uma forma que não
 // conferiu —, e isso não impede o handle de existir.
 //
-// ALCANCE REAL NESTA FASE, DECLARADO: o único produtor é a `artifact_write`, que valida ANTES de
-// selar contra o vocabulário FECHADO dela e recusa binário; e na resolução um corpo que não seja
-// UTF-8 é recusado, porque não cabe numa string JSON. A abertura existe para os produtores da R2/R3
-// (um `tool_result` binário), e hoje nenhum conteúdo binário chega aqui pelo nó composto.
+// ALCANCE REAL NESTA FASE, DECLARADO: há DOIS produtores. A `artifact_write`, que valida ANTES de
+// selar contra o vocabulário FECHADO dela e recusa binário; e a VIA DE ENTRADA de media (AOS-561,
+// [selarMediaDoPedido]), que sela BINÁRIO — uma imagem — com o tipo que a porta conferiu pelos
+// primeiros bytes. É por isso que o caso das imagens existe abaixo: sem ele o nó declarava
+// `well_formed=false` sobre bytes que acabara de provar bem formados. Dizer «o único produtor é a
+// `artifact_write`» e «nenhum conteúdo binário chega aqui» era o que esta linha dizia, e as duas
+// afirmações ficaram falsas no mesmo commit que acrescentou o caso — achado da segunda passagem
+// adversarial. Na resolução um corpo que não seja UTF-8 continua recusado, porque não cabe numa
+// string JSON: os bytes de uma imagem nunca chegam a um argumento de tool por esta via.
 func formaBemFormada(tipo string, b []byte) bool {
 	switch {
 	case tipo == "application/json":
@@ -486,6 +492,13 @@ func formaBemFormada(tipo string, b []byte) bool {
 		// planeador lê uma coisa que o nome não promete. Quem recusa o SVG inseguro é a
 		// `artifact_write`, antes de chegar aqui.
 		return xmlBemFormado(b)
+	case tipo == port.ImageMediaPNG || tipo == port.ImageMediaJPEG:
+		// A FORMA DE UMA IMAGEM SÃO OS PRIMEIROS BYTES, e o nó CONFERE-OS — pela mesma função que o
+		// Model Gateway usa, que é também a da porta da via de entrada (AOS-561). Sem este caso os
+		// dois tipos caíam no `default: false`, e o `handle.created` de uma imagem que o nó acabara
+		// de provar bem formada declarava o contrário — um facto errado num registo imutável, e
+		// achado da revisão adversarial. É função pura dos bytes, como as outras.
+		return port.ImagePart{MediaType: tipo, Data: b}.Validate() == nil
 	case tipo == "application/octet-stream":
 		return true // qualquer sequência de bytes é uma sequência de bytes bem formada
 	case strings.HasPrefix(tipo, "text/"):

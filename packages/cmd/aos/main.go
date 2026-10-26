@@ -1044,6 +1044,17 @@ func nodeConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 
+	// A VIA DE ENTRADA DE MEDIA (AOS-561, ADR-043 fase R2). Vocabulário fechado (`off`/`on`); um
+	// valor desconhecido aborta o arranque. Lê-se DEPOIS do espaço de handles porque a exigência é
+	// sobre ele: `on` sem `AOS_HANDLE_DIR` não é uma via meio-ligada — é uma via que nenhuma
+	// submissão pode usar, e um nó que a anuncia mente. Fail-closed na CONFIGURAÇÃO.
+	if cfg.EntradaDeMedia, err = parseEntradaDeMediaFromEnv(); err != nil {
+		return Config{}, err
+	}
+	if cfg.EntradaDeMedia && cfg.HandleDir == "" {
+		return Config{}, ErrEntradaDeMediaSemHandles
+	}
+
 	// O GATE DE TAINT ESCALA EM VEZ DE NEGAR (AOS-541). Vocabulário fechado (`off`/`on`): um valor
 	// desconhecido aborta o arranque. Vazia ⇒ `off`. A exigência de aprovadores é do [Bootstrap].
 	taintEscala, err := parseTaintEscalaFromEnv()
@@ -1507,6 +1518,12 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 	// bootstrap, porque a admission só existe quando o nó SERVE: um `aos` que faz bootstrap
 	// sem AOS_API_ADDR não tem ingresso nenhum para anunciar.
 	for _, line := range ingressPostureBanner(ingressLim, gateComposto, principalVerificavel) {
+		fmt.Fprintf(w, "[aos] %s\n", line)
+	}
+	// A VIA DE ENTRADA DE MEDIA (AOS-561) sai AQUI, e nao no banner de bootstrap: a linha declara
+	// qual tecto morde, e o do CORPO do pedido so e conhecido com os limites de ingresso em vigor —
+	// postura anunciada = postura ligada, derivada do MESMO valor que alimentou as opcoes.
+	for _, line := range entradaDeMediaBanner(node.entradaDeMedia, ingressLim.maxBody) {
 		fmt.Fprintf(w, "[aos] %s\n", line)
 	}
 	// AVISO PROEMINENTE do opt-out (modelo do kill-switch de soberania, AOS-203): quem termina

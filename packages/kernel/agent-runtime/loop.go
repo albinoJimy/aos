@@ -74,6 +74,31 @@ type Goal struct {
 	// [TailPlanInput], marcados `taint=untrusted` e com a proveniência do contrato. Vazio ⇒
 	// nada muda no prompt (um run que não é nó de um plano nunca os tem).
 	Inputs []PlanInput
+	// MediaInputs são as entradas de MEDIA que quem submete enviou no pedido deste run
+	// (AOS-561): bytes tipados — uma imagem — que entram pela porta, são conferidos PELOS BYTES
+	// e são selados no espaço de handles do nó ANTES de o run abrir. Vazio ⇒ nada muda em sítio
+	// nenhum, e é o caso de todos os runs que não usam a via de entrada.
+	//
+	// O RUNTIME NÃO AS LÊ, E É A PROPRIEDADE QUE ELAS COMPRAM. Ao contrário de [Goal.Inputs],
+	// uma entrada de media NÃO é um segmento do tail: nenhum layout a materializa, o
+	// `prompt_hash` não depende dela e o contexto do modelo não leva um byte do seu conteúdo.
+	// Transportá-la no Goal é o que a liga ao run — à sua residência, ao seu titular, ao seu
+	// registo de retoma e à conferência da re-hospedagem (AOS-559) —, e quem a consome é o nó,
+	// não este pacote. Por isso NÃO é um [PlanInput] com um tipo: um `plan_input` é, em todos os
+	// layouts, um payload que entra no contexto ([tailFromPlanInput]), e dar-lhe bytes de imagem
+	// punha-os no prompt.
+	//
+	// COMO O MODELO SABE QUE ELAS EXISTEM: pelo OBJECTIVO, escrito por quem submete, que as
+	// nomeia pelo nome que o NÓ cunha no espaço de handles ([HandleFacts.Name]) — `<tool>-<ordinal>`,
+	// previsível pela ordem de submissão e nunca escolhido por quem submete. É o caminho pelo qual hoje
+	// o modelo sabe de um ficheiro da pasta semeada (ADR-042 §2.4) — nenhum segmento de tail o
+	// anuncia, e nenhum é preciso.
+	//
+	// O NOME NÃO É DEVOLVIDO A QUEM SUBMETE, e fica declarado: a resposta do `POST /runs` não o leva
+	// e não há rota que o sirva. Enquanto nenhuma tool resolver uma entrada de media pelo nome, não
+	// há nada que ele sirva para pedir; quem o tornar descobrível é o ticket que ensina as tools a
+	// resolvê-lo.
+	MediaInputs []MediaInput
 	// RetryNotice declara que este run é a NOVA TENTATIVA de um trabalho cuja tentativa anterior
 	// acabou de uma forma que quem compõe o run provou (AOS-506, ADR-039 §2.7). Vazio ⇒ nada
 	// muda no prompt. Não vazio ⇒ a semente do tail ganha, a seguir ao objectivo, um segmento
@@ -343,6 +368,35 @@ type PlanInput struct {
 	// O Content FICA, e não é redundância: é dele que sai o `prompt_hash` de um run até à 1.7.0,
 	// é dele que o nó deriva o digest com que sela, e é por ele que o replay reconstrói o tail de
 	// um run antigo. Na 1.8.0 não chega ao contexto do modelo.
+	Handle string
+}
+
+// MediaInput é uma entrada de MEDIA do pedido de um run (AOS-561, ADR-043 fase R2 §2.6): o tipo
+// declarado, o digest dos bytes, os bytes, e — depois de o nó selar — a referência do handle. Ver
+// [Goal.MediaInputs] para o que a distingue de um [PlanInput].
+//
+// O NOME da entrada NÃO vive aqui: é um facto do handle ([HandleFacts.Name]), cunhado pelo nó e
+// selado no evento de proveniência. Nada neste pacote o lê.
+//
+// O TIPO É UM FACTO CONFERIDO, não uma declaração aceite: quem admite a entrada confere-o contra
+// os PRIMEIROS BYTES, e um tipo que não bate recusa o pedido antes de o run existir. Este pacote
+// não o confere — não conhece formatos de media — e não o lê para decidir nada.
+type MediaInput struct {
+	// MediaType é o tipo CONFERIDO do conteúdo, de um vocabulário fechado que quem admite a
+	// entrada impõe (hoje, o que o Model Gateway aceita: `image/png` e `image/jpeg`).
+	MediaType string
+	// Digest é `sha256:<hex>` dos BYTES — não da forma em que viajaram no pedido. É o mesmo
+	// pré-imagem de que o nó deriva o nome do ficheiro no espaço de handles, pelo que o digest
+	// desta entrada e o do seu handle são o MESMO número.
+	Digest string
+	// Content são os bytes em claro. VAZIO depois do selo, de propósito: o nó limpa-o quando
+	// cunha o [MediaInput.Handle], e é por isso que o registo de retoma do run não leva um byte
+	// de conteúdo de media (ao contrário de [PlanInput.Content], que tem de ficar porque o tail
+	// de um run antigo se reconstrói dele — uma entrada de media não está em tail nenhum, logo
+	// não há nada a reconstruir).
+	Content []byte
+	// Handle é a REFERÊNCIA TEXTUAL do handle que o nó selou para estes bytes — [HandleRefPrefix]
+	// + token, a única forma que [ParseHandleRef] aceita. Vazia antes do selo.
 	Handle string
 }
 

@@ -3625,3 +3625,74 @@ Duas auditorias correram sobre a árvore entregue. O que despachar um modelo **d
 
 ---
 
+## AOS-562 — O tecto do corpo de um pedido tem superfície de operador (`AOS_INGRESS_MAX_BODY`)
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-20 — Prontidão Agêntica e Remediação |
+| Fase | Remediação de superfície do operador (molde do AOS-277/AOS-458) |
+| Tipo | feat |
+| Prioridade | P2 |
+| Estimativa | S |
+| Dependências | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/desenho-via-de-entrada-2026-10-25.md` (§3.4 e §7.3, onde o dono precisa deste número); `packages/cmd/aos/ingress_env.go` (o molde do AOS-277) |
+
+### Contexto
+
+**CORRECÇÃO DE FACTO que este ticket assenta.** O desenho da via de entrada afirma que «o tecto do
+corpo já é configurável (`WithMaxBodyBytes`)». É verdade em Go e **falso para quem opera**: seguido
+até quem a chama, `grep -rn WithMaxBodyBytes packages/` dá três ficheiros e **todos são `_test.go`**,
+e não existe variável de ambiente nenhuma (`grep -rn MAX_BODY packages/ deploy/ infra/` → zero). O
+número vivia como constante do binário (`DefaultMaxBodyBytes`, 1 MiB) e o dono **não tinha como o
+mudar**.
+
+É literalmente a lacuna que o AOS-277 fechou para a taxa e o in-flight — «os números viviam como
+constantes do binário e as `APIOption` que os mudam só eram alcançáveis por testes» —, medida outra
+vez num quarto número e fechada pelo mesmo molde.
+
+**O NÚMERO É DO DONO, e este ticket não o escolhe.** O que ele entrega é o caminho; subir o tecto é
+uma **mudança de postura** (a rota que cria runs passa a aceitar corpos maiores em memória por pedido
+em voo) e pertence a quem opera. Por definir, fica o default de sempre.
+
+**Para que serve, medido:** os bytes de uma entrada de media (AOS-561) viajam em base64 (+33%). Com o
+corpo em 1 MiB cabem 768 KiB de conteúdo no total, o que serve uma entrada de 256 KiB e **não**
+serve uma fotografia de telemóvel de 4 MiB — essa precisa de ~6 MiB de corpo **e** de um tecto por
+handle maior.
+
+### Critérios de Aceitação
+
+- [x] `AOS_INGRESS_MAX_BODY` define o tecto do corpo de um pedido, em bytes, no mesmo sítio e pelo
+      mesmo molde dos outros limites de ingresso (`ingressLimitsFromEnv`).
+- [x] **Fail-closed na configuração:** valor ilegível, zero ou negativo **ABORTA** o arranque
+      (`ErrBadIngressLimits`), como os outros. Nenhum degrada em silêncio para o default — um
+      operador que se engana a escrever o tecto do corpo não deve ficar com um nó que aceita outro
+      tamanho.
+- [x] **Por definir, o default de sempre** (`DefaultMaxBodyBytes`), e o nó é o de antes byte a byte.
+- [x] **Postura anunciada = postura ligada:** o valor lido alimenta a `APIOption` **e** o banner,
+      derivados do mesmo valor de retorno. Um teste prova que o número chega às opções da API e não
+      só ao banner — sem isso era decorativo.
+- [x] **Não tem máximo imposto**, e é deliberado: o que contém um corpo grande é a admission que já o
+      contém (rota autenticada, token-bucket, tecto de runs em curso) e os tectos do canal de entrada,
+      que recusam antes de o run existir. Inventar um máximo aqui era pôr um número sem fonte no
+      caminho de quem opera.
+- [x] Documentada em `deploy/node/README.md` com efeito, default e impacto de segurança, e com a
+      ligação ao que a torna necessária (gate AOS-203).
+
+### O que fica declarado como resíduo
+
+- **O CUSTO PRÉ-AUTENTICAÇÃO, e NÃO sobe com este número.** A conferência do corpo do `POST /runs`
+  corre **antes da autenticação** (idioma desta porta, e o canal de texto já é assim), pelo que um
+  chamador não autenticado pode impor um `base64` e um `sha256`. O que o limita são os tectos
+  **agregados dos canais** — 512 KiB de texto e 1 MiB de media —, e esses **não se movem com esta
+  variável**: é para isso que o agregado de media existe (AOS-561). A primeira redação deste
+  resíduo dizia que o custo subia «na mesma proporção, de ~786 KiB para ~4,5 MiB», e era FALSA —
+  achado da segunda passagem adversarial, e o dano era directo: o dono decidiria subir ou não o
+  tecto a partir de um número que não existe. Mover a conferência para depois de autenticar é
+  outra decisão, com outro âmbito (muda a ordem da porta para o canal de texto também), e não é
+  deste ticket.
+- **O valor em vigor no nó de PRODUÇÃO continua `NÃO VERIFICADO`** — é leitura de uma linha no
+  servidor, e é do dono. Este ticket mede o **default do código**; se o `.env` de produção já definir
+  algo, não o sabe.
+- **Este ticket não muda o compose de produção.** Deixa o caminho pronto e o número para o dono.
+

@@ -37,7 +37,8 @@ package main
 //
 // # A fonte de verdade existia, e estava a ser ignorada
 //
-// O registo de retoma ([integration.ResumeRecord]) tem 23 dos 25 campos do Goal — só a
+// O registo de retoma ([integration.ResumeRecord]) tem 24 dos 26 campos do Goal (eram 23 de 25
+// antes de o AOS-561 acrescentar as entradas de media aos dois) — só a
 // `Credential` (deliberado: nunca é persistida) e o `ConteudoPorHandle` (que é um pedido de layout,
 // não um campo do run) ficam de fora. É escrito no ARRANQUE de cada hospedagem
 // ([NodeService.persistCrashResumeRecord]), e é o MESMO artefacto que as outras duas vias de
@@ -283,9 +284,15 @@ func principalDivergeDoSelo(corpo, selado referencemonitor.Principal) bool {
 // dele é legitimamente diferente do selado, pelo que não se comparam. A razão de cada um está no
 // cabeçalho deste ficheiro, e é medida — não suposta.
 var camposIgnorados = map[string]bool{
-	"Credential":  true,
-	"Objective":   true,
-	"Inputs":      true,
+	"Credential": true,
+	"Objective":  true,
+	"Inputs":     true,
+	// MediaInputs (AOS-561) — pela MESMA razão que `Inputs`, e medida: as do registo trazem as
+	// referências que [selarMediaDoPedido] cunhou e JÁ NÃO TRAZEM OS BYTES (o selo limpa-os); as do
+	// corpo vêm como quem submete as manda, com os bytes e sem referência. Não há comparação
+	// possível aqui — e não é preciso que haja: o run é re-hospedado com o Goal SELADO, pelo que os
+	// bytes do corpo são inertes (o selo salta uma entrada que já traz handle).
+	"MediaInputs": true,
 	"RetryNotice": true,
 }
 
