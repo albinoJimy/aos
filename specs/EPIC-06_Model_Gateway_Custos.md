@@ -5426,6 +5426,77 @@ parte de conteúdo genérica e responde às três (§6). Este ticket é a fase R
 
 ---
 
+## AOS-559 — A re-hospedagem de um `run_id` em curso confere o modelo e o perfil, e aceita do CORPO tudo o resto
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 — Model Gateway e Custos |
+| Fase | Resíduo do AOS-520 |
+| Tipo | fix |
+| Prioridade | P2 |
+| Estimativa | S |
+| Dependências | AOS-520 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos/service.go` ([NodeService.submitObservando], o caso «(2-ter-ter)»); `packages/cmd/aos/modelo_fixado.go` ([Node.goalDoRunExistente], [Node.lerHistoriaDoRun]) |
+
+### Contexto
+
+Achado ao medir o AOS-557, e **fora do âmbito dele**.
+
+O AOS-520 abriu uma terceira via de re-hospedagem: um `POST /runs` com um `run_id` cujo estado
+durável não é o inicial, nem suspenso, nem terminal — isto é, um run que ficou em `running` quando o
+processo morreu — é admitido em vez de recusado, «uma retoma por outro nome». O comentário que a
+declara promete:
+
+> confere-se o Goal com o que está SELADO para o run, e se este nó não o pode continuar a submissão
+> é recusada AQUI, antes de hospedar
+
+**A conferência cobre duas coisas, não o Goal.** `goalDoRunExistente` lê a história do run
+(`lerHistoriaDoRun`, que recolhe só os eventos `run.model_pinned` e o registo de retoma) e confere o
+**alias do modelo**, a **marca de fixação** e o **digest do perfil da rota**. Devolve o Goal **do
+corpo** com esses três campos sobrepostos. Tudo o resto vem de quem submete: o `objective`, os
+`inputs`, a lista-branca `tools`, o `completion_requires`, a declaração de origem da saída e o
+`max_turns`.
+
+Logo um run que já deu turnos pode ser re-hospedado com um objectivo diferente, outras entradas e
+outra lista-branca, continuando o mesmo `run_id` — com os turnos anteriores no log e o
+`prompt_hash` a divergir do que a trajectória tinha. O registo de retoma, que o
+`persistCrashResumeRecord` escreve em cada hospedagem **antes** do primeiro turno, TEM o Goal certo
+(incluindo os `Inputs` com as referências de handle já seladas) e não é usado para isto — ao
+contrário da varredura de crash-resume e da retoma pela API, que repõem o Goal com
+`rec.GoalWith(...)`.
+
+**Num layout por handle há dano adicional:** as entradas novas não traziam referência, pelo que o
+selo cunha handles NOVOS no espaço do run, somando ao que a primeira hospedagem já selou — e nada
+apaga ficheiros desse espaço (ver o AOS-554).
+
+**Não é uma via sem autenticação:** o `POST /runs` verifica a credencial e o gate soberano decide o
+chamador. O que falha é a **integridade do run**, não a admissão: quem pode submeter aquele
+`run_id` pode mudar-lhe o conteúdo a meio.
+
+### Critérios de Aceitação
+
+- [ ] A re-hospedagem pela via do `POST /runs` reconstitui o Goal do que está **selado** para o run
+      — o registo de retoma, que já existe e já o tem —, e não do corpo do pedido. Decide-se no
+      ticket se o corpo divergente é **recusado** (fail-closed, com a causa) ou **ignorado**, e
+      declara-se a escolha com a razão.
+- [ ] Um run sem registo de retoma (o nó não compôs `ResumeRecords`, ou o titular está vazio) não
+      passa a ser re-hospedável do corpo por omissão: a ausência do registo decide-se pelo lado
+      seguro, e isso fica dito.
+- [ ] O comentário do caso «(2-ter-ter)» deixa de prometer uma conferência do Goal que não faz; o
+      que a conferência cobre fica nomeado campo a campo.
+- [ ] Teste: um run em `running` re-submetido com `objective`, `inputs` e `tools` diferentes não
+      continua com os do corpo. Num layout por handle, não cunha handles novos.
+- [ ] A varredura de crash-resume e a retoma pela API continuam a repor o Goal como hoje — nenhuma
+      das duas regride.
+
+### Fora de âmbito
+
+- O ciclo de vida do espaço de handles (AOS-554).
+- A conferência do perfil da rota e da fixação do modelo, que já existe e não muda.
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -5474,3 +5545,4 @@ parte de conteúdo genérica e responde às três (§6). Este ticket é a fase R
 | 1.13 | 2026-10-21 | AOS-544 em produção na v0.1.67: o custo do planeador no desfecho do plano (4969 tokens, 1066 µUSD, medidos) | Equipa AOS |
 | 1.14 | 2026-10-22 | +AOS-546: o modelo do run vê media — a parte de conteúdo genérica de entrada (fase R1a do ADR-043, proposto) | Equipa AOS |
 | 1.15 | 2026-10-22 | AOS-546 feito: em produção na v0.1.68 com `AOS_MEDIA_NO_TURNO=on`; o modelo do run viu uma planta e listou os 5 cômodos, replay com fidelidade 1 | Equipa AOS |
+| 1.16 | 2026-10-26 | +AOS-559: a re-hospedagem de um `run_id` em curso (a terceira via do AOS-520) confere o alias do modelo, a marca de fixação e o digest do perfil — e aceita do CORPO o objectivo, as entradas, a lista-branca e o contrato, apesar de o comentário prometer que «confere-se o Goal com o que está SELADO». O registo de retoma TEM o Goal certo e não é usado nesta via, ao contrário da varredura de crash-resume e da retoma pela API. Achado ao medir o AOS-557 | Equipa AOS |
