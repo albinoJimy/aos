@@ -153,11 +153,13 @@ const (
 	// resultado cru, não tem nada além de espaços.
 	causaOrigemVazia = "origem_vazia"
 	// causaOrigemPorHandle — os bytes designados NOMEIAM um handle em vez de serem conteúdo
-	// (AOS-556). Num run num layout por handle o kernel sela o resultado da tool e designa a
-	// própria referência, que CONFERE com a âncora porque os dois lados a hasheiam; entregá-la
-	// dava ao consumidor um token que ele nunca abre — a pasta é por run e o `handle.created` é
-	// do stream de quem produziu. A travessia da aresta por handle é o AOS-553; até lá, uma causa
-	// nomeada em vez de lixo silencioso.
+	// (AOS-556) E O NÓ CONSUMIDOR NÃO ATRAVESSA A ARESTA (AOS-553). Num run num layout por handle
+	// o kernel sela o resultado da tool e designa a própria referência, que CONFERE com a âncora
+	// porque os dois lados a hasheiam; entregá-la a um nó que a não resolve dava ao consumidor um
+	// token que ele nunca abre — a pasta é por run e o `handle.created` é do stream de quem
+	// produziu. Com o nó a anunciar `handle_traversal.plan_input` a referência ENTREGA-SE e é ele
+	// que a resolve, na sua admissão, sob as conferências do ADR-045; sem o anúncio fica esta
+	// causa nomeada, que é o que um nó anterior a este ticket merece.
 	causaOrigemPorHandle = "origem_por_handle"
 )
 
@@ -250,13 +252,17 @@ func extrairEntrega(servido string) (conteudo string, forma plannerevents.Payloa
 //  4. os bytes designados são CONTEÚDO e não o NOME de um handle — pela FORMA completa de uma
 //     referência, nunca pelo prefixo, que o kernel declara não ser autoridade. Conferir com a
 //     âncora não basta num layout por handle: lá o kernel sela o resultado e designa a referência,
-//     e os dois lados hasheiam-na, pelo que o passo 3 passa e o que se entregaria é um token que o
-//     consumidor não abre (AOS-556; a travessia é o AOS-553);
-//  5. só então se extrai ([extrairEntrega]).
+//     e os dois lados hasheiam-na, pelo que o passo 3 passa. Com uma referência há DOIS desfechos,
+//     e o que os separa é o ANÚNCIO DO NÓ (AOS-553): um nó que atravessa a aresta recebe a
+//     referência e resolve-a do armazém do run produtor na sua admissão; um nó que a não
+//     atravessa fecha com [causaOrigemPorHandle], porque um token que ele não abre é pior do que
+//     uma causa. A EXTRACÇÃO NÃO CORRE sobre uma referência: ela não é envelope da sandbox nem
+//     conteúdo a aparar, e o que se entrega são os bytes designados INTEIROS;
+//  5. só então, e só sobre CONTEÚDO, se extrai ([extrairEntrega]).
 //
 // O que vem do nó passa por vocabulários fechados: um estado ou uma marca que este binário não
 // conhece dão uma causa deste ficheiro, sem serem repetidos.
-func entregaDoRun(tool, runFilho string, st estadoDoRun) (entregaPorReferencia, string) {
+func entregaDoRun(tool, runFilho string, st estadoDoRun, travessia bool) (entregaPorReferencia, string) {
 	if st.RunID != runFilho {
 		return entregaPorReferencia{}, causaOrigemSemVinculo
 	}
@@ -302,7 +308,15 @@ func entregaDoRun(tool, runFilho string, st estadoDoRun) (entregaPorReferencia, 
 	// `observarPrimeiroDespacho`), pelo que o kernel nunca designa uma malformada — ela resolve
 	// `missing` e cai no [causaOrigemEmFalta] acima.
 	if _, porHandle := agentruntime.ParseHandleRef(*st.Output); porHandle {
-		return entregaPorReferencia{}, causaOrigemPorHandle
+		if !travessia {
+			return entregaPorReferencia{}, causaOrigemPorHandle
+		}
+		// A REFERÊNCIA ENTREGA-SE INTEIRA, sem passar pela extracção: o que o consumidor recebe
+		// tem de ser byte a byte o que o kernel designou, senão a conferência que ele faz contra a
+		// âncora do produtor ([atravessarArestasDoPlano], passo 4) não bate. O digest do payload é
+		// por isso o da âncora, que é o que o evento de publicação exige para esta forma.
+		return entregaPorReferencia{conteudo: *st.Output, extraccao: plannerevents.PayloadExtractionHandleRef,
+			passo: a.StepID, digestDaAncora: a.Digest, bytesDaAncora: a.Bytes}, ""
 	}
 	conteudo, forma, causa := extrairEntrega(*st.Output)
 	if causa != "" {
@@ -413,6 +427,7 @@ func (m *metricasDoConsumo) registarEntrega(c *medicaoDoContrato) {
 	somar(metricaEntregaPorReferencia, "resultado", append([]string{resultadoEntregue}, causasDaOrigem...), c.entregas)
 	somar(metricaEntregaExtraccao, "extraccao", []string{
 		string(plannerevents.PayloadExtractionSandboxStdoutText), string(plannerevents.PayloadExtractionRaw),
+		string(plannerevents.PayloadExtractionHandleRef),
 	}, c.extraccoes)
 	somar(metricaOrigemRecusasDoValidador, "razao", razoesDaOrigemNoValidador, c.recusasDaOrigem)
 	if c.candidatosSemOrigem > 0 {

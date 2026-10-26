@@ -101,6 +101,11 @@ type configDoExecutor struct {
 	// primeiroTurnoExigido (AOS-542): o plano foi validado com a regra P4 relaxada pelo anúncio do
 	// nó; cada nó consumidor exige ao nó o primeiro turno confiável no `POST /runs`.
 	primeiroTurnoExigido bool
+	// travessiaPorHandle (AOS-553): o nó anunciou `handle_traversal.plan_input`
+	// ([anuncioDoNo.travessiaPorHandle]). É a condição de uma saída designada que seja a
+	// REFERÊNCIA de um handle se entregar; falso ⇒ o nó do plano fecha com `origem_por_handle`,
+	// como num nó anterior a este ticket.
+	travessiaPorHandle bool
 	// medicao recebe o que o executor mede sobre o contrato (AOS-495): a classe de cada nó
 	// submetido e os veredictos observados. O `consume` escreve-a no ficheiro de métricas; nil
 	// num `serve` manual, onde não se mede.
@@ -317,6 +322,8 @@ type executorDeNos struct {
 	contratoDeConclusao bool
 	// primeiroTurnoExigido — ver [configDoExecutor.primeiroTurnoExigido] (AOS-542).
 	primeiroTurnoExigido bool
+	// travessiaPorHandle — ver [configDoExecutor.travessiaPorHandle] (AOS-553).
+	travessiaPorHandle bool
 	// medicao — ver [configDoExecutor.medicao] (AOS-495). nil fora do `consume`.
 	medicao *medicaoDoContrato
 	// medirOrigem e origemAnunciada — ver [configDoExecutor] (AOS-499).
@@ -347,6 +354,17 @@ type executorDeNos struct {
 	// nó. O custo, declarado: um `serve` que morra perde-o, e a retoma recusa-se a correr um
 	// consumidor sem o material — alto, em vez de o correr às cegas.
 	payloads map[chaveDePayload]string
+	// runsPorReferencia é o RUN PRODUTOR de cada payload publicado POR REFERÊNCIA, tal como o
+	// evento `plan.payload_published` o registou (`Record.Stream`) — a chave presente é também o
+	// que marca o payload como por referência (AOS-553). Escreve-se no MESMO instante que o
+	// `payloads`, dos mesmos valores, nos dois caminhos (publicação e reidratação).
+	//
+	// VEM DO EVENTO e não se re-deriva de [executorDeNos.runDoNo] no momento do consumo: o valor
+	// autoritativo está no artefacto selado, e a reidratação já o CONFERE contra o `runDoNo`
+	// ([executorDeNos.relerPorReferencia]). Re-derivá-lo no consumo fazia o `from_run` depender de
+	// `e.tentativas`, estado em memória, com um argumento em comentário no lugar de uma
+	// conferência — e um `from_run` errado mata o nó consumidor.
+	runsPorReferencia map[chaveDePayload]string
 	// nt — ver [configDoExecutor.novaTentativa] (AOS-503).
 	nt configDaNovaTentativa
 	// tentativas guarda, por nó do plano, a tentativa CORRENTE quando não é a primeira (AOS-503).
@@ -432,7 +450,8 @@ func novoExecutorDeNos(ctx context.Context, cli nodeRunner, rec *runlifecycle.Pl
 	e := &executorDeNos{cli: cli, rec: rec, g: g, runID: runID, nos: nos, tools: pinadas, headroom: headroom,
 		emVoo: map[string]struct{}{}, sumidos: map[string]time.Time{}, agora: time.Now, causas: map[string]string{},
 		payloads: map[chaveDePayload]string{}, candidatos: map[string]bool{}, declaradas: map[string]declaracaoDeOrigem{},
-		tentativas: map[string]int{}, tentativaContada: map[string]bool{}, esgotados: map[string]bool{},
+		runsPorReferencia: map[chaveDePayload]string{},
+		tentativas:        map[string]int{}, tentativaContada: map[string]bool{}, esgotados: map[string]bool{},
 		razoesDeTentativa: map[string]plannerevents.AttemptReason{}, esgotadosPorVazio: map[string]bool{},
 		recusasDeTentativa: map[string]string{}, retomadas: map[string]bool{}, submetidosAqui: map[string]bool{},
 		conferidas: map[string]bool{}, semOrigemDesde: map[string]time.Time{}}
@@ -603,6 +622,30 @@ func (e *executorDeNos) submeterTentativa(ctx context.Context, nodeID string, te
 
 // entradasDe reúne os payloads que o `consumes` DESTE nó declara — nunca o que o produtor
 // quis dar. Um contrato por cumprir é fail-closed: o nó não corre sem o material.
+//
+// UMA ENTRADA QUE VEM POR REFERÊNCIA LEVA O RUN PRODUTOR (`from_run`, AOS-553): é de lá que o nó
+// consumidor resolve o conteúdo, e sem isso não tem como saber qual dos runs do plano selou o
+// handle — a tentativa corrente de um nó não é derivável do `node_id` sozinho. O valor vem do
+// `Record.Stream` do evento de publicação ([executorDeNos.runsPorReferencia]), não de uma
+// re-derivação no momento do consumo.
+//
+// TRÊS CONDIÇÕES, e cada uma fecha uma coisa diferente (as duas primeiras são achados da revisão
+// adversarial deste ticket):
+//
+//  1. O NÓ ANUNCIOU A TRAVESSIA. Sem isto, o campo ia para um nó que não o conhece e o seu
+//     `POST /runs` responde 400 (`DisallowUnknownFields`), matando o nó do plano — e ia-lhe
+//     também num nó anterior a este ticket, que é a combinação «`aos-orq` novo × nó antigo».
+//  2. O PAYLOAD FOI PUBLICADO POR REFERÊNCIA. O `e.payloads` é indiferenciado: lá entram a entrega
+//     por referência, a forma fechada e o TEXTO FINAL do run filho. Decidir pela forma do texto
+//     punha `from_run` numa aresta cujo payload é o que um documento untrusted ditou ao modelo de
+//     um nó anterior — e do outro lado é o `from_run` que abre a travessia.
+//  3. E A FORMA É DE FACTO A DE UMA REFERÊNCIA. Mantém o corpo do pedido byte a byte o de antes
+//     em qualquer aresta que transporte conteúdo, inclusive de um produtor por referência que não
+//     corra num layout por handle.
+//
+// NÃO DÁ AUTORIDADE: o nó confere-o contra o pedido de plano que PROVOU no seu próprio log
+// ([runDoNoProdutor]) e contra a âncora que o kernel selou nesse run. O que a travessia acrescenta,
+// e o que a confina, está no cabeçalho de `cmd/aos/travessia_da_aresta.go`.
 func (e *executorDeNos) entradasDe(n plan.Node) ([]entradaDoNo, error) {
 	if len(n.Consumes) == 0 {
 		return nil, nil
@@ -613,9 +656,15 @@ func (e *executorDeNos) entradasDe(n plan.Node) ([]entradaDoNo, error) {
 		if !ok {
 			return nil, fmt.Errorf("%w: o no %q consome %q/%q", ErrPayloadPerdido, n.NodeID, c.From, c.Output)
 		}
-		entradas = append(entradas, entradaDoNo{
+		entrada := entradaDoNo{
 			From: c.From, Output: c.Output, Digest: digestDoConteudo(conteudo), Content: conteudo,
-		})
+		}
+		if run, porReferencia := e.runsPorReferencia[chaveDePayload{no: c.From, output: c.Output}]; porReferencia && e.travessiaPorHandle {
+			if _, porHandle := agentruntime.ParseHandleRef(conteudo); porHandle {
+				entrada.FromRun = run
+			}
+		}
+		entradas = append(entradas, entrada)
 	}
 	return entradas, nil
 }
@@ -820,6 +869,8 @@ func (e *executorDeNos) publicarSaidas(ctx context.Context, n plan.Node, st esta
 				Stream: e.runDoNo(n.NodeID),
 				Digest: digestDoConteudo(conteudo),
 			}
+			// AOS-553: o run produtor desta aresta guarda-se ABAIXO, junto do payload — e não
+			// aqui, antes de o evento estar gravado. Ver o porquê no sítio da escrita.
 			p.Source = &plannerevents.PayloadSource{
 				StepID:       entrega.passo,
 				AnchorDigest: entrega.digestDaAncora,
@@ -848,7 +899,29 @@ func (e *executorDeNos) publicarSaidas(ctx context.Context, n plan.Node, st esta
 		if _, err := e.rec.RecordPayloadPublished(ctx, p, n); err != nil {
 			return fmt.Errorf("publicacao de %q/%q: %w", n.NodeID, contrato.Name, err)
 		}
-		e.payloads[chaveDePayload{no: n.NodeID, output: contrato.Name}] = conteudo
+		chave := chaveDePayload{no: n.NodeID, output: contrato.Name}
+		e.payloads[chave] = conteudo
+		// AOS-553: e, numa saída POR REFERÊNCIA, o run produtor que o evento registou — o que vai
+		// no `inputs[].from_run` do consumidor, e o MESMO valor que a reidratação lê do evento.
+		//
+		// AQUI, E NÃO ONDE O `Record` SE COMPÕE: escrevê-lo antes de o evento estar gravado deixava
+		// a chave no mapa com o payload fora dele se a gravação falhasse — e a chave presente é o
+		// que MARCA o payload como por referência, pelo que a invariante que o campo declara ficava
+		// momentaneamente falsa (achado da segunda passagem da revisão). As duas escritas passam a
+		// ser o mesmo instante, dos mesmos valores.
+		//
+		// COM INICIALIZAÇÃO TARDIA, no molde dos mapas de [medicaoDoContrato]: um `executorDeNos`
+		// construído à mão — como os testes fazem — não pode entrar em panic por um campo que não
+		// conhece, e esta escrita passou a estar no caminho de TODA a saída publicada. É um defeito
+		// que a própria correcção da segunda passagem abriu, e que a suite completa apanhou. Pode
+		// ser tardia sem risco porque este mapa NÃO é um portão: vazio, o `from_run` não se envia
+		// e o conteúdo viaja como viajava — degrada fechado.
+		if p.Source != nil {
+			if e.runsPorReferencia == nil {
+				e.runsPorReferencia = map[chaveDePayload]string{}
+			}
+			e.runsPorReferencia[chave] = p.Record.Stream
+		}
 		if p.Source != nil {
 			fmt.Printf("  execucao: payload %s/%s publicado (%s) POR REFERENCIA: extraccao=%s bytes_da_ancora=%d bytes_entregues=%d\n",
 				n.NodeID, contrato.Name, contrato.Type, p.Source.Extraction, p.Source.AnchorBytes, len(conteudo))
@@ -993,6 +1066,12 @@ func (e *executorDeNos) rehidratarPayloads(ctx context.Context, store runlifecyc
 				continue
 			}
 			e.payloads[chave] = conteudo
+			// AOS-553: do EVENTO, que o [relerPorReferencia] acima já conferiu contra o `runDoNo`.
+			// Inicialização tardia pela mesma razão do outro ponto de escrita.
+			if e.runsPorReferencia == nil {
+				e.runsPorReferencia = map[chaveDePayload]string{}
+			}
+			e.runsPorReferencia[chave] = p.Record.Stream
 			e.rehidratados++
 		case p.Record.Stream != "":
 			conteudo, ok := e.relerDoRunFilho(ctx, p)
@@ -1083,7 +1162,11 @@ func (e *executorDeNos) relerPorReferencia(ctx context.Context, p plannerevents.
 	if !st.concluiu() {
 		return naoEntra("o run filho " + p.Record.Stream + " nao responde como concluido")
 	}
-	entrega, causa := entregaDoRun(tool, p.Record.Stream, st)
+	// AOS-553: a MESMA postura com que este `serve` entrega ao vivo. Um `serve` que reiniciou sem
+	// o anúncio da travessia recusa aqui um payload que fora publicado como referência — e é o
+	// desfecho certo: entregá-lo punha um token no `plan_input` de um consumidor que o nó já não
+	// resolve. O consumidor não corre, com razão visível, em vez de correr às cegas.
+	entrega, causa := entregaDoRun(tool, p.Record.Stream, st, e.travessiaPorHandle)
 	if causa != "" {
 		return naoEntra("o resultado designado do run filho " + p.Record.Stream + " nao se entrega: " + causa)
 	}
@@ -1346,7 +1429,7 @@ func (e *executorDeNos) resolverEntrega(n plan.Node, st estadoDoRun, entrega **e
 		return causaOrigemSemVinculo
 	}
 	// AOS-503: a âncora confere-se contra o run da tentativa CORRENTE — a que concluiu.
-	ent, causa := entregaDoRun(saida.FromTool, e.runDoNo(n.NodeID), st)
+	ent, causa := entregaDoRun(saida.FromTool, e.runDoNo(n.NodeID), st, e.travessiaPorHandle)
 	if causa != "" {
 		return causa
 	}

@@ -209,6 +209,12 @@ type anuncioDoNo struct {
 	// só deixa pedir tools no primeiro turno de um run com `plan_input` e nega-as depois com o gate
 	// de taint armado. Lê-se na MESMA resposta. Falso ⇒ a regra P4 do validador fica como antes.
 	primeiroTurnoConfiavel bool
+	// travessiaPorHandle (AOS-553): o nó anunciou `handle_traversal.plan_input` — atravessa a
+	// aresta do plano por handle, resolvendo do armazém do run produtor uma entrada que chegue
+	// como referência. Lê-se na MESMA resposta. Falso ⇒ um nó anterior a este ticket, ou sem o
+	// layout por handle habilitado: uma saída designada que seja uma referência NÃO se entrega, e
+	// o nó do plano fecha com `origem_por_handle`.
+	travessiaPorHandle bool
 }
 
 // ContratoDeConclusao lê do `GET /tools` se o nó aceita o contrato de conclusão.
@@ -256,12 +262,16 @@ func (c *nodeClient) ContratoDeConclusao(ctx context.Context) (anuncioDoNo, erro
 		PlanInputDeferral *struct {
 			FirstTurnTrusted bool `json:"first_turn_trusted"`
 		} `json:"plan_input_deferral"`
+		HandleTraversal *struct {
+			PlanInput bool `json:"plan_input"`
+		} `json:"handle_traversal"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&corpo); err != nil {
 		return anuncioDoNo{}, fmt.Errorf("anúncio do contrato de conclusão: resposta ilegível: %w", err)
 	}
 	var anuncio anuncioDoNo
 	anuncio.primeiroTurnoConfiavel = corpo.PlanInputDeferral != nil && corpo.PlanInputDeferral.FirstTurnTrusted
+	anuncio.travessiaPorHandle = corpo.HandleTraversal != nil && corpo.HandleTraversal.PlanInput
 	if corpo.RunRetry != nil && corpo.RunRetry.Max > 0 {
 		// O valor vem de outro processo: fica dentro do que este binário sabe usar.
 		anuncio.tentativas = corpo.RunRetry.Max

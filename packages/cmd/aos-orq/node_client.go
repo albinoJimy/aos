@@ -165,6 +165,10 @@ type entradaDoNo struct {
 	Output  string `json:"output"`
 	Digest  string `json:"digest"`
 	Content string `json:"content"`
+	// FromRun é o RUN do nó produtor, e só vai quando o `Content` é a REFERÊNCIA de um handle
+	// (AOS-553): é de lá que o nó consumidor resolve o conteúdo. `omitempty` de propósito — numa
+	// entrega de conteúdo o campo não existe e o corpo é o de antes, byte a byte.
+	FromRun string `json:"from_run,omitempty"`
 }
 
 // nodeClient fala com a API do nó.

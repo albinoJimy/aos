@@ -822,6 +822,17 @@ type planInputWire struct {
 	Output  string `json:"output"`
 	Digest  string `json:"digest"`
 	Content string `json:"content"`
+	// FromRun é o RUN do nó produtor de que este payload veio (AOS-553, ADR-045). Só tem uso
+	// quando o `content` é a REFERÊNCIA de um handle: é dele que a travessia da aresta lê o
+	// conteúdo, e o nó CONFERE-O contra o pedido de plano que provou no seu próprio log
+	// ([runDoNoProdutor]) — tem de ser `<pedido>~<from>` ou uma tentativa dele. Ausente, ou com
+	// `content` que não é uma referência, nada muda: campo aditivo.
+	//
+	// NÃO DÁ AUTORIDADE. Quem submete é o drenador que detém a reclamação viva do pedido, e esse
+	// já lê a saída designada de qualquer run do plano pelo `GET /runs/{id}`; o que este campo
+	// nomeia fica confinado a isso pela conferência do prefixo e pela da âncora selada. Ver o
+	// cabeçalho de `travessia_da_aresta.go`.
+	FromRun string `json:"from_run,omitempty"`
 }
 
 // Limites do canal de entrada (AOS-414): contam ANTES de o run existir, como o tecto de turnos.
@@ -849,39 +860,50 @@ type submitResponse struct {
 //   - contrato completo (`from`/`output`), senão o segmento não tem proveniência para mostrar;
 //   - digest `sha256:<hex>` que BATE com o conteúdo — integridade do que o plano publicou;
 //   - tectos de número e tamanho, para um payload não engolir a janela do modelo.
-func validarPlanInputs(wire []planInputWire) ([]agentruntime.PlanInput, string) {
+//
+// O segundo valor devolvido é o RUN PRODUTOR de cada entrada (`from_run`), pela MESMA ordem — o
+// que a travessia da aresta do plano consome (AOS-553). Vazio em cada posição é o normal; a
+// conferência de que o run é deste plano é da travessia, onde o pedido verificado existe.
+func validarPlanInputs(wire []planInputWire) ([]agentruntime.PlanInput, []string, string) {
 	if len(wire) == 0 {
-		return nil, ""
+		return nil, nil, ""
 	}
 	if len(wire) > maxPlanInputs {
-		return nil, "inputs acima do tecto"
+		return nil, nil, "inputs acima do tecto"
 	}
 	out := make([]agentruntime.PlanInput, 0, len(wire))
+	produtores := make([]string, 0, len(wire))
 	total := 0
 	for _, in := range wire {
 		if in.From == "" || in.Output == "" {
-			return nil, "input sem contrato (from/output)"
+			return nil, nil, "input sem contrato (from/output)"
 		}
 		if len(in.From) > maxPlanInputNameLen || len(in.Output) > maxPlanInputNameLen {
-			return nil, "contrato do input acima do comprimento maximo"
+			return nil, nil, "contrato do input acima do comprimento maximo"
 		}
+		// O `from_run` NÃO tem conferência aqui, e é deliberado: a travessia compara-o por
+		// IGUALDADE com um id que ela DERIVA do pedido de plano verificado
+		// ([runDoNoProdutor]), pelo que qualquer valor que não seja exactamente esse é
+		// recusado lá. Uma conferência de forma aqui não acrescentava nada e o seu tecto
+		// próprio seria um número sem fonte; o tamanho é já limitado pelo tecto do corpo.
 		if len(in.Content) > maxPlanInputBytes {
-			return nil, "input acima do tamanho maximo"
+			return nil, nil, "input acima do tamanho maximo"
 		}
 		total += len(in.Content)
 		if total > maxPlanInputsBytes {
-			return nil, "inputs acima do tamanho agregado maximo"
+			return nil, nil, "inputs acima do tamanho agregado maximo"
 		}
 		if !strings.HasPrefix(in.Digest, planInputDigestAlgo) {
-			return nil, "input sem digest sha256"
+			return nil, nil, "input sem digest sha256"
 		}
 		soma := sha256.Sum256([]byte(in.Content))
 		if !hmac.Equal([]byte(hex.EncodeToString(soma[:])), []byte(strings.TrimPrefix(in.Digest, planInputDigestAlgo))) {
-			return nil, "digest do input nao corresponde ao conteudo"
+			return nil, nil, "digest do input nao corresponde ao conteudo"
 		}
 		out = append(out, agentruntime.PlanInput{From: in.From, Output: in.Output, Digest: in.Digest, Content: []byte(in.Content)})
+		produtores = append(produtores, in.FromRun)
 	}
-	return out, ""
+	return out, produtores, ""
 }
 
 // handleSubmit é o INGRESSO do plano de dados com ADMISSION (achado nº5): (1) rate-limit
@@ -967,10 +989,23 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	// AOS-414: os payloads do plano. Fail-closed na fronteira — um digest que não bate é um
 	// payload que não é o que o plano publicou, e um input sem contrato não tem proveniência
 	// que mostrar ao modelo.
-	inputs, ierr := validarPlanInputs(req.Inputs)
+	inputs, runsProdutores, ierr := validarPlanInputs(req.Inputs)
 	if ierr != "" {
 		writeError(w, http.StatusBadRequest, ierr)
 		return
+	}
+	// AOS-553: um `inputs[].from_run` num nó que NÃO atravessa a aresta do plano por handle é
+	// recusado, e não aceito-e-ignorado. Segue o molde do `conteudo_por_handle` e pela mesma razão:
+	// aceitá-lo daria a quem submete a ideia de que o conteúdo vai ser resolvido do run produtor
+	// quando o que o run ia receber era o token literal. A condição é a MESMA que o `GET /tools`
+	// anuncia ([anuncioDaTravessiaDoNo]), para a porta e o anúncio não poderem divergir.
+	if anuncioDaTravessiaDoNo(h.node) == nil {
+		for _, r := range runsProdutores {
+			if r != "" {
+				writeError(w, http.StatusBadRequest, "inputs[].from_run: este no nao atravessa a aresta do plano por handle (AOS_CONTEUDO_POR_HANDLE desligada, sem o produtor do tool_result composto, ou sem AOS_HANDLE_DIR) — a submissao e recusada em vez de correr com a referencia literal no plan_input, que seria a afirmacao ao contrario")
+				return
+			}
+		}
 	}
 
 	// SOBERANIA — RESIDÊNCIA DO RUN na CRIAÇÃO (AOS-182, DEF-202). Em modo SOBERANO (gate de
@@ -1256,14 +1291,14 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	var sementeHospedada *sementeDaTentativa
 	var err error
 	if tentativaProvada != nil && (goal.RetryNotice != agentruntime.RetryNoticeNone || tentativaProvada.avisoAnterior != agentruntime.RetryNoticeNone) {
-		err = h.svc.submitDoPlano(r.Context(), goal, planoDoRun, func(hospedado agentruntime.Goal) {
+		err = h.svc.submitDoPlano(r.Context(), goal, planoDoRun, runsProdutores, func(hospedado agentruntime.Goal) {
 			s := sementeDoGoal(hospedado)
 			sementeHospedada = &s
 		})
 	} else {
 		// AOS-520: a origem verificada do run num pedido de plano vai com a submissão (o valor-zero
 		// num run que não é trabalho de um pedido verificado — a chamada é a de sempre).
-		err = h.svc.submitDoPlano(r.Context(), goal, planoDoRun, nil)
+		err = h.svc.submitDoPlano(r.Context(), goal, planoDoRun, runsProdutores, nil)
 	}
 	if err != nil {
 		// COLISÃO DE run_id COM CHAMADOR AUTENTICADO (achado A2 da auditoria de 2026-08-17).
@@ -2571,7 +2606,7 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			labels := `{resultado="` + r + `"}`
 			if i == 0 {
 				g("aos_handle_total",
-					"Operacoes sobre handles de conteudo em quarentena desde o arranque (AOS-550, ADR-043 §2.6), pelo resultado. selado: conteudo cifrado no espaco de handles, com o run nos dados associados, e declarado num handle.created do stream do run. resolvido: argumento de tool em que o no trocou a referencia pelos bytes, no CallRewriter e ANTES da mediacao. As restantes sao as causas de recusa, num vocabulario fechado: handle_vazio, handle_acima_do_tecto (o tecto do corpo de um tool_result), tecto_de_handles_do_run, volume_de_handles_cheio, cifra/disco/registo_indisponivel, handle_nao_reconhecido, handle_sem_proveniencia (o par (run, digest) nao consta do stream), handle_nao_textual, handle_aninhado, handle_parcial, handle_no_slot_do_recurso, argumentos_ilegiveis, handle_sem_run e handle_ilegivel. Uma recusa de resolucao NEGA a tool call. Por processo.",
+					"Operacoes sobre handles de conteudo em quarentena desde o arranque (AOS-550, ADR-043 §2.6), pelo resultado. selado: conteudo cifrado no espaco de handles, com o run nos dados associados, e declarado num handle.created do stream do run. resolvido: argumento de tool em que o no trocou a referencia pelos bytes, no CallRewriter e ANTES da mediacao. As restantes sao as causas de recusa, num vocabulario fechado: handle_vazio, handle_acima_do_tecto (o tecto do corpo de um tool_result), tecto_de_handles_do_run, volume_de_handles_cheio, cifra/disco/registo_indisponivel, handle_nao_reconhecido, handle_sem_proveniencia (o par (run, digest) nao consta do stream), handle_nao_textual, handle_aninhado, handle_parcial, handle_no_slot_do_recurso, argumentos_ilegiveis, handle_sem_run e handle_ilegivel. Uma recusa de resolucao NEGA a tool call. travessia_feita e a aresta do plano atravessada (AOS-553, ADR-045): uma entrada que vinha por referencia foi resolvida do armazem do run produtor e re-selada neste run; as travessia_* restantes sao as suas recusas, e cada uma RECUSA A HOSPEDAGEM do run consumidor em vez de lhe entregar um token que ele nao abre. Por processo.",
 					"counter", float64(h.node.handles.lido(r)), labels)
 				continue
 			}

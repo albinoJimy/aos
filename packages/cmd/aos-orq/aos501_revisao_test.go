@@ -302,7 +302,7 @@ func TestAOS501_CorpusAdversarialPeloCaminhoPorReferencia(t *testing.T) {
 		ancora := &agentruntime.OutputSource{Tool: "doc_read", Binding: agentruntime.OutputSourceBinds, State: agentruntime.OutputSourceDesignated,
 			StepID: "step-000001-tool-1", Digest: digestDoConteudo(env.Envelope), Bytes: len(env.Envelope)}
 		ent, causa := entregaDoRun("doc_read", aos501Run+"~read_notes", estadoDoRun{RunID: aos501Run + "~read_notes", Status: "completed", Terminated: true,
-			FinalText: aos501TextoFinal, OutputSource: ancora, Output: &env.Envelope})
+			FinalText: aos501TextoFinal, OutputSource: ancora, Output: &env.Envelope}, false)
 		if causa != "" || ent.conteudo != doc.Texto || ent.extraccao != plannerevents.PayloadExtractionSandboxStdoutText {
 			t.Fatalf("%s: da extraccao tinha de sair o documento do corpus byte a byte (causa=%q, extraccao=%q, %d bytes; quero %d)", doc.ID, causa, ent.extraccao, len(ent.conteudo), len(doc.Texto))
 		}

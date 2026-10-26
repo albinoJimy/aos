@@ -828,10 +828,19 @@ const (
 	// entregou-se só o seu `stdout_text` (o documento, uma vez). O digest do entregue é o do
 	// texto; o da âncora continua a ser o do envelope inteiro.
 	PayloadExtractionSandboxStdoutText PayloadExtraction = "sandbox_stdout_text"
+	// PayloadExtractionHandleRef — o que se entregou é a REFERÊNCIA de um handle, e não conteúdo
+	// (AOS-553, ADR-045): o run produtor correu num layout por handle, o kernel designou a própria
+	// referência como origem da saída, e é o nó CONSUMIDOR que a resolve do armazém do produtor, na
+	// sua admissão. Como na `raw`, o que se entrega são os bytes designados tal como o nó os
+	// serviu, pelo que o digest do payload é o da âncora — a diferença é a CADEIA DE CONFIANÇA de
+	// quem o lê depois, e é por isso que tem forma própria em vez de contar como `raw`: quem audita
+	// o log do plano tem de poder distinguir uma aresta atravessada de uma entrega de conteúdo.
+	PayloadExtractionHandleRef PayloadExtraction = "handle_ref"
 )
 
 func (e PayloadExtraction) valid() bool {
-	return e == PayloadExtractionRaw || e == PayloadExtractionSandboxStdoutText
+	return e == PayloadExtractionRaw || e == PayloadExtractionSandboxStdoutText ||
+		e == PayloadExtractionHandleRef
 }
 
 // PayloadSource é a origem de um payload por referência. SEM CONTEÚDO: nomes, um passo, dois
@@ -923,8 +932,11 @@ func normalizeSource(contract plan.Output, record PayloadRecordRef, in *PayloadS
 	if !validSealedDigest(record.Digest) {
 		return nil, fmt.Errorf("%w: o digest de um payload por referencia tem a forma sha256:<hex>", ErrInvalidPayloadRef)
 	}
-	if in.Extraction == PayloadExtractionRaw && record.Digest != in.AnchorDigest {
-		return nil, fmt.Errorf("%w: extraccao `raw` com um digest entregue diferente do da ancora", ErrInvalidPayloadRef)
+	// AS DUAS FORMAS QUE ENTREGAM OS BYTES DESIGNADOS INTEIROS têm de ter o digest do payload
+	// igual ao da âncora: a `raw` (o resultado cru da tool) e a `handle_ref` (a referência que o
+	// kernel designou, AOS-553). Só a `sandbox_stdout_text` deriva um sub-conjunto dos bytes.
+	if in.Extraction != PayloadExtractionSandboxStdoutText && record.Digest != in.AnchorDigest {
+		return nil, fmt.Errorf("%w: extraccao `%s` com um digest entregue diferente do da ancora", ErrInvalidPayloadRef, in.Extraction)
 	}
 	return &PayloadSource{
 		Kind:         PayloadSourceToolResult,
