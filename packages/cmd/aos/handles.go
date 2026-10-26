@@ -514,7 +514,8 @@ func selarEntradasDoPlano(ctx context.Context, p *planoDeHandles, goal agentrunt
 	// A GUARDA MEDE O GOAL, e a mistura que importaria é com as declarações do STREAM — não são a
 	// mesma coisa, e fica dito. Um Goal em que alguma entrada já traz handle desarma o desfazer
 	// por inteiro: [armazemDeHandles.gravar] reaproveita o ficheiro do mesmo conteúdo no mesmo
-	// run, pelo que apagar podia tirar o chão a uma entrada que veio do registo de retoma. Nenhum
+	// run, pelo que apagar podia tirar o chão a uma entrada que veio do registo de retoma.
+	//
 	// O SEGUNDO CASO PASSOU A SER ALCANÇÁVEL NO AOS-559, e é por isso que o desarmar existe: o
 	// `POST /runs` de um run que JÁ EXISTE e está em curso é re-hospedado com o Goal do REGISTO DE
 	// RETOMA, que leva as entradas já seladas. O ciclo abaixo salta-as (`Handle != ""`), pelo que

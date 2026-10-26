@@ -5560,7 +5560,30 @@ correcção, não do defeito.**
 2. **A obrigatoriedade do registo matava a via inteira num nó sem aprovadores**, sem o distinguir de
    um acidente de um run. Daí as duas causas e os dois remédios (acima).
 
-E quatro achados importantes, todos de forma e todos corrigidos: o `ConteudoPorHandle` não existe no
+**Segunda passagem, sobre as correcções — sem bloqueantes, e dois importantes:**
+
+3. **Comparar o `Principal` como struct inteira era mais estrito do que a conferência que o
+   cabeçalho dizia fazer, e era uma regressão viva.** Em modo soberano o `Principal.NHIID` do Goal é
+   o principal OIDC de **quem chama o nó**, sobreposto na porta — não o agente do run. O `resume.go`
+   não o compara (usa-o só como recuo do `AgentID`), e compara os outros três **só quando o selo os
+   tem**. Com `AOS_PLAN_DRAINERS` a ser uma lista, o **segundo drenador** a pegar num run recebia
+   409 e **não havia corpo nenhum que o resolvesse**, porque o campo não vem do corpo. E não comprava
+   integridade: o Goal que segue é o selado. Passou a conferir-se pela regra exacta do `resume.go`,
+   com o `NHIID` e o `RequestedBy` de fora e o resto do `Principal` na regra da classe 2.
+4. **O remédio de `corpo_diverge_do_selo` prometia um corpo que, em três divergências, não existe**
+   — `Principal` (vem da credencial), `ConteudoPorHandle` (o layout está selado e pedi-lo dá 400 na
+   porta) e `MaxTurns` (resolve-se repondo `AOS_MAX_TURNS`). Era o defeito que a própria correcção
+   dos remédios tinha sido criada para fechar, reintroduzido num quarto da superfície.
+
+E dez menores, dos quais contam: uma afirmação falsa no cabeçalho («o único campo conferido com
+`omitempty`» — são três, mas só um é slice, que é o que cria a assimetria); um nome de causa
+inexistente num comentário (`travessia_composicao`, quando a constante vale
+`travessia_arestas_incoerentes`); uma frase deixada a meio por uma edição anterior; as arestas
+`inputs[].from_run` descartadas em silêncio, que ganharam atribuição no log como o objectivo; e a
+promessa «um campo esquecido falha fechado, nunca aberto», que um campo **não exportado** quebrava
+com um *panic* — agora recusa sem ser lido.
+
+E os quatro achados importantes da primeira passagem, todos de forma e todos corrigidos: o `ConteudoPorHandle` não existe no
 registo, pelo que conferi-lo contra o campo do selo só sabia **recusar** — confere-se contra o
 LAYOUT selado (`HasPlanInputsByHandle`), e a 1.8.0 só se alcança a pedido, pelo que a equivalência é
 exacta; o `CompletionRequires` é o único campo conferido com `omitempty` no registo, pelo que `[]`
@@ -5711,6 +5734,7 @@ trabalho do ticket:
 | 1.14 | 2026-10-22 | +AOS-546: o modelo do run vê media — a parte de conteúdo genérica de entrada (fase R1a do ADR-043, proposto) | Equipa AOS |
 | 1.15 | 2026-10-22 | AOS-546 feito: em produção na v0.1.68 com `AOS_MEDIA_NO_TURNO=on`; o modelo do run viu uma planta e listou os 5 cômodos, replay com fidelidade 1 | Equipa AOS |
 | 1.16 | 2026-10-26 | +AOS-559: a re-hospedagem de um `run_id` em curso (a terceira via do AOS-520) confere o alias do modelo, a marca de fixação e o digest do perfil — e aceita do CORPO o objectivo, as entradas, a lista-branca e o contrato, apesar de o comentário prometer que «confere-se o Goal com o que está SELADO». O registo de retoma TEM o Goal certo e não é usado nesta via, ao contrário da varredura de crash-resume e da retoma pela API. Achado ao medir o AOS-557 | Equipa AOS |
+| 1.20 | 2026-10-26 | AOS-559, segunda passagem da revisão (sobre as CORRECÇÕES, sem bloqueantes): o `Principal` deixa de ser comparado como struct inteira e passa a seguir a regra exacta do `resume.go` — o `NHIID` e o `RequestedBy` identificam quem CHAMA o nó e não o run, e amarrá-los ao selo tornava o run não re-hospedável pelo SEGUNDO drenador sem comprar integridade nenhuma (o Goal que segue é o selado); o remédio de `corpo_diverge_do_selo` deixa de prometer um corpo que em três divergências não existe; e dez menores, dos quais uma afirmação falsa no cabeçalho, um nome de causa inexistente num comentário, as arestas do plano descartadas em silêncio (ganharam atribuição) e um campo não exportado que teria feito *panic* no caminho de admissão | Equipa AOS |
 | 1.19 | 2026-10-26 | AOS-559 revisto (duas passagens adversariais) e corrigido: **os dois bloqueantes eram da própria correcção** — a substituição do Goal deixava `rs.runsProdutores` a descrever entradas descartadas, e a travessia da aresta, que corre dentro do `hostRun`, SELAVA o run `failed` numa re-submissão legítima; e a obrigatoriedade do registo matava a via inteira num nó sem `AOS_APPROVERS` (onde `ResumeRecords` não é composto), sem o distinguir de um acidente de um run. Mais quatro de forma: o `ConteudoPorHandle` confere-se contra o LAYOUT selado e não contra um campo que o registo nunca tem; o `CompletionRequires` normaliza-se (único conferido com `omitempty`); a divergência do `Objective` passa a ficar atribuída no log, com a razão corrigida; e a classe «só do selo» recusa um valor que o selo não tenha em vez de o copiar em silêncio | Equipa AOS |
 | 1.18 | 2026-10-26 | +AOS-560: a terceira via de re-hospedagem não leva plano de replay — os turnos já capturados voltam a interrogar o modelo, porque o `withReplayPlan` só é escrito pela retoma pela API e pela varredura de crash-resume. Achado ao fechar o AOS-559, que fechou a outra metade da mesma promessa (a origem do Goal) | Equipa AOS |
 | 1.17 | 2026-10-26 | AOS-559 implementado: o Goal da terceira via é `registo.GoalWith(credencial)`, a ausência do registo recusa (`sem_registo_de_retoma`), e o corpo que divirja recusa com o campo no log (`corpo_diverge_do_selo`, 409 — o código que a rota já usa). As três classes de cada campo estão declaradas no código, com a razão medida por campo, e a classe «recusado se divergir» é a **por omissão** (a comparação é por reflexão sobre o `Goal`, pelo que um campo novo entra nela sem ninguém se lembrar). Medido e registado: o `Objective` entra trusted e uma lista-branca nil é sem restrição — o que sobe o eixo do defeito de «integridade do conteúdo» para «alargamento de autoridade face ao plano». Com o `Principal` na classe conferida, esta via passa a ter os quatro eixos de identidade que a retoma pela API já conferia | Equipa AOS |
