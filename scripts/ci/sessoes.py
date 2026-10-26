@@ -33,14 +33,30 @@ ESCRITA CONCORRENTE. Cada sessão escreve **só o seu próprio ficheiro**
 de números — que é a única operação que decide algo global — toma um lock, e é
 um lock que falha fechado em vez de esperar para sempre.
 
-Uso:
-    python3 scripts/ci/sessoes.py registar --tickets AOS-318,AOS-319 \\
-                                           --ficheiros scripts/ci/rtm-regenerate.py
-    python3 scripts/ci/sessoes.py ver
-    python3 scripts/ci/sessoes.py reservar 2
-    python3 scripts/ci/sessoes.py sair
+O LEDGER DA FÁBRICA vive ao lado, no mesmo directório e pela mesma razão. A
+skill `software-factory` declara seis indicadores; três deles — calibração,
+taxa de retrabalho e escapes por portão — não se leem de nenhum artefacto que o
+repositório já produza, e estavam a depender de alguém se lembrar deles. Os
+subcomandos `medir` e `indicadores` dão-lhes um sítio onde acumulam.
 
-`ver` sai != 0 quando encontra uma colisão, para poder ser um gate.
+Uso:
+    python scripts/ci/sessoes.py registar --tickets AOS-318,AOS-319 \\
+                                          --ficheiros scripts/ci/rtm-regenerate.py
+    python scripts/ci/sessoes.py ver
+    python scripts/ci/sessoes.py reservar 2
+    python scripts/ci/sessoes.py sair
+    python scripts/ci/sessoes.py medir achado --veredicto confirmado --onde revisao
+    python scripts/ci/sessoes.py medir entrega --pr 566
+    python scripts/ci/sessoes.py indicadores --desde 30
+
+`ver` sai != 0 quando encontra uma colisão, para poder ser um gate. O `medir` e
+o `indicadores` NÃO são gates e não entram no `run.sh`, pela mesma razão que o
+`ver` não entra: no runner não haveria nada com que colidir nem ledger que ler,
+e um gate que passa sempre é pior do que verificação nenhuma.
+
+É `python`, não `python3`: em Windows o `python3` do PATH é o atalho da
+Microsoft Store. Os gates provisionam um shim em `.tools/`, que só serve dentro
+do PATH deles.
 """
 
 import argparse
@@ -50,7 +66,7 @@ import re
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Idade a partir da qual uma sessão é dada como morta e deixa de contar para
@@ -122,6 +138,79 @@ def _escrever(path: Path, dados: dict) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, path)
+
+
+# --- ledger da fábrica -------------------------------------------------------
+
+# O QUE ELE É, E O QUE NÃO É. Não é um gate: continua a depender de alguém o
+# chamar. O que muda é que o número passa a ACUMULAR e a ser LEGÍVEL — uma
+# entrada em falta vê-se como lacuna ao ler o ledger contra os PRs do dia,
+# enquanto uma contagem na cabeça de quem mediu evapora-se no fim da sessão. É
+# menos do que um instrumento automático e mais do que prosa, e a skill
+# `software-factory` declara-o nesses termos em vez de o apresentar como medição.
+#
+# DOIS TIPOS DE REGISTO, E OS TRÊS INDICADORES DERIVAM DELES. Não se guarda um
+# contador por indicador: três contadores mantidos à mão discordam entre si, que
+# é exactamente a classe de defeito que este directório existe para fechar.
+#
+#   achado   um achado de revisão, com o veredicto do vocabulário da skill
+#            (confirmado | plausivel | morto) e ONDE apareceu — em revisão, ou
+#            depois de alguém já ter declarado o trabalho feito
+#   entrega  «declarei isto feito»; é o denominador do retrabalho, e sem ele a
+#            taxa não existe
+LEDGER = "fabrica.jsonl"
+VEREDICTOS = ("confirmado", "plausivel", "morto")
+ONDES = ("revisao", "pos-feito")
+
+
+def _acrescentar_ledger(d: Path, reg: dict) -> None:
+    """Append sob lock: duas sessões a medir ao mesmo tempo não interleavam linhas."""
+    linha = json.dumps(reg, ensure_ascii=False, sort_keys=True) + "\n"
+
+    def _fn():
+        with (d / LEDGER).open("a", encoding="utf-8") as fh:
+            fh.write(linha)
+        return 0
+
+    _com_lock(d, _fn)
+
+
+def _ler_ledger(d: Path, desde_dias=None) -> list:
+    path = d / LEDGER
+    if not path.exists():
+        return []
+    corte = None
+    if desde_dias:
+        corte = datetime.now(timezone.utc) - timedelta(days=desde_dias)
+    regs = []
+    for linha in path.read_text(encoding="utf-8").splitlines():
+        linha = linha.strip()
+        if not linha:
+            continue
+        try:
+            reg = json.loads(linha)
+        except json.JSONDecodeError:
+            continue  # linha truncada por uma escrita morta: ignora-se
+        if corte is not None:
+            try:
+                if datetime.fromisoformat(reg.get("t", "")) < corte:
+                    continue
+            except ValueError:
+                continue  # sem data legível não se pode situar na janela
+        regs.append(reg)
+    return regs
+
+
+def _taxa(num: int, den: int) -> str:
+    """
+    Uma taxa sem denominador não é 0% nem 100%: é desconhecida. Imprimir «0%»
+    sobre zero amostras é a mesma frase tranquilizadora que o `NÃO VERIFICADO`
+    da skill existe para evitar — e aqui enganaria de forma simétrica, porque
+    uma calibração de 0% e uma sem dados lêem-se de maneiras opostas.
+    """
+    if den <= 0:
+        return "sem amostras"
+    return f"{100.0 * num / den:.0f}%  ({num}/{den})"
 
 
 # --- numeração de tickets ----------------------------------------------------
@@ -340,6 +429,104 @@ def cmd_ver(_args) -> int:
     return _relatar(_dir_estado())
 
 
+def cmd_medir(args) -> int:
+    if args.tipo == "achado" and not args.veredicto:
+        sys.stderr.write(
+            "ERRO: um achado sem veredicto não é um achado medido — é uma nota. "
+            "Usa --veredicto confirmado|plausivel|morto.\n"
+        )
+        return 2
+    if args.tipo == "entrega" and args.veredicto:
+        sys.stderr.write(
+            "ERRO: uma entrega não tem veredicto. O veredicto é do achado.\n"
+        )
+        return 2
+    d = _dir_estado()
+    reg = {
+        "t": _agora(),
+        "sessao": _id_sessao(),
+        "ramo": _git("rev-parse", "--abbrev-ref", "HEAD") or "desconhecido",
+        "tipo": args.tipo,
+    }
+    if args.tipo == "achado":
+        reg["veredicto"] = args.veredicto
+        reg["onde"] = args.onde
+        if args.portao:
+            reg["portao"] = args.portao
+    for campo in ("ticket", "pr", "nota"):
+        valor = getattr(args, campo, None)
+        if valor:
+            reg[campo] = valor
+    _acrescentar_ledger(d, reg)
+    resumo = reg["tipo"]
+    if reg.get("veredicto"):
+        resumo += f" {reg['veredicto']} ({reg['onde']})"
+    if reg.get("portao"):
+        resumo += f" · portão {reg['portao']}"
+    # ASCII na seta de propósito. Em Windows, com a saída redireccionada ou num
+    # pipe, o Python escreve em cp1252 e um `→` (U+2192) aborta o comando — o que
+    # só acontece quando alguém o usa num script, que é o uso que interessa. O
+    # resto do ficheiro já era seguro; esta linha não era, e o teste apanhou-a.
+    #
+    # E A FALHA DE IMPRESSÃO NÃO PODE AVERMELHAR O COMANDO, porque o registo JÁ
+    # FOI ESCRITO acima. Um `medir` que grava e depois sai != 0 convida a uma
+    # repetição que conta o mesmo achado duas vezes — e um ledger que
+    # sobre-conta é pior do que um ledger vazio, porque parece medido. Foi assim
+    # que o U+2192 se descobriu: a primeira corrida rebentou no print e deixou o
+    # registo lá. O ledger é a operação; o eco é cosmético.
+    try:
+        sys.stdout.write(f"medido: {resumo}  ->  {d / LEDGER}\n")
+        sys.stdout.flush()
+    except OSError:
+        # Não basta apanhar o `write`: com `| head -1` a falha aparece no FLUSH,
+        # e um flush que falha no encerramento do interpretador devolve 120 —
+        # medido. Reaponta-se o descritor para o vazio para que o flush final
+        # não volte a falhar, e devolve-se 0, porque o registo está escrito.
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        except OSError:
+            pass
+    return 0
+
+
+def cmd_indicadores(args) -> int:
+    d = _dir_estado()
+    regs = _ler_ledger(d, args.desde)
+    achados = [r for r in regs if r.get("tipo") == "achado"]
+    entregas = [r for r in regs if r.get("tipo") == "entrega"]
+    confirmados = [r for r in achados if r.get("veredicto") == "confirmado"]
+    pos_feito = [r for r in achados if r.get("onde") == "pos-feito"]
+
+    janela = f"últimos {args.desde:g} dia(s)" if args.desde else "todo o ledger"
+    print(f"indicadores da fábrica — {janela}; {len(regs)} registo(s)")
+    print()
+    print(f"  calibração          {_taxa(len(confirmados), len(achados))}"
+          f"   confirmados / achados levantados")
+    print(f"  taxa de retrabalho  {_taxa(len(pos_feito), len(entregas))}"
+          f"   achados pós-feito / entregas declaradas")
+
+    escapes = {}
+    for r in achados:
+        portao = r.get("portao")
+        if portao:
+            escapes[portao] = escapes.get(portao, 0) + 1
+    print()
+    if escapes:
+        print("  escapes por portão")
+        for portao, n in sorted(escapes.items(), key=lambda kv: (-kv[1], kv[0])):
+            print(f"    {portao:<22} {n}")
+    else:
+        print("  escapes por portão  sem amostras")
+
+    print()
+    print("Os outros três indicadores da fábrica NÃO vivem aqui, porque já têm "
+          "artefacto:\n"
+          "  verde à primeira   `gh pr checks <n>` na primeira corrida\n"
+          "  etapas saltadas    AOS_SKIPPED_STEP no veredicto dos gates (exit 3)\n"
+          "  tempo até merge    da abertura do PR ao squash")
+    return 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -361,6 +548,24 @@ def main() -> int:
 
     s = sub.add_parser("sair", help="remove o registo desta sessão")
     s.set_defaults(fn=cmd_sair)
+
+    m = sub.add_parser("medir", help="acrescenta um achado ou uma entrega ao ledger da fábrica")
+    m.add_argument("tipo", choices=["achado", "entrega"])
+    m.add_argument("--veredicto", choices=list(VEREDICTOS),
+                   help="obrigatório num achado; proibido numa entrega")
+    m.add_argument("--onde", choices=list(ONDES), default="revisao",
+                   help="revisao (apanhado antes de entregar) ou pos-feito "
+                        "(entrou depois de alguém declarar feito)")
+    m.add_argument("--portao", help="o portão que o devia ter apanhado, se havia um")
+    m.add_argument("--ticket", help="AOS-NNN, se houver")
+    m.add_argument("--pr", help="número do PR, se houver")
+    m.add_argument("--nota", help="uma linha, para quem ler o ledger daqui a um mês")
+    m.set_defaults(fn=cmd_medir)
+
+    i = sub.add_parser("indicadores",
+                       help="lê o ledger: calibração, taxa de retrabalho e escapes por portão")
+    i.add_argument("--desde", type=float, help="janela em dias (omitido = todo o ledger)")
+    i.set_defaults(fn=cmd_indicadores)
 
     args = p.parse_args()
     return args.fn(args)

@@ -11,29 +11,47 @@ Lê este ficheiro quando fechares uma linha e for preciso converter o que aprend
 
 ## Seis indicadores
 
-Uma fábrica que não se mede não melhora — repete. Seis indicadores, **e três deles ainda não
-têm instrumento**. A distinção é o que separa medição de intenção, por isso está na tabela e
-não numa nota de pé de página.
+Uma fábrica que não se mede não melhora — repete. Seis indicadores, e a coluna que importa é a
+do instrumento: é ela que separa medição de intenção.
 
 | Indicador | Onde se lê | Instrumento |
 |---|---|---|
-| **Verde à primeira** | `gh pr checks` do PR, primeira corrida | **existe** |
-| **Etapas saltadas** | `AOS_SKIPPED_STEP` no veredicto; exit `3` | **existe** |
-| **Tempo até merge** | abertura do PR → squash | **existe** |
-| **Taxa de retrabalho** | achados que entraram **depois** de eu dizer feito | **nenhum** — depende de memória |
-| **Escapes por portão** | defeito encontrado a jusante do portão que o devia apanhar | **nenhum** — depende de memória |
-| **Calibração** | achados `CONFIRMADO` / achados levantados | **nenhum** — depende de memória |
+| **Verde à primeira** | `gh pr checks <n>`, primeira corrida | artefacto do GitHub |
+| **Etapas saltadas** | `AOS_SKIPPED_STEP` no veredicto; exit `3` | veredicto dos gates |
+| **Tempo até merge** | abertura do PR → squash | artefacto do GitHub |
+| **Calibração** | achados `CONFIRMADO` / achados levantados | `sessoes.py medir` |
+| **Taxa de retrabalho** | achados pós-feito / entregas declaradas | `sessoes.py medir` |
+| **Escapes por portão** | achados com o portão que os devia ter apanhado | `sessoes.py medir` |
 
-**Os três sem instrumento são, hoje, exactamente o que esta skill condena.** Não há colector,
-não há ledger de achados, e nenhum script conhece os veredictos `CONFIRMADO`/`PLAUSÍVEL`/`MORTO`
-— verificado: zero ocorrências em `scripts/`, e o `sessoes.py` tem só `registar`, `ver`,
-`reservar` e `sair`. São notas que dependem de alguém se lembrar de as escrever, e esquecer-se é
-indistinguível de não haver nada a registar. Pela regra abaixo, isto devia ser um artefacto.
+### O ledger dos três últimos
 
-Enquanto o instrumento não existir, **declara-o em vez de os citar como se fossem medidos**: a
-calibração de «dois terços morrem» é observação acumulada, não uma contagem. A diferença importa
-porque é a calibração que detecta se a revisão procura ou se inventa — e é o indicador que menos
-se pode confiar à memória de quem está a ser medido.
+Os três de baixo não se leem de nenhum artefacto que o repositório já produza. Têm um ledger
+próprio, ao lado do estado das sessões e pela mesma razão — é observação do agora, partilhada
+entre worktrees, e versioná-la tornava-a invisível entre ramos até ao merge.
+
+```bash
+python scripts/ci/sessoes.py medir achado --veredicto confirmado --onde revisao
+python scripts/ci/sessoes.py medir achado --veredicto morto --onde revisao --nota "..."
+python scripts/ci/sessoes.py medir achado --veredicto confirmado --onde pos-feito --portao test
+python scripts/ci/sessoes.py medir entrega --pr 566
+python scripts/ci/sessoes.py indicadores --desde 30
+```
+
+**Dois tipos de registo, e os três indicadores derivam deles** — não há um contador por
+indicador, porque três contadores mantidos à mão discordam entre si, que é a classe de defeito
+que o `scripts/ci/` existe para fechar. O `achado` leva o veredicto do vocabulário desta skill e
+**onde** apareceu: `revisao` se foi apanhado antes de entregar, `pos-feito` se entrou depois de
+alguém declarar feito. A `entrega` é o denominador do retrabalho — sem ela a taxa não existe, e
+o `indicadores` diz **`sem amostras`** em vez de `0%`, porque uma taxa sem denominador não é
+zero, é desconhecida.
+
+**O que este instrumento não é.** Não é um gate, e não entra no `run.sh` — no runner não haveria
+ledger que ler, e um gate que passa sempre é pior do que verificação nenhuma. Continua a
+depender de alguém chamar o `medir`. O que muda é que o número **acumula e lê-se**: uma entrada
+em falta vê-se como lacuna ao ler o ledger contra os PRs do dia, enquanto uma contagem na cabeça
+de quem mediu desaparece no fim da sessão. Diz isto assim quando citares um indicador — e a
+calibração de «dois terços morrem» continua a ser observação acumulada até o ledger ter amostras
+que a sustentem.
 
 Três notas sobre como se leem:
 

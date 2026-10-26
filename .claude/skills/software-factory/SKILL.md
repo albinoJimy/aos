@@ -371,20 +371,24 @@ juntas.
 
 ## 3. Métricas e realimentação
 
-Uma fábrica que não se mede não melhora — repete. Seis indicadores, e **três ainda sem
-instrumento** — o que se declara, não se esconde:
+Uma fábrica que não se mede não melhora — repete. Seis indicadores, cada um com o seu
+instrumento nomeado:
 
 ```text
-com instrumento
-  VERDE À PRIMEIRA    corridas de CI que passam sem segunda tentativa
-  ETAPAS SALTADAS     AOS_SKIPPED_STEP — o verde parcial, exit 3
+artefactos que já existem
+  VERDE À PRIMEIRA    gh pr checks <n>, primeira corrida
+  ETAPAS SALTADAS     AOS_SKIPPED_STEP no veredicto dos gates — exit 3
   TEMPO ATÉ MERGE     da abertura do PR ao squash
 
-sem instrumento — dependem de memória, e é dívida desta skill
-  TAXA DE RETRABALHO  achados que voltaram DEPOIS de eu declarar feito
-  ESCAPES POR PORTÃO  defeito encontrado depois do portão que o devia ter apanhado
+ledger da fábrica — `sessoes.py medir` / `sessoes.py indicadores`
   CALIBRAÇÃO          achados CONFIRMADOS / achados levantados
+  TAXA DE RETRABALHO  achados pós-feito / entregas declaradas
+  ESCAPES POR PORTÃO  achados com o portão que os devia ter apanhado
 ```
+
+O ledger não é um gate e depende de alguém o chamar; o que muda é que o número acumula e
+lê-se, em vez de desaparecer no fim da sessão. Com zero amostras ele responde `sem amostras`,
+não `0%`.
 
 E a regra que fecha o ciclo:
 
