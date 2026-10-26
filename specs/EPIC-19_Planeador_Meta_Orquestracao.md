@@ -10986,10 +10986,11 @@ o nó seguinte recebe o JSON como `plan_input` untrusted e não consegue abrir o
   AOS-556 é hoje inalcançável ATRAVÉS DO ORQ. Pedir o layout é do critério «o interruptor da 1.8.0
   passa a accionável» do **AOS-556**. Até lá a travessia é exercida por testes, pelo caminho real de
   admissão do nó, e não por um plano vivo.
-- **A ordem dos portões fail-closed do `hostRun` não foi tocada** — é o **AOS-557**. A travessia
-  corre imediatamente antes do selo das entradas e **não alarga** nenhuma das duas janelas que o
-  AOS-556 declarou: ela só LÊ do armazém do produtor, pelo que uma recusa dela não deixa bytes atrás
-  de si.
+- **A ordem dos portões fail-closed do `hostRun` não foi tocada por este ticket** — mudou-a o
+  **AOS-557**, que passou os dois portões accionáveis por quem submete (o contrato de conclusão e a
+  origem da saída) para ANTES do selo das entradas. A travessia continua a correr imediatamente
+  antes deles e **não alarga** janela nenhuma: ela só LÊ do armazém do produtor, pelo que uma recusa
+  dela não deixa bytes atrás de si. A janela que fica é a do **crash** (AOS-554).
 - **Um nó multi-processo não atravessa:** a travessia lê o stream e o blob do run produtor do SEU
   armazém. Produtor noutro nó ⇒ `travessia_sem_declaracao_do_produtor` ou
   `travessia_conteudo_indisponivel`. Fail-closed e nomeado; o ADR-018 mantém a decomposição

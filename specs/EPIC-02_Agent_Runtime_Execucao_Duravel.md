@@ -2807,15 +2807,59 @@ silenciosa de capacidade em vez de bytes a mais.
 
 ### Critérios de Aceitação
 
-- [ ] Os portões que são função apenas do Goal e da oferta do nó correm **antes** de
+- [x] Os portões que são função apenas do Goal e da oferta do nó correm **antes** de
       `selarEntradasDoPlano`, de modo que uma recusa deles não sele nada. No mínimo o contrato de
       conclusão e a origem da saída, que são os accionáveis por quem submete.
-- [ ] A ordem fica imposta por teste, e não por comentário: um run com um contrato impossível e
+- [x] A ordem fica imposta por teste, e não por comentário: um run com um contrato impossível e
       entradas num layout por handle não deixa `handle.created` nenhum no stream nem bytes no espaço.
-- [ ] O que não puder subir fica nomeado, com a razão, no bloco do selo em `hostRun`.
-- [ ] A janela do **crash** continua declarada e não é fechada aqui.
-- [ ] Nenhum portão passa a correr duas vezes com semânticas diferentes: se a conferência subir, o
+- [x] O que não puder subir fica nomeado, com a razão, no bloco do selo em `hostRun`.
+- [x] A janela do **crash** continua declarada e não é fechada aqui.
+- [x] Nenhum portão passa a correr duas vezes com semânticas diferentes: se a conferência subir, o
       portão do `Run` mantém-se (é ele a garantia) e a de cima é a que evita o selo.
+
+### Como ficou (2026-10-26)
+
+A conferência corre em `hostRun`, entre a travessia da aresta (AOS-553) e o selo (AOS-551), e é a
+**mesma função** que decide nos dois sítios: `contratoPossivel` e `origemPossivel` passaram a ter um
+chamador único (`recusaDeArranque`), que o `Runtime.Run` usa e que `agentruntime.RefuseAtStartup`
+expõe a quem hospeda o run. O que difere entre as duas chamadas é só a **oferta**.
+
+**A medição que mudou o desenho.** O portão do kernel decide a pertença contra `Goal.Tools`, que na
+hospedagem está **vazio** — o nó nunca o escreve, e quem o preenche é o `ApplyFrozenToGoal` *dentro*
+do `Run`. Erguer o portão com o Goal tal como está recusaria **todos** os contratos. A oferta vem
+por isso do catálogo (`SecuredRuntime.OfferedToolNames`), que é a mesma fonte do congelamento: o
+`FreezeToolSet` projecta uma spec por entrada activa e as suas duas recusas abortam o congelamento
+inteiro, nunca produzindo um conjunto menor — logo os dois conjuntos de nomes são iguais. E vai
+**cortada pela lista-branca do run** (`ofertaDoNo`, a regra do `specsOferecidas`), porque é cortada
+que o `Run` a vê: sem o corte o veredicto era o mesmo e a **causa** mudava — «fora da lista-branca»
+em cima, «não está no tool set» em baixo —, e é a causa que o `GET /runs/{id}` serve.
+
+**O âmbito são duas condições, e a segunda veio da revisão adversarial.** A conferência corre quando
+o selo vai cunhar (`haEntradasPorSelar`) **e** quando esta é a primeira hospedagem do run
+(`!rs.existente`). Num run re-hospedado o tool set vem do snapshot durável, que ganha de propósito
+ao catálogo vivo (AOS-050/AOS-155), pelo que conferi-lo contra o catálogo recusaria um run que o
+`Run` admite. **Derivar isso da forma do Goal era insuficiente**, e foi o achado: duas das três
+re-hospedagens chegam com as entradas já seladas (a retoma pela API e a varredura de crash-resume
+repõem os `Inputs` do registo), mas a terceira não — um `POST /runs` de um `run_id` que já existe e
+está em curso é admitido como retoma por outro nome (AOS-520) e o Goal dele é o **do corpo**, com
+entradas sem referência. Está provado por teste nas três direcções: sem a conferência o run
+condenado deixa um `handle.created`; sem a bandeira, a re-hospedagem é recusada; sem o corte da
+lista-branca, as causas divergem.
+
+**O que isso deixa de fora, declarado:** um run re-hospedado por essa via com um contrato impossível
+continua a selar antes de o `Run` o recusar. Fechá-lo exigia conferir contra o snapshot durável, que
+só se lê repondo-o no registo de tool sets por-run — estado partilhado que o `Run` repõe e larga a
+seguir.
+
+**O que não subiu, com a razão de cada**, está no bloco do selo em `hostRun`, e são **cinco** (o
+enunciado deste ticket contou seis portões onde há sete): a validação de pré-condições
+(`rt.validate`, que o enunciado não contou) é só do Goal mas é inalcançável depois do selo; a
+semente do tail é a única que *não pode* subir, porque exige as referências que o selo produz; o
+layout não deixa resíduo (uma versão que ele recuse não é um layout por handle, e o selo sai sem
+selar); o portão da autoridade por argumento é inalcançável nesta composição; e a janela é função da
+composição do `Runtime`, que o nó não vê.
+
+**A janela do crash continua aberta e declarada** — é o AOS-554.
 
 ### Fora de âmbito
 
@@ -2856,3 +2900,4 @@ silenciosa de capacidade em vez de bytes a mais.
 | 1.25 | 2026-10-25 | **AOS-556, a revisão adversarial da fatia do motor: um CRÍTICO que muda o que se pede ao dono.** A regra de fluxo está escrita, assinável e provada — e **não basta**. Medido em `TestAOS556_Bateria_ACadeiaRealDecideOQue`, que compõe a cadeia na ORDEM REAL: a política PERMITE a leitura com egress externo sobre um handle untrusted e o **TaintGate NEGA a seguir**, porque a `ocr_read` declara `egress: external`, logo é privilegiada com o `AOS_PRIVILEGED_CAPS` armado em produção, e o gate corre DEPOIS da política numa cadeia que pára no primeiro não-permit. **Porque não apareceu antes:** a bateria do critério 6 compunha `classificador → política` e parava ali, e a prova de que o gate nega a MESMA call estava no teste ao lado, no mesmo ficheiro, sem as duas se encontrarem. É o caso-escola de teste a passar pela razão errada. **Consequência:** assinar a 1.2.0 como está esvazia a baseline, aperta `cap:fs.read` para quem não sela o destino, e não entrega o critério 1 nem a prova em produção; a nota da candidata abre agora com NÃO ASSINAR AINDA. A decisão que falta — dar ao gate a mesma coordenada, o que RELAXA a invariante P0 do ADR-005 para uma classe de destino — é o resíduo 1 do ADR-044, com os dois argumentos escritos, e é do dono. **Mais quatro achados aplicados:** o campo `conteudo_por_handle` furava o portão do `max_turns >= 2`, porque ele chaveava na CONFIG do nó e não no layout que o run vai ter — um run na 1.8.0 com inputs e um turno morria no tecto sem ver os dados, **pior do que sem o campo**; a derivação da proveniência não tinha teste nenhum e toda a asserção sobre ela era feita sobre o valor que o próprio teste fornecia (trocar os dois `case` não avermelhava nada, e com a política em vigor inverteria o controlo negativo do dono) — tem agora teste directo, provado por essa mutação; declarar a `reversibility` da `doc_read` dos demos era um ALARGAMENTO VIVO entregue sob um ticket que diz «desligado por omissão» (com a 1.1.0 em vigor, a segunda leitura de um run nos demos passava de DENY a PERMIT), pelo que foi **revertido** e a exigência dos três eixos passou para a nota da cerimónia; e a frase «vazia ou desconhecida ⇒ a regra de antes vale» era **falsa** em três comentários, porque na 1.2.0 a `allow_fs_read` inteira desaparece e `unknown` deixa `cap:fs.read` sem regra nenhuma. A nota da cerimónia passou de três linhas a cinco pontos, com os consumidores que avermelham enumerados. | Equipa AOS |
 | 1.26 | 2026-10-25 | **AOS-556 — o gate aprende a coordenada (decisão do dono: «aceito a decisão, ensina a coordenada ao gate»).** O `TaintGate` ganha a terceira isenção, `fluxo_por_handle`, e é a primeira que RELAXA a invariante **P0 do ADR-005** — emendado no ADR-034, que é onde a semântica dela vive (o ADR-005 não está materializado como ficheiro). **Três condições, e nenhuma dispensável:** o destino declarado `external_read` com os três eixos explícitos; a capability e o recurso a **não** denunciarem rede; e a proveniência `handle_argument`. **A segunda é a que torna a isenção segura, e a formulação ingénua do achado esquecia-a:** uma tool `cap:http.post` com `mutation: none` e reversível TAMBÉM classifica `external_read`, e isentá-la deixava uma injecção exfiltrar para um host que ELA nomeia — com a condição, o destino é fixado pelo CÓDIGO da tool (o Model Gateway) e não por um argumento do modelo. A terceira dá de graça o controlo negativo do dono: num run com media a proveniência é `context` e nada se isenta. **O rótulo não muda** — a call continua untrusted no registo e o classificador continua a elevar a sensibilidade; «um só rótulo para todos os leitores» fica de pé. **E uma consequência que tem de estar escrita:** com a isenção no gate, o ganho da fase existe com a política **1.1.0** em vigor, porque a `allow_fs_read` dela permite `cap:fs.read` sem olhar ao taint. A 1.2.0 deixa de ser o que desbloqueia e passa a ser o que torna a decisão explícita e assinada, e o que fecha a dívida do critério 6 do AOS-363 — está em tensão com a §3(E) do ADR-044 («não uma classificação em código que muda com um deploy») e a tensão fica declarada. O que a torna aceitável é que as duas afirmações que importam continuam impostas pelo GATE e não pela política: o controlo negativo e a assimetria do efeito, medidos em `TestAOS556_IsencaoDoFluxoNaoSeEstende`. E o alcance continua governado pelo interruptor: a proveniência `handle_argument` só existe num layout por handle, que só se alcança a pedido e num nó que o habilite — desligado, a isenção nunca dispara. A via durável passa a VALIDAR o vocabulário da proveniência (`ErrBadAuthorizationProvenance`): agora que uma decisão de segurança depende dele, um valor que ninguém reconhece não deve chegar a um classificador que decide por igualdade de strings. | Equipa AOS |
 | 1.27 | 2026-10-25 | **AOS-556 — a revisão de segurança da fatia do motor: zero achados ≥8, e três observações que valem mais.** **(a) O ADR afirmava uma coisa que o código não impunha.** A §2.10(2) dizia que o `!derivesEgress` garante que «o destino é fixado pelo CÓDIGO da tool»; o que ele confere são dois campos DECLARADOS pelo operador. Um manifesto com `capability: cap:doc.fetch` (prefixo dos locais provados), `resource_type: file` e `resource_value: https://{host}/x` passava as três condições da isenção e deixava o MODELO nomear o destino — uma afirmação num documento a servir de razão para ninguém verificar. Passa a ser IMPOSTA no arranque por `validarLeituraExterna`, no molde exacto do `validateResourceSensitivity`, que o repo já tinha para uma consequência MAIS FRACA (achado M-1 do AOS-539): uma tool que classifique `external_read` tem de ter o bloco `modelo` e não ter `sandbox`, ou o nó não arranca. **(b) A premissa do anúncio `first_turn_trusted`** — «o nó nega-as depois» — deixou de ser verdade para `external_read` na 1.8.0, e o `aos-orq` relaxa a P4 com base nela; o desfecho é o ratificado, a premissa é que já não é a que o nó cumpre. Declarado na §2.11, e fechá-lo pertence ao planeador. **(c) E a mais importante para quem espera o produto: a isenção não tem hoje tool que a exerça.** A `ocr_read` e a `video_read` têm um só parâmetro e ele é o slot do recurso, e um handle num slot é RECUSADO — nenhum handle chega a elas. A isenção abre uma decisão, não um caminho, e o caminho chega com a `model_invoke` da R3. É o que torna esta fase segura de fundir, e é a razão pela qual o critério 8 não pode fechar antes da R3 — está escrito no critério e na §7.4 do ADR. **O teste do guarda novo passou primeiro pela razão errada** e vale registar: `AOS_MODEL_TOOLS` é um CAMINHO e não JSON em linha, e a mensagem genérica de ficheiro ilegível contém a palavra «modelo» por acidente («o que o modelo chama»); a asserção ancora agora em `external_read`, que só o guarda novo nomeia. **E a suite completa do `aos-orq`, declarada duas vezes como não corrida, foi corrida: esgota os 30 minutos de `-timeout`** com o teste em voo a correr há 3 segundos — são os ~149 anteriores, a lentidão local documentada (~10× o CI). Quem a mede é o job `test` do CI, verde no #558. | Equipa AOS |
+| 1.28 | 2026-10-26 | **AOS-557 — os portões fail-closed do run correm ANTES do selo das entradas por handle.** O contrato de conclusão e a origem da saída recusavam o run DEPOIS de `selarEntradasDoPlano`: um run condenado deixava `handle.created` no stream e bytes cifrados no espaço, que nada apaga, repetível por submissão até ao tecto do volume. Fecha-se com **uma só implementação da regra** (`recusaDeArranque`, que o `Runtime.Run` chama e que `RefuseAtStartup` expõe), chamada na hospedagem com a **oferta do catálogo cortada pela lista-branca** — a mesma fonte e o mesmo corte do congelamento. **A medição que mudou o desenho:** `Goal.Tools` está VAZIO na hospedagem (quem o escreve é o `ApplyFrozenToGoal`, dentro do `Run`), pelo que erguer o portão com o Goal tal como está recusaria todos os contratos. **O que a revisão adversarial corrigiu, e é o valor dela:** o âmbito estava derivado da FORMA do Goal (entradas por selar) e isso não distingue a terceira re-hospedagem — o `POST /runs` de um `run_id` em curso (AOS-520) chega com o Goal do corpo e entradas sem referência, e o seu tool set vem do snapshot durável; sem a bandeira `rs.existente` a conferência recusava um run que o `Run` admite. Mais: dois testes eram tautológicos (comparavam `RefuseAtStartup` consigo própria) e foram substituídos por um que mede contra o `SecuredRuntime.Run` REAL, que foi o que revelou a divergência de CAUSA no ramo da lista-branca. Os outros cinco portões ficam nomeados no bloco do selo, um a um, com a razão (o enunciado contava seis onde há sete: faltava o `rt.validate`); e a **janela do crash continua declarada e NÃO é fechada** (AOS-554) | Equipa AOS |

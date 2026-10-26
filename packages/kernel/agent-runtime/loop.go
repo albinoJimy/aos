@@ -496,7 +496,9 @@ func (g Goal) callPrincipal() referencemonitor.Principal {
 	return p
 }
 
-// validate verifica pré-condições do run.
+// validate verifica pré-condições do run: as da COMPOSIÇÃO deste runtime primeiro, as do GOAL
+// depois ([goalValidavel], partilhada com a [RefuseAtStartup] para que quem hospeda o run as possa
+// conferir mais cedo — AOS-557).
 func (rt *Runtime) validate(goal Goal) error {
 	switch {
 	case rt.model == nil:
@@ -505,12 +507,8 @@ func (rt *Runtime) validate(goal Goal) error {
 		return ErrNoMonitor
 	case rt.recorder == nil:
 		return ErrNoRecorder
-	case goal.RunID == "":
-		return ErrEmptyRunID
-	case goal.Principal.NHIID == "":
-		return ErrNoPrincipal
 	}
-	return nil
+	return goalValidavel(goal)
 }
 
 // Run percorre o loop montar → chamar → despachar → verificar até uma resposta
@@ -586,15 +584,17 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	// CONTRATO IMPOSSÍVEL ⇒ O RUN NÃO ARRANCA (AOS-493, revisão I5). Aqui, e não mais acima,
-	// porque é neste ponto que [Goal.Tools] e [Goal.AllowedTools] são os definitivos: quem
-	// compõe o run já cortou a oferta pela lista-branca (AOS-486) e o Reference Monitor vai
-	// impor a mesma lista em cada chamada (AOS-485). Antes de qualquer evento, span ou turno.
-	if err := contratoPossivel(conclusao, goal); err != nil {
-		return Result{}, err
-	}
-	// A mesma recusa para a origem declarada da saída (AOS-497).
-	if err := origemPossivel(conclusao, goal); err != nil {
+	// CONTRATO IMPOSSÍVEL (AOS-493, revisão I5) OU ORIGEM DA SAÍDA IMPOSSÍVEL (AOS-497) ⇒ O RUN
+	// NÃO ARRANCA. Aqui, e não mais acima, porque é neste ponto que [Goal.Tools] e
+	// [Goal.AllowedTools] são os definitivos: quem compõe o run já cortou a oferta pela
+	// lista-branca (AOS-486) e o Reference Monitor vai impor a mesma lista em cada chamada
+	// (AOS-485). Antes de qualquer evento, span ou turno.
+	//
+	// ESTE É O PORTÃO — a garantia (AOS-557). Quem hospeda o run pode fazer a MESMA conferência
+	// mais cedo, contra a sua própria oferta, para não selar nada de um run que ia ser recusado
+	// aqui ([RefuseAtStartup]); isso não substitui esta chamada, e a regra é literalmente a
+	// mesma função.
+	if err := recusaDeArranque(conclusao, goal); err != nil {
 		return Result{}, err
 	}
 	evidencia := NewRunEvidence()
