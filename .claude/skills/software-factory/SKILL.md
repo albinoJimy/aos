@@ -125,6 +125,11 @@ Lacunas de informação:
 **As lacunas são a parte que importa.** Uma discovery que não lista nada em falta ou não
 procurou, ou está a esconder incerteza.
 
+Quando o alvo é um pacote que ninguém da sessão conhece, junta
+`Skill(skill: "ponytail:ponytail-audit", args: "packages/<modulo>")` — é read-only e o que sai
+dela entra como **riscos e hipóteses**, nunca como trabalho a fazer
+([`references/ponytail.md`](references/ponytail.md)).
+
 #### Fontes de verdade neste repositório, por ordem
 
 Quando duas fontes discordam, **não escolhas em silêncio**. Regista o conflito no formato de
@@ -233,6 +238,13 @@ relacionada, ou mudança cosmética. Uma alteração fora de `FILES_IN_SCOPE` s�
 tecnicamente necessária, justificada e registada. Bug fora de escopo abre ticket novo
 (AGENTS.md §5) — o que o põe na **L1**, não neste PR.
 
+**Implementa no modo ponytail** (`Skill(skill: "ponytail:ponytail", args: "full")`): a mudança
+mais pequena que fecha a tarefa **inteira**, incluindo chamadores, testes e fixtures que ela
+parte. Com uma fronteira que não se negocia — *mínimo* nunca é retirar uma barreira. Um gate, um
+fail-closed, uma verificação de assinatura, identidade ou taint não são código a mais: são o
+produto. As três regras de divergência estão em
+[`references/ponytail.md`](references/ponytail.md).
+
 ### 1.5 Self-validation
 
 Valida o teu próprio trabalho sabendo que isto **não substitui** a revisão independente. Serve
@@ -270,8 +282,13 @@ A revisão **procura razões para a solução estar errada**. Não confirma que 
 
 ```
 Skill(skill: "code-review", args: "high")
-Skill(skill: "security-review")       # identidade, política, segredos, sandbox, auditoria, read-path
+Skill(skill: "security-review")        # identidade, política, segredos, sandbox, auditoria, read-path
+Skill(skill: "ponytail:ponytail-review")   # + o eixo do que não devia existir
 ```
+
+As três não se substituem: o `code-review` procura defeitos, o `ponytail-review` lê também o
+código ligado ao diff e acrescenta o que se pode cortar. Um achado de «cortar» que remova uma
+barreira de governação **rejeita-se** — e passa pela mesma verificação que os outros.
 
 Para revisão verdadeiramente independente, lança um subagente `general-purpose` que só vê o
 diff e os requisitos, **nunca as tuas justificações**. O guião está em
@@ -339,6 +356,11 @@ EVIDÊNCIA:  TestAOS263_CLIDecisaoExigeOsCamposQueAmarram cobre o corpo enviado;
 ```
 
 Sem evidência, escreve `NÃO VERIFICADO`. É informação útil. «Provavelmente funciona» não é.
+
+Antes de fechar, faz o livro da dívida com
+`Skill(skill: "ponytail:ponytail-debt", args: "DEFERIDO")`, apontado aos marcadores deste
+repositório e não ao `shortcut:` do ponytail — um atalho aqui é um deferimento registado com
+eixo e ticket, que o portão `deferrals` conta, ou um ticket novo.
 
 ---
 
@@ -438,5 +460,6 @@ escape — está em
 | [`references/decomposicao.md`](references/decomposicao.md) | Vais partir a tarefa, modelar dependências, resolver um conflito de fontes ou manter estado de execução |
 | [`references/contratos-de-agente.md`](references/contratos-de-agente.md) | Vais lançar um subagente ou definir o que ele devolve |
 | [`references/revisao-adversarial.md`](references/revisao-adversarial.md) | Estás a rever — o teu trabalho ou o de outro agente |
+| [`references/ponytail.md`](references/ponytail.md) | Vais usar as skills do `ponytail` numa estação, ou recebeste um achado de «cortar» |
 | [`references/encerramento.md`](references/encerramento.md) | Estás a integrar, auditar completude ou escrever o relatório final |
 | [`references/metricas-e-realimentacao.md`](references/metricas-e-realimentacao.md) | Fechaste uma linha e vais converter o que aprendeste em portão |
