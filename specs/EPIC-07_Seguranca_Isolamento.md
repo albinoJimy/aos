@@ -2096,7 +2096,10 @@ auto-assinado com uma chave ed25519 **efémera gerada no arranque** (`modelcatal
       2026-10-27:* `excepcaoDaEmendaDasToolsDeModelo` excepciona por forma e **aperta** — além do
       alias, da `cap:fs.read` e do `doc://{doc_id}` que já exigia, passa a exigir classe de media do
       vocabulário fechado, `egress: external`, `mutation: none`, `reversibility: reversible` e
-      sensibilidade do recurso declarada. A classe **vazia** é aceite pelo predicado (o manifesto de
+      `resource_sensitivity: public`. **Não é subconjunto do anterior, e a primeira versão desta
+      nota dizia que era** — achado de revisão adversarial: o eixo do nome passou de dois valores a
+      ilimitado, que é o ponto do ticket, e nenhum dos quatro eixos novos o substitui como
+      estreitamento. Alarga num eixo e aperta em quatro. A classe **vazia** é aceite pelo predicado (o manifesto de
       produção é anterior ao campo e não muda neste ticket) e quem fecha essa folga é o
       **carregador**, que recusa o bloco `modelo` sem classe em qualquer nome fora da ponte de
       compatibilidade — verificado por leitura, e o teste prova as duas metades. O teste de mutação
@@ -2138,6 +2141,20 @@ auto-assinado com uma chave ed25519 **efémera gerada no arranque** (`modelcatal
 - **O `max_tokens` declarado pode divergir daquele com que a instrução foi medida** (AOS-529,
   AOS-537). Nada hoje o impede nem o avisa. É o preço de tornar o limite configurável, e a ligação
   entre limite declarado e relatório assinado pertence ao AOS-573.
+- **O `prazo_s` acima do tecto de egress é INERTE, e isso já era verdade antes deste ticket.**
+  Achado de revisão adversarial, e a medição que se lhe seguiu foi mais longe do que o achado: o
+  `prazo` de uma tool alimenta o `context.WithTimeout` da chamada (`tool_de_modelo.go`), mas quem
+  corta o pedido HTTP é o tecto de **cada pedido** do cliente de egress
+  (`production.go:126-131`) — 30 s por omissão em produção, 60 s no seam de dev,
+  `AOS_MODEL_EGRESS_TIMEOUT` quando definida. **O prazo por omissão da `video_read` são 120 s e já
+  excede o default de dev**: não é um erro que um operador possa vir a cometer, é a configuração
+  que vem de fábrica. Em produção os dois coincidem (120 s), por acaso e não por construção.
+  **Tentei fechá-lo com uma recusa de arranque e a tentativa recusava a configuração de fábrica** —
+  os testes existentes apanharam-no, que é o que eles existem para fazer. O fecho honesto é o nó
+  declarar o prazo **efectivo** (`min(prazo, egress)`) onde o operador o lê, e isso tem de decidir
+  se o `context` passa também a usar o mínimo — o que muda a causa de uma chamada que esgota o
+  tempo, de `erro_do_gateway` para `tempo_esgotado`. É decisão com consequência observável, e
+  ticket próprio.
 - **A prova local é 85 de 88.** Uma das 88 salta por não haver cluster NATS no posto
   (`TestAOS530_No_SobreJetStream`) e duas são `//go:build unix` — as três são trabalho do CI, e não
   se dão por verdes a partir de um posto Windows.

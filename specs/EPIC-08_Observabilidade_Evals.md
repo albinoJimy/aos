@@ -3459,8 +3459,13 @@ classe. O `/metrics` não acompanhou: `api.go` tem **dois blocos escritos à mã
 
 Consequência, medida e declarada no AOS-566 em vez de descoberta depois: um nó com **duas** tools
 de imagem corre as duas, media as duas, custeia as duas e conta cada uma nos **seus** contadores —
-mas publica só a família da primeira. Os contadores da segunda **existem e são invisíveis**. Não há
-atribuição errada; há omissão silenciosa.
+mas publica só a família da primeira. Os contadores da segunda **existem e são invisíveis**.
+
+**E o gatilho é a ORDEM do registo, não só a existência de uma segunda tool** (achado da revisão
+adversarial do AOS-566): `juntarToolDeModelo` guarda a **primeira** ligação de cada classe pela
+ordem em que o registo as declara. Se a tool nova vier **antes** da `ocr_read` no `tools.json`, a
+família `aos_ocr_read_total` passa a reportar os números **dela** e os da `ocr_read` desaparecem —
+isto é, há um caso em que **há** atribuição errada, e não só omissão.
 
 **Porque não foi fechado no AOS-566.** Não é a linha de código que custa, é a decisão de forma:
 derivar o nome de uma família Prometheus do **nome da tool**, que vem de configuração do operador

@@ -91,10 +91,14 @@ func TestAOS069_ManifestoDeProducaoNaoOfereceEgressExterno(t *testing.T) {
 // ERA POR NOME E FORMA; PASSA A SER SÓ POR FORMA (AOS-566). O nome deixou de ser o que liga uma
 // tool de modelo — o que a liga é a CLASSE DE MEDIA que o bloco declara, e o efeito continua a ser
 // código do nó. Uma excepção por nome passaria a medir a coisa errada: nomear-se `ocr_read` não
-// prova forma nenhuma, e a mesma leitura com outro nome ficaria de fora do que o dono decidiu. Em
-// troca, a excepção APERTA nos eixos que o registo já exige explícitos e que o nome não media —
-// egress externo declarado, mutação nenhuma, reversível, e a sensibilidade do recurso declarada —,
-// pelo que cobre estritamente menos formas do que antes.
+// prova forma nenhuma, e a mesma leitura com outro nome ficaria de fora do que o dono decidiu.
+//
+// O CONJUNTO NOVO NÃO É SUBCONJUNTO DO ANTIGO, e dizer o contrário seria a afirmação que faz um
+// revisor futuro não reexaminar isto (achado de revisão adversarial, 2026-10-27). **ALARGA** num
+// eixo — o do nome, que passou de dois valores a ilimitado, e é esse o ponto do ticket — e
+// **APERTA** em quatro: egress externo declarado, mutação nenhuma, reversível, e sensibilidade
+// `public`. O que o par (predicado, carregador) garante é que a forma continua a ser a que o dono
+// aceitou; o nome deixou de a provar e nunca a provou.
 //
 // Os literais estão aqui, e não as constantes do código, para que mudar a forma da tool não
 // alargue a excepção em silêncio.
@@ -106,12 +110,16 @@ func excepcaoDaEmendaDasToolsDeModelo(s modelToolSpec) bool {
 		s.Egress == "external" &&
 		s.Mutation == "none" &&
 		s.Reversibility == "reversible" &&
-		strings.TrimSpace(s.ResourceSensitivity) != ""
+		s.ResourceSensitivity == "public"
 }
 
 // classeDeMediaDaExcepcao: a classe de media declarada é do vocabulário FECHADO que o nó conhece.
 //
-// A VAZIA CONTA, e é a única folga do predicado: o manifesto de produção é ANTERIOR ao campo, e as
+// A SENSIBILIDADE É `public`, NÃO «declarada». Um `!= ""` aceitaria `sensitive`, e o que o dono
+// aceitou foi a leitura de um ficheiro que ele semeou e declarou PÚBLICO — é o que as quatro
+// entradas do manifesto de produção declaram. O eixo tem de medir a substância, não a presença.
+//
+// A CLASSE VAZIA CONTA, e é a única folga do predicado: o manifesto de produção é ANTERIOR ao campo, e as
 // duas tools que o trazem resolvem a classe pela ponte de compatibilidade do carregador. A folga
 // não abre porta nenhuma, porque o carregador RECUSA o bloco `modelo` sem classe em qualquer outro
 // nome — o par (predicado, carregador) continua fechado, e
@@ -134,7 +142,7 @@ func violacoesDoADR034Seccao27(specs []modelToolSpec) []string {
 			v = append(v, fmt.Sprintf("o manifesto de producao voltou a oferecer %q (%s) — retirado por decisao do dono a 2026-09-26 (ADR-034 §2.7); reintroduzir é decisao explicita", s.Name, s.Capability))
 		}
 		if s.Egress != "none" && !excepcaoDaEmendaDasToolsDeModelo(s) {
-			v = append(v, fmt.Sprintf("o manifesto de producao oferece %q com egress %q — so tools sem egress externo ate a fase 2 / opcao A do ADR-034 (§2.7); a unica excepcao e uma tool de modelo na forma das emendas de 2026-10-18 e 2026-10-19: bloco modelo com alias e classe de media conhecida, cap:fs.read, doc://{doc_id}, egress external, mutation none, reversibility reversible e resource_sensitivity declarada", s.Name, s.Egress))
+			v = append(v, fmt.Sprintf("o manifesto de producao oferece %q com egress %q — so tools sem egress externo ate a fase 2 / opcao A do ADR-034 (§2.7); a unica excepcao e uma tool de modelo na forma das emendas de 2026-10-18 e 2026-10-19: bloco modelo com alias e classe de media conhecida, cap:fs.read, doc://{doc_id}, egress external, mutation none, reversibility reversible e resource_sensitivity public", s.Name, s.Egress))
 		}
 	}
 	return v
@@ -239,7 +247,11 @@ func TestAOS069_ExcepcaoDaOCRNaoCobreOutraTool(t *testing.T) {
 		"mutadora":            func(s *modelToolSpec) { s.Mutation = "mutates" },
 		"irreversivel":        func(s *modelToolSpec) { s.Reversibility = "" },
 		"sem sensibilidade":   func(s *modelToolSpec) { s.ResourceSensitivity = "" },
-		"outro egress":        func(s *modelToolSpec) { s.Egress = "internal" },
+		// `sensitive` passa num `!= ""` e NAO passa aqui: o que o dono aceitou foi a leitura de um
+		// ficheiro que ele semeou e declarou PUBLICO. O eixo mede a substancia, nao a presenca.
+		"sensibilidade sensivel": func(s *modelToolSpec) { s.ResourceSensitivity = "sensitive" },
+		"sensibilidade interna":  func(s *modelToolSpec) { s.ResourceSensitivity = "internal" },
+		"outro egress":           func(s *modelToolSpec) { s.Egress = "internal" },
 	} {
 		m := terceira
 		muda(&m)
