@@ -164,7 +164,22 @@ ONDES = ("revisao", "pos-feito")
 
 
 def _acrescentar_ledger(d: Path, reg: dict) -> None:
-    """Append sob lock: duas sessões a medir ao mesmo tempo não interleavam linhas."""
+    """
+    Append ao ledger, sob o lock do directório.
+
+    O QUE O LOCK DÁ, E O QUE NÃO DÁ — dito com precisão, porque a primeira
+    versão deste comentário creditava-lhe uma garantia que ele não tem. A
+    atomicidade de uma linha curta vem do modo `"a"`, não do lock: o
+    `_com_lock` toma um lock órfão passados 30 s, pelo que dois processos
+    podem entrar aqui se o primeiro for mais lento do que isso. O lock serve
+    para serializar o caso comum e para não competir com uma escrita de
+    estado a meio; não é exclusão mútua absoluta.
+
+    E É O MESMO LOCK DO `reservar`. Medir pode falhar porque outra sessão está
+    a atribuir números — espera ~5 s e sai 1 **sem escrever**, que é o lado
+    seguro. Quem medir dentro de um laço tem de olhar para o código de saída,
+    senão perde entradas em silêncio.
+    """
     linha = json.dumps(reg, ensure_ascii=False, sort_keys=True) + "\n"
 
     def _fn():
@@ -175,14 +190,24 @@ def _acrescentar_ledger(d: Path, reg: dict) -> None:
     _com_lock(d, _fn)
 
 
-def _ler_ledger(d: Path, desde_dias=None) -> list:
+def _ler_ledger(d: Path, desde_dias=None):
+    """
+    Devolve `(registos, ignorados)`.
+
+    IGNORAR EM SILÊNCIO ERA O DEFEITO. A primeira versão descartava linhas
+    ilegíveis e registos sem data sem o dizer, pelo que o mesmo ledger dava
+    totais diferentes consoante se passasse `--desde` — e nada o declarava.
+    Agora os descartes contam-se e o `indicadores` nomeia-os: um registo que
+    não se consegue situar não é um registo que não existe.
+    """
     path = d / LEDGER
     if not path.exists():
-        return []
+        return [], 0
     corte = None
-    if desde_dias:
+    if desde_dias is not None:
         corte = datetime.now(timezone.utc) - timedelta(days=desde_dias)
     regs = []
+    ignorados = 0
     for linha in path.read_text(encoding="utf-8").splitlines():
         linha = linha.strip()
         if not linha:
@@ -190,15 +215,17 @@ def _ler_ledger(d: Path, desde_dias=None) -> list:
         try:
             reg = json.loads(linha)
         except json.JSONDecodeError:
-            continue  # linha truncada por uma escrita morta: ignora-se
+            ignorados += 1  # linha truncada por uma escrita morta
+            continue
         if corte is not None:
             try:
                 if datetime.fromisoformat(reg.get("t", "")) < corte:
-                    continue
+                    continue  # fora da janela: não é um descarte, é um filtro
             except ValueError:
-                continue  # sem data legível não se pode situar na janela
+                ignorados += 1  # sem data legível não se pode situar na janela
+                continue
         regs.append(reg)
-    return regs
+    return regs, ignorados
 
 
 def _taxa(num: int, den: int) -> str:
@@ -211,6 +238,22 @@ def _taxa(num: int, den: int) -> str:
     if den <= 0:
         return "sem amostras"
     return f"{100.0 * num / den:.0f}%  ({num}/{den})"
+
+
+def _razao(num: int, den: int, unidade: str) -> str:
+    """
+    Razão POR unidade, para o que não é um subconjunto.
+
+    O retrabalho não é uma percentagem: o numerador não está contido no
+    denominador — uma entrega pode trazer três achados a jusante. Imprimi-lo
+    como `%` dava «500%» na primeira utilização a sério deste ledger, que é um
+    número que não quer dizer nada. Uma percentagem só se escreve quando o
+    numerador é parte do denominador, como na calibração.
+    """
+    if den <= 0:
+        return "sem amostras"
+    valor = f"{num / den:.1f}".replace(".", ",")
+    return f"{valor} {unidade}  ({num}/{den})"
 
 
 # --- numeração de tickets ----------------------------------------------------
@@ -490,20 +533,46 @@ def cmd_medir(args) -> int:
 
 
 def cmd_indicadores(args) -> int:
+    if args.desde is not None and args.desde <= 0:
+        # `--desde 0` dava «todo o ledger» — o oposto do que o flag diz — porque
+        # zero é falsy; e um valor negativo filtrava tudo e respondia «sem
+        # amostras» com exit 0, que é uma resposta confiante a uma pergunta
+        # inválida. Uma janela não-positiva é configuração errada, não uma
+        # janela: tem destino próprio, como o `ErrBadBoardRegions` do nó.
+        sys.stderr.write(
+            "ERRO: --desde tem de ser > 0. Para ler o ledger inteiro, omite o flag.\n"
+        )
+        return 2
     d = _dir_estado()
-    regs = _ler_ledger(d, args.desde)
-    achados = [r for r in regs if r.get("tipo") == "achado"]
+    regs, ignorados = _ler_ledger(d, args.desde)
+    todos_achados = [r for r in regs if r.get("tipo") == "achado"]
     entregas = [r for r in regs if r.get("tipo") == "entrega"]
+    # UM ACHADO SEM VEREDICTO NÃO CONTA PARA A CALIBRAÇÃO, e muito menos para o
+    # seu DENOMINADOR. O CLI não o deixa escrever, mas um registo de uma versão
+    # anterior ou editado à mão deixa — e, somado ao denominador, baixava a
+    # calibração sem nada dizer. A calibração existe para detectar se a revisão
+    # inventa achados; baixá-la por um registo malformado fá-la mentir
+    # exactamente no sentido que ninguém desconfia.
+    achados = [r for r in todos_achados
+               if r.get("veredicto") in VEREDICTOS and r.get("onde") in ONDES]
+    malformados = len(todos_achados) - len(achados)
     confirmados = [r for r in achados if r.get("veredicto") == "confirmado"]
-    pos_feito = [r for r in achados if r.get("onde") == "pos-feito"]
+    # RETRABALHO CONTA SÓ O CONFIRMADO, e a razão é a regra da §1.6 da skill: só
+    # o confirmado gera trabalho. Um `morto` que aparece depois de eu declarar
+    # feito não é retrabalho — é uma hipótese que morreu, e contá-la inflaciona
+    # o indicador exactamente para o lado que faria a fábrica parecer pior do
+    # que é. Na primeira utilização a sério contava os cinco pós-feito e dava
+    # 5/1; dos cinco, um só gerou trabalho.
+    retrabalho = [r for r in achados
+                  if r.get("onde") == "pos-feito" and r.get("veredicto") == "confirmado"]
 
     janela = f"últimos {args.desde:g} dia(s)" if args.desde else "todo o ledger"
     print(f"indicadores da fábrica — {janela}; {len(regs)} registo(s)")
     print()
     print(f"  calibração          {_taxa(len(confirmados), len(achados))}"
           f"   confirmados / achados levantados")
-    print(f"  taxa de retrabalho  {_taxa(len(pos_feito), len(entregas))}"
-          f"   achados pós-feito / entregas declaradas")
+    print(f"  retrabalho          {_razao(len(retrabalho), len(entregas), 'por entrega')}"
+          f"   achados CONFIRMADOS pós-feito / entregas")
 
     escapes = {}
     for r in achados:
@@ -517,6 +586,15 @@ def cmd_indicadores(args) -> int:
             print(f"    {portao:<22} {n}")
     else:
         print("  escapes por portão  sem amostras")
+
+    # Declarar o que não entrou. Um número calculado sobre menos registos do que
+    # o ficheiro tem só é honesto se disser quantos ficaram de fora.
+    if ignorados or malformados:
+        print()
+        if ignorados:
+            print(f"  NÃO CONTADOS: {ignorados} linha(s) ilegível(eis) ou sem data situável")
+        if malformados:
+            print(f"  NÃO CONTADOS: {malformados} achado(s) sem veredicto ou sem `onde` válidos")
 
     print()
     print("Os outros três indicadores da fábrica NÃO vivem aqui, porque já têm "
