@@ -5735,6 +5735,7 @@ trabalho do ticket:
 | 1.15 | 2026-10-22 | AOS-546 feito: em produção na v0.1.68 com `AOS_MEDIA_NO_TURNO=on`; o modelo do run viu uma planta e listou os 5 cômodos, replay com fidelidade 1 | Equipa AOS |
 | 1.16 | 2026-10-26 | +AOS-559: a re-hospedagem de um `run_id` em curso (a terceira via do AOS-520) confere o alias do modelo, a marca de fixação e o digest do perfil — e aceita do CORPO o objectivo, as entradas, a lista-branca e o contrato, apesar de o comentário prometer que «confere-se o Goal com o que está SELADO». O registo de retoma TEM o Goal certo e não é usado nesta via, ao contrário da varredura de crash-resume e da retoma pela API. Achado ao medir o AOS-557 | Equipa AOS |
 | 1.20 | 2026-10-26 | AOS-559, segunda passagem da revisão (sobre as CORRECÇÕES, sem bloqueantes): o `Principal` deixa de ser comparado como struct inteira e passa a seguir a regra exacta do `resume.go` — o `NHIID` e o `RequestedBy` identificam quem CHAMA o nó e não o run, e amarrá-los ao selo tornava o run não re-hospedável pelo SEGUNDO drenador sem comprar integridade nenhuma (o Goal que segue é o selado); o remédio de `corpo_diverge_do_selo` deixa de prometer um corpo que em três divergências não existe; e dez menores, dos quais uma afirmação falsa no cabeçalho, um nome de causa inexistente num comentário, as arestas do plano descartadas em silêncio (ganharam atribuição) e um campo não exportado que teria feito *panic* no caminho de admissão | Equipa AOS |
+| 1.21 | 2026-10-27 | +AOS-565 (o fornecedor fixado e selado por pedido) e +AOS-567 (o preço com unidades), fase R3 do ADR-043. Desenho em `docs/reports/desenho-r3-geracao-2026-10-27.md`. Medido a 2026-10-27: `provider_order` e `zdr` tem ZERO ocorrencias em `packages/` e `deploy/`, o corpo que o gateway monta nao tem campo `provider`, o selo de atribuicao nao leva fornecedor, e `Rate` tem exactamente quatro tarifas, todas por token. As duas medicoes que decidem a forma do preco: `canonicalDigest` serializa a `Entry` inteira (um campo novo sem `omitempty` muda o digest da tabela pinada em producao sem nenhum preco ter mudado), e `omitempty` sozinho colapsa «gratis» com «sem preco» — por isso as tarifas novas sao ponteiros | Equipa AOS |
 | 1.19 | 2026-10-26 | AOS-559 revisto (duas passagens adversariais) e corrigido: **os dois bloqueantes eram da própria correcção** — a substituição do Goal deixava `rs.runsProdutores` a descrever entradas descartadas, e a travessia da aresta, que corre dentro do `hostRun`, SELAVA o run `failed` numa re-submissão legítima; e a obrigatoriedade do registo matava a via inteira num nó sem `AOS_APPROVERS` (onde `ResumeRecords` não é composto), sem o distinguir de um acidente de um run. Mais quatro de forma: o `ConteudoPorHandle` confere-se contra o LAYOUT selado e não contra um campo que o registo nunca tem; o `CompletionRequires` normaliza-se (único conferido com `omitempty`); a divergência do `Objective` passa a ficar atribuída no log, com a razão corrigida; e a classe «só do selo» recusa um valor que o selo não tenha em vez de o copiar em silêncio | Equipa AOS |
 | 1.18 | 2026-10-26 | +AOS-560: a terceira via de re-hospedagem não leva plano de replay — os turnos já capturados voltam a interrogar o modelo, porque o `withReplayPlan` só é escrito pela retoma pela API e pela varredura de crash-resume. Achado ao fechar o AOS-559, que fechou a outra metade da mesma promessa (a origem do Goal) | Equipa AOS |
 | 1.17 | 2026-10-26 | AOS-559 implementado: o Goal da terceira via é `registo.GoalWith(credencial)`, a ausência do registo recusa (`sem_registo_de_retoma`), e o corpo que divirja recusa com o campo no log (`corpo_diverge_do_selo`, 409 — o código que a rota já usa). As três classes de cada campo estão declaradas no código, com a razão medida por campo, e a classe «recusado se divergir» é a **por omissão** (a comparação é por reflexão sobre o `Goal`, pelo que um campo novo entra nela sem ninguém se lembrar). Medido e registado: o `Objective` entra trusted e uma lista-branca nil é sem restrição — o que sobe o eixo do defeito de «integridade do conteúdo» para «alargamento de autoridade face ao plano». Com o `Principal` na classe conferida, esta via passa a ter os quatro eixos de identidade que a retoma pela API já conferia | Equipa AOS |
@@ -5798,3 +5799,171 @@ não é a defesa; é a ATRIBUIÇÃO»).
 - A via LEGADA (sem gate soberano) não autentica ninguém, e ali a atribuição nunca foi forte: este
   ticket não a muda.
 
+## AOS-565 — O fornecedor fixado e selado por pedido: ordem de fornecedores, retenção, e o efectivo no selo
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 — Model Gateway e Custos |
+| Fase | Harness por capacidades (ADR-043), fase R3 — a primeira peça |
+| Tipo | feat |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | Nenhuma. **Não depende da R2** nem das outras peças da R3: aplica-se às chamadas que já existem hoje (turnos do run, `ocr_read`, `video_read`) |
+| Responsável sugerido | Engenheiro de Plataforma |
+| Documentos de referência | `docs/reports/desenho-r3-geracao-2026-10-27.md` (§3.6); `docs/adr/ADR-043-harness-por-capacidades.md` (§2.4 regra 3, §5 resíduo 1); `docs/reports/spike-litellm-imagem-video-2026-10-25.md` (§3.2); `packages/platform/model-gateway/route.go`; `packages/platform/model-gateway/port/normalize.go`; `packages/platform/model-gateway/metering/attribution/attribution.go` |
+
+### Contexto
+
+O ADR-043 §2.4 regra 3 exige que «o fornecedor é fixado por pedido (ordem de fornecedores, sem
+fallback, ZDR quando a política o exige), e o fornecedor efectivo fica selado». Medido a
+2026-10-27: **não existe nada disso**. `provider_order` e `zdr` têm **zero ocorrências** em
+`packages/` e em `deploy/`, e o corpo que o gateway monta (`port/normalize.go`) não tem campo
+`provider`. O selo de atribuição (`attribution.go:81-108`) leva principal, modelo, região, `KeyID`
+e operação — **não leva fornecedor**.
+
+O spike AOS-558 mediu que o proxy fixado deixa declarar exactamente isto: `provider`
+(`{"order":[…],"data_collection":"deny"}`), `modalities`, `plugins` e `transforms` **chegaram ao
+fornecedor** nas duas formas de rota (`spike:114-120`). É por `provider` e pelos filtros que a
+OpenRouter expressa a escolha de endpoint, a retenção e o ZDR.
+
+Esta é a primeira peça da R3 porque **é a única que melhora o que já corre hoje**: todos os turnos
+e as duas tools de modelo passam a sair com o fornecedor fixado e a selar o efectivo, antes de
+existir qualquer geração.
+
+### Critérios de Aceitação
+
+- [ ] O `RouteProfile` ganha a declaração do fornecedor: ordem de fornecedores (lista, sem
+      fallback) e a política de retenção. Entra no `Digest()` do perfil, pelo que um perfil com
+      fornecedor diferente é um perfil diferente e **a assinatura do dono cobre-o**.
+- [ ] `ChatRequest.MarshalWire` escreve as chaves no corpo **se e só se** o perfil resolvido as
+      declarar. Um perfil sem declaração produz **exactamente o corpo de hoje**, byte a byte —
+      teste de regressão sobre os bytes do wire.
+- [ ] **PRIMEIRA TAREFA, e é uma medição: o proxy reporta o fornecedor efectivo de volta?**
+      Medido a 2026-10-27, os cabeçalhos que ele declara são `x-litellm-model-name` e
+      `x-litellm-model-api-base` (`port/route.go:26-30`) — **o modelo e o endpoint, não o
+      fornecedor** —, o vocabulário de variância da rota não tem causa de fornecedor
+      (`route.go:62-74`), e o spike só mediu o sentido da ida (`spike:114-120`). **`NÃO
+      VERIFICADO`**, e é a premissa de metade deste ticket. **A pergunta tem duas metades e só
+      uma se mede de graça:** (i) o fornecedor a montante **emite** a identidade efectiva, e (ii)
+      o proxy **deixa-a passar**. O fornecedor falso do banco só pode medir a (ii) — o que ele
+      responde é escolha de quem o escreveu (`banco-ensaio/falso_endpoints.go:16-45`), pelo que um
+      resultado negativo com ele seria um **controlo negativo sobre um recurso fabricado**, e não
+      licencia a conclusão «o proxy não o reporta por via nenhuma». A metade (i) exige fornecedor
+      real e custo: **é do AOS-570a**. **E antes de qualquer uma, a via mais provável ainda não
+      foi procurada:** a enumeração que fundamenta este `NÃO VERIFICADO` olhou para cabeçalhos
+      (`port/route.go:26-30`), vocabulário de variância (`route.go:62-74`) e o selo
+      (`attribution.go:81-108`) — e **nunca para o CORPO da resposta**. `port.ChatResponse`
+      (`port/port.go:551-579`) desserializa sem catch-all, logo um campo de topo que o fornecedor
+      emita é hoje **descartado em silêncio**. Procurar aí é a primeira coisa a fazer, e é de
+      graça.
+- [ ] O fornecedor **efectivo** entra no `attribution.Record` e no evento do turno, ao lado do
+      modelo servido. Quando o proxy não o declara, o valor é o de «não reportado», com o mesmo
+      vocabulário fechado de `ServedLabelUnreported` — **nunca um vazio ambíguo**.
+- [ ] **O nome `fornecedor` já está ocupado, e o ticket não pode fingir que não.** Medido a
+      2026-10-27: `Exchange.ResolvedProvider` (`pipeline/pipeline.go:97`) é o **adaptador do lado
+      do nó** (`gateway.go:680-681`, `g.adapter.Provider()`), **já viaja** no `VarianceEvent` como
+      `Provider` (`gateway.go:872`, `route.go:411`) e **já tem** um tipo de variância
+      `provider_swap` (`gateway.go:883-884`), que compara o resolvido com o pedido. O fornecedor
+      a montante que a OpenRouter escolhe é **outra coisa**. O ticket dá-lhe **nome próprio e
+      distinto** no evento e no selo; reutilizar o campo existente seria pôr dois sentidos no
+      mesmo campo de um evento selado, e ninguém daria por isso.
+- [ ] Sob governação da rota em `enforce`, um fornecedor a montante que não esteja na ordem
+      declarada é uma variância de rota, com **causa nova** no vocabulário fechado de
+      `route.go:62-74` — distinta do `provider_swap` que já existe.
+- [ ] O banner de postura do nó declara, por rota, se o fornecedor está fixado ou não — pela mesma
+      regra dos outros banners: derivado do que foi composto, não de uma constante.
+- [ ] Em produção: um turno cujo corpo leva as chaves e cujo selo nomeia o fornecedor efectivo,
+      **com o `drop_params: false` que produção corre**. Este critério é o que fecha o resíduo
+      declarado em `docs/reports/desenho-r3-geracao-2026-10-27.md` §3.6: o spike mediu as chaves a chegarem com
+      `drop_params: true` e só mediu que, com `false`, **nada as recusa**.
+
+### Fora de âmbito
+
+- Escolher o fornecedor pela tarefa (é a R4).
+- Fechar o resíduo 1 do ADR-043 §5: «fixar o fornecedor e a quantização por pedido **reduz o risco
+  mas não o fecha**». Este ticket reduz; não promete fechar, e o texto que escrever não o pode
+  sugerir.
+
+---
+
+## AOS-567 — O preço com unidades: imagem e pedido, com o digest estável e a ausência fail-closed
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 — Model Gateway e Custos |
+| Fase | Harness por capacidades (ADR-043), fase R3 |
+| Tipo | feat |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | **Nenhuma para construir** — os critérios provam-se com qualquer valor de tarifa. **AOS-570a** para a linha REAL da tabela, e portanto para ligar em produção. **O AOS-568 não vai a produção sem este** — uma geração que reserva por tarifas de token é um tecto que mente |
+| Responsável sugerido | Engenheiro de Plataforma |
+| Documentos de referência | `docs/reports/desenho-r3-geracao-2026-10-27.md` (§3.5); `docs/adr/ADR-043-harness-por-capacidades.md` (§2.8, §5 resíduo 4); `packages/platform/model-gateway/pricing/table.go`; `packages/platform/model-gateway/pricing/change.go`; `packages/platform/model-gateway/metering/cost/cost.go`; `packages/cmd/aos/ocr_custo.go`; `packages/integration/model_admission.go` |
+
+### Contexto
+
+O ADR-043 §2.8: «A tabela de preços passa a conhecer várias unidades: tokens (as quatro tarifas
+actuais), imagem, segundo de vídeo, pedido. **A reserva é o pior caso declarado.** […] **Um par sem
+preço continua a recusar o arranque**». Medido a 2026-10-27: `Rate` tem **exactamente** quatro
+tarifas, todas por token (`pricing/table.go:83-92`), e a chave é `{Model, Region}` — sem eixo de
+modalidade nem de operação.
+
+A tarifa é trivial; o documento não é. Duas medições decidem a forma:
+
+1. **`canonicalDigest` faz `json.Marshal` da `Entry` inteira** (`pricing/table.go:219-222`). Um
+   campo `int64` novo sem `omitempty` serializa `0` em todas as linhas, **muda o digest da tabela
+   que produção tem pinada** e dispara o evento de alteração de preço sem nenhum preço ter mudado.
+2. **`omitempty` sozinho é a correcção errada.** Com `int64` o valor `0` desaparece do JSON, e `0`
+   é um preço legítimo («grátis») enquanto a ausência significa «esta unidade não tem preço», que o
+   §2.8 manda tratar como recusa de arranque. Colapsá-los reintroduz o «0 silencioso» que o pacote
+   existe para impedir: «um 0 silencioso falsificaria o burn-down» (`pricing/table.go:40-43`).
+
+### Critérios de Aceitação
+
+- [ ] `Rate` ganha tarifas por **imagem** e por **pedido**, **como ponteiros**
+      (`*int64`): ausente ≠ zero, ausente é fail-closed, zero é grátis. A validação de não-negativo
+      cobre-as.
+- [ ] **O digest de uma tabela que não declare nenhuma unidade nova não muda** — teste que carrega
+      a `pricing_table.json` embebida e compara o digest com o valor de hoje, literal. É o que
+      impede uma alteração fantasma no burn-down e na reconciliação.
+- [ ] `cost.Calculator` passa a contar unidades além dos tokens, com a mesma disciplina de
+      overflow-checked e micro-USD inteiro. Uma unidade pedida sem tarifa devolve `ErrNoPrice` —
+      **nunca 0**.
+- [ ] O `Diff`/`ChangeRecorder` descrevem uma alteração de tarifa de unidade como descrevem uma de
+      token: versão nova, digest novo, evento explícito.
+- [ ] **A reserva é o pior caso declarado.** O molde das tools de modelo (`ocr_custo.go:155,187`)
+      calcula o pior caso pelas unidades que a configuração declara, e não por uma fórmula de
+      tokens. O saldo faz-se pelo medido; o custo reportado pelo fornecedor fica gravado **como
+      observação**.
+- [ ] A estimativa de admissão do turno (`integration/model_admission.go`) continua coerente: ou
+      conta as unidades, ou **declara que não as conta**, no molde do resíduo que o AOS-546 já
+      declarou para os tokens de imagem. Uma estimativa que ignora em silêncio uma unidade cara é
+      um tecto cego.
+- [ ] **A classe de SAÍDA entra no vocabulário de capacidades do perfil da rota, neste ticket — e
+      declará-la RECUSA O ARRANQUE até o AOS-568 a saber honrar.** Duas passagens adversariais
+      moldaram este critério. A primeira: o campo nascia no AOS-568 e o portão do preço validava
+      uma forma que nada escrevia até lá — o defeito do AOS-551 dentro do desenho que o invoca. A
+      segunda: pô-lo aqui como «só declarável» abria uma janela **fail-open** — um nó em produção
+      com um perfil assinado a prometer uma capacidade que nenhum código impõe. Então a regra
+      deste ticket é fail-closed e sem janela: **o vocabulário existe, e um perfil que declare a
+      classe recusa o arranque**, com erro que o diz. O AOS-568 troca essa recusa por «aceite se
+      os tipos exactos estiverem declarados e a tarifa existir», e é ele que **escreve a emenda ao
+      ADR-036 §2.8** — a emenda chega quando a declaração passa a ser honrável, não antes.
+- [ ] **Um perfil de rota que declare uma classe de SAÍDA sem a tarifa dessa unidade para
+      (alias, região) recusa o arranque**, com erro que nomeia o par e a unidade. É o portão desta
+      peça, e com o critério acima **prova-se sozinho**: o produtor é o perfil assinado.
+- [ ] O vocabulário das unidades é **fechado** e vive num sítio só.
+
+### Fora de âmbito
+
+- A operação `generate` e as partes de saída (é o AOS-568).
+- **A tarifa por segundo de vídeo NÃO entra.** A primeira versão deste ticket incluía-a, com a
+  justificação de que «acrescentá-la depois voltaria a mexer no documento versionado». A revisão
+  adversarial desmontou-a, e tem razão: as tarifas são **ponteiros** precisamente para que uma
+  entrada que não declare a unidade **não mude o digest** — logo acrescentar mais um campo
+  ponteiro na R6 também não o muda. Sem esse argumento, o que sobrava era uma tarifa sem
+  consumidor nenhum até à R6, isto é, o defeito do AOS-551 em estado puro. **Entram só `imagem` e
+  `pedido`**, que a geração síncrona consome; o segundo de vídeo entra com a R6.
+- Fechar o resíduo 4 do ADR-043 §5 («os `overrides` de preço da OpenRouter tornam a reserva uma
+  estimativa»). O tecto continua a ser o pior caso **declarado**.
+
+---

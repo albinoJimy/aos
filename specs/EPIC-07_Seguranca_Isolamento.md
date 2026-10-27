@@ -2025,3 +2025,277 @@ O help da métrica declara a lacuna desde o AOS-550. Este ticket fecha-a.
 | 1.21 | 2026-10-23 | AOS-550 implementado no ramo `claude/aos550-handle-jusante-rm-7bb457`: o espaço PRÓPRIO de handles (`AOS_HANDLE_DIR`, tectos próprios, vocabulário aberto, emissor `nhi:aos-node/handle`, nenhuma rota HTTP para o conteúdo e recusa de arranque se a pasta for a do `AOS_ARTIFACT_DIR`), selagem com os dados associados do run (`handle:`+sha256 do run autenticado com os bytes: um blob copiado para outro run não abre), token `h<ordinal>.<selo de (run, digest, ordinal)>` — determinista, escopado ao run, ligado à posição, sem relógio e sem `rand` —, factos de nível-esquema cunhados pelo nó e devolvidos pela PORTA (o handle vivo e o reconstruído levam os mesmos), resolução no `CallRewriter` ANTES da mediação só nos escalares de topo do documento DESCODIFICADO (recusa aninhada, parcial, em chave, em chave repetida e no slot do `resource_value`; tectos de 4 referências e 256 KiB por call, com memoização por token), `MaxToolResultBytes` = 256 KiB imposto nos dois sentidos, vocabulário de erro das tools do nó fechado por TIPO e conferido no arranque, `handle.created` alcançado pela retenção, e `aos_handle_total`/`aos_artifact_store_total` no `/metrics`. Desligado por omissão (smoke 10/10 e teste de nó composto sem a variável). **Duas revisões adversariais independentes correram sobre a implementação**: fecharam-se o fan-out sem tecto (8,5 KB de saída do modelo davam 40,9 MB de `Call.Input` antes da mediação), o diferencial de parser (`aos-handle\/v1:` escapado tornava os guardas cegos), a colisão de pastas, os factos vazios no handle vivo, o selo independente do ordinal, o ficheiro órfão sem evento, o contador de calls recusadas e o tecto efectivo do artefacto no banner. **Resíduos declarados:** as duas conferências do handle forjado saem da mesma fonte durável (defesa em profundidade, não independência) e a proveniência do TEXTO que nomeia um token não é verificável nesta porta — quem a governa é a política de fluxo do AOS-551; o selo é um hash sem chave (a protecção é o índice, e um MAC com chave do nó só é necessário quando um handle carregar conteúdo lido de fora, na R3); a resolução não deixa facto selado por leitura; o `CallRewriter` não recebe ctx (prazo de 10 s, sem propagação de cancelamento); o conteúdo fica gravado nos dois espaços e nada o apaga; o ordinal é read-then-write sem fence entre processos (fail-closed, com contador próprio); e o decorador do erro fechado não cobre as tools de sandbox |
 | 1.22 | 2026-10-24 | AOS-550 fundido (`d1e76166`). +AOS-554 (o espaço de handles liberta bytes: reaper por run e remoção do que a retenção já tornou ilegível) e +AOS-555 (paridade dos contadores do armazém: a rota de leitura também conta recusas), os dois resíduos que o AOS-550 declarou em vez de fechar | Equipa AOS |
 | 1.23 | 2026-10-24 | AOS-552 implementado no ramo `feature/AOS-552-linhagem-e-taint-do-artefacto`: o `artefactoCriado` ganha `inputs` (os digests das entradas em quarentena) e `taint` selado — e nascem os guard-tests que o ADR-043 §8 exigia para a R1b e não existiam: «o artefacto é sempre untrusted» no evento selado, no `tool_result` DA `artifact_write` que o modelo vê e no valor relido por handle. O caso que separa os dois eixos ficou fixado: uma call pedida no 1.º turno tem contexto **trusted** e produz um artefacto **untrusted** — a autoridade de quem pede não é o taint do que se escreve. **A primeira versão foi derrubada por revisão adversarial** (12 achados): a linhagem passava por um mapa partilhado no plano de handles, consumido só depois da mediação inteira do RM, e com tecto de 64 entradas contra 512 runs em voo — **medido: 100 calls concorrentes perdiam 36 linhagens**, com os eventos a sair sem `inputs` e sem contador que o dissesse. Passou a viajar no `bilheteDaCall` da própria cadeia de reescritas (sem mapa, chave, tecto nem concorrência), e portanto DENTRO do efeito que o RM medeia e sela, que é o que o ADR-043 §2.3 pede. Fecharam-se ainda: a linhagem a sobre-declarar (uma referência resolvida no `media_type` afirmava uma derivação inexistente — passa a vir só do argumento que transporta conteúdo), a asserção anti-desclassificação que era inerte (`LabelFor` de origens em vez de `ParseLabel` de rótulos), o `omitempty` do `taint` (a ausência era indistinguível de «sem rótulo»), o rótulo como `var` em vez de constante de compilação, e um teste de carga com 80 runs concorrentes como regressão. Resíduos declarados: um evento por GRAVAÇÃO e não por artefacto (o mesmo digest pode ter dois eventos com linhagens diferentes, e uma derivação-identidade é legítima); a ordem de `inputs` é alfabética pelo nome do argumento; o grafo de derivação passa a ser legível na trajectória | Equipa AOS |
+| 1.24 | 2026-10-27 | +AOS-566 (a `model_invoke`: o efeito e uma implementacao, o uso e configuracao), +AOS-568 (a geracao sincrona) e +AOS-569 (o MAC do selo do handle), fase R3 do ADR-043. Desenho em `docs/reports/desenho-r3-geracao-2026-10-27.md`. **Dois achados medidos reorganizaram o corte.** (1) O obstaculo central a «configuracao» nao e o bloco `modelo` do registo: e o **guard-test AOS-069**, que recusa qualquer tool de producao com `egress != "none"` e excepciona por **nome literal** (`aos069_…_test.go:90-95`) — e o ADR-044 §7.4 obriga a quebra-lo mais, porque a tool tem de ter um argumento de conteudo que nao seja o slot do recurso. (2) A instrucao de uma tool de modelo esta presa por **um unico trinco de compilacao** (um teste que parseia o codigo-fonte do banco): o registo de rota assinado NAO tem membro de instrucao, e o «registo assinado de tools» do no e auto-assinado com chave efemera — pelo que mover a instrucao para configuracao sem acrescentar o digest ao registo assinado seria uma regressao de seguranca. (3) E como a geracao e uma TOOL, as partes de saida **nao atravessam** o tail, a captura, o replay nem o SSE do run, o que torna a fase contida; a regra dura «os bytes nunca entram num evento» e imposta por tres medicoes: 1 MiB por mensagem no transporte, o SSE sem tecto por evento servido com `read:trajectory`, e `neutralizarDelimitadores` a corromper binario | Equipa AOS |
+
+## AOS-566 — A `model_invoke`: o efeito é uma implementação, o uso é configuração (fase R3 do ADR-043)
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-07 — Segurança e Isolamento |
+| Fase | Harness por capacidades (ADR-043), fase R3 |
+| Tipo | refactor |
+| Prioridade | P1 |
+| Estimativa | L |
+| Dependências | Nenhuma para construir. **Não liga em produção sem a R2** (ADR-044 ratificado e bundle 1.2.0 assinado pelo dono) |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/desenho-r3-geracao-2026-10-27.md` (§3.7); `docs/adr/ADR-042-uma-tool-cujo-efeito-e-uma-chamada-a-um-modelo.md` (§2.1, §2.3); `docs/adr/ADR-043-harness-por-capacidades.md` (§2.4, §2.6, §6); `docs/adr/ADR-044-…` (§7.4); `packages/cmd/aos/tool_de_modelo.go`; `packages/cmd/aos/ocr_tool.go`; `packages/cmd/aos/video_tool.go`; `packages/cmd/aos/aos069_web_post_contexto_limpo_test.go` |
+
+### Contexto
+
+O ADR-042 §2.1 fixou que «o efeito é código do nó, não configuração», e o código impõe-o: a
+`validarLigacaoModelo` recusa o arranque se qualquer tool que não seja a `ocr_read` ou a
+`video_read` declarar o bloco `modelo` (`ocr_tool.go:236-237`). O ADR-043 emenda-o: «o efeito
+continua a ser código (uma implementação), e **só o uso passa a configuração**» (`ADR-043:273`).
+
+O inventário medido a 2026-10-27 diz onde fica a fronteira: das ~50 validações da `ocr_read` e ~28
+da `video_read`, a esmagadora maioria **não é expressável em configuração** — ou é comum às duas e
+já vive no molde (`tool_de_modelo.go`), ou é específica da classe de media (sniffing PNG/JPEG,
+parser de caixas MP4, duração da `mvhd`, reserva função da duração) e tem de ficar em Go.
+
+E há três coisas que a passagem a configuração **perde**, medidas e nomeadas em
+`docs/reports/desenho-r3-geracao-2026-10-27.md` §3.7. A mais grave: a instrução de uma tool de modelo está presa hoje por **um
+único trinco de compilação** — `TestAOS530_OCR_AInstrucaoEADoBanco` parseia o código-fonte do banco
+de ensaio e compara digests (`aos530_ocr_instrucao_test.go:52-60`) — e o registo de rota assinado
+**não tem membro de instrução** (`routeentry/entry.go:70-93`). Mover a instrução para o
+`tools.json` destrói o trinco sem pôr nada no lugar, porque o «registo assinado de tools» do nó é
+auto-assinado com uma chave ed25519 **efémera gerada no arranque** (`modelcatalog.go:127-134`).
+
+### Critérios de Aceitação
+
+- [ ] Existe **uma** implementação do efeito «chamar um modelo» em `packages/cmd/aos`, no molde do
+      ADR-042 (`CostingToolFunc`, registo de uso `tool`, comparação do modelo servido, custo no
+      run, selo), e **várias configurações** no registo de tools.
+- [ ] `ocr_read` e `video_read` passam a ser duas configurações dessa implementação, com
+      **comportamento idêntico**. A prova é dura e não se negoceia: **as 88 funções de teste que
+      hoje as cobrem passam sem alteração de asserção** (`aos530_*`, `aos536_*`, `modeltools*`,
+      `aos563_*`). Uma asserção que tenha de mudar é um comportamento que mudou, e abre discussão
+      em vez de se editar.
+- [ ] As validações específicas de classe de media ficam em Go, num *handler* por classe
+      (`imagem`: primeiros bytes PNG/JPEG, tecto; `video`: caixas MP4, `mvhd`, duração, reserva
+      função da duração). A configuração declara **qual** a classe, nunca **como** se valida.
+- [ ] **O registo de rota assinado ganha o digest da instrução**, e o nó **recusa arrancar** se a
+      instrução configurada não bater com o digest do registo. Sem este critério o ticket é uma
+      regressão de segurança, e não se funde sem ele.
+- [ ] **As duas fórmulas de digest da instrução mantêm-se, por classe.** A da `ocr_read` é sha256
+      sobre JSON canónico `{pedido, sistema}` (`ocr_tool.go:122-129`); a da `video_read` é sha256
+      de `sistema + "\n" + pedido` (`video_tool.go:112-115`). Unificá-las invalidaria os dois
+      relatórios qualificados que os registos assinados citam e obrigaria a re-qualificar com
+      custo real. A divergência fica **declarada no código, onde é lida**, com esta razão.
+- [ ] **O guard-test AOS-069 passa de nomes literais a forma declarada e limitada.** Hoje
+      excepciona `name == "ocr_read" || name == "video_read"` com `capability == "cap:fs.read"` e
+      `resource_value == "doc://{doc_id}"` (`aos069_…_test.go:90-95`). A forma nova continua a
+      recusar por omissão qualquer tool com `egress != "none"`, e a excepção é por **propriedades
+      declaradas** — bloco `modelo` com alias não vazio, classe de media declarada, destino
+      `external_read`, mutação `none`, reversibilidade `reversible` —, **nunca por nome**. O teste
+      de mutação que existe (`TestAOS069_ExcepcaoDaOCRNaoCobreOutraTool`) é alargado: uma tool com
+      `egress: external` **sem** bloco `modelo` continua a avermelhar, e uma com `cap:http.post`
+      também.
+- [ ] A tool declara um **argumento de conteúdo que não é o slot do recurso** — é o que o ADR-044
+      §7.4 exige para que a isenção `external_read`+`handle_argument` tenha exercício
+      (`ADR-044:452-463`). Com o layout por handle **desligado** o comportamento é o de hoje.
+- [ ] Guard-test do ADR-043 §8: «a `model_invoke` não aceita URLs nem texto livre como entrada de
+      media» (`ADR-043:303`).
+- [ ] O banner de arranque declara as configurações compostas e a origem de cada uma, derivado do
+      que foi composto.
+- [ ] **A emenda ao ADR-042** fica escrita neste ticket, como o ADR-043 §6 manda: de «tool com nome
+      fixo» a «tool genérica configurável», respondendo à objecção original do §2.1.
+
+### Fora de âmbito
+
+- A geração (é o AOS-568). Este ticket não acrescenta capacidade nenhuma: troca a forma.
+- Unificar as fórmulas de digest da instrução (ver CA acima).
+- Pôr os tectos e o `max_tokens` debaixo de assinatura. Passam a configuração **sem** trinco
+  assinado, e isso é a consequência (a) da §4 de `docs/reports/desenho-r3-geracao-2026-10-27.md`, que o dono aceita ou recusa.
+
+---
+
+## AOS-568 — A geração síncrona: a parte de saída declarada, o artefacto binário e a proveniência (fase R3 do ADR-043)
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-07 — Segurança e Isolamento |
+| Fase | Harness por capacidades (ADR-043), fase R3 — a peça que produz |
+| Tipo | feat |
+| Prioridade | P1 |
+| Estimativa | L |
+| Dependências | **AOS-566** (a `model_invoke`) e **AOS-567** (o preço com unidades). **AOS-565** para o fornecedor efectivo no evento de proveniência. **AOS-569** antes de ir a produção. Em produção, a R2 ligada (cerimónia da chave do dono) |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/desenho-r3-geracao-2026-10-27.md` (§3.2, §3.3, §3.4); `docs/adr/ADR-043-harness-por-capacidades.md` (§2.2, §2.3, §2.4 regra 4, §8); `docs/reports/spike-litellm-imagem-video-2026-10-25.md` (§3.1); `packages/platform/model-gateway/port/port.go`; `packages/platform/model-gateway/route_image.go`; `packages/cmd/aos/artifact_store.go`; `packages/kernel/agent-runtime/taint_plane.go` |
+
+### Contexto
+
+É a peça que dá ao dono a projecção dos móveis. Hoje uma parte não-texto na resposta **recusa a
+resposta inteira** (`port/port.go:224`, `ErrContentPartNotText`), e o armazém de artefactos
+**recusa binário de raiz** — `validarConteudo` exige UTF-8 válido e sem NUL em todos os tipos
+(`artifact_store.go:561`), e um PNG tem NUL no byte 1.
+
+Duas decisões de `docs/reports/desenho-r3-geracao-2026-10-27.md` tornam esta peça contida, e as duas são medidas:
+
+- **§3.2 — a geração vai pelo `chat/completions` que já existe.** O spike mediu que a imagem de
+  saída volta em `message.images[]` nas duas formas de rota, com o mesmo sha256 (`spike:100-104`),
+  e que `modalities` chega ao fornecedor (`spike:114-120`). Não nasce classe de wire, não nasce
+  caminho HTTP, não nasce destino de egress.
+- **§3.3 — a geração é uma TOOL, e o CAMINHO DO TURNO protege-se pela mesma regra.** No molde do ADR-042
+  a chamada de uma tool de modelo não é um turno do run: o que entra no tail, na captura e no
+  replay é o **resultado da tool**. O tail, a captura, o replay, a âncora e o SSE **não estão no
+  caminho**, e é por isso que esta fase cabe.
+
+A regra dura que daí sai: **os bytes gerados nunca entram num evento, num tail, numa captura nem no
+SSE.** Três medições a impõem: o limite de **1 MiB por mensagem** do transporte, que já fixou
+`MaxProviderStateBytes = 96 KiB` com ~2,37× de inflação por base64 (`provider_state.go:48-58`); o
+SSE da trajectória serializa o evento inteiro **sem tecto por evento** (`trajectory.go:485`) e é
+servido com `read:trajectory` em vez de `read:artifact`; e `neutralizarDelimitadores`
+(`prompt.go:910`) corromperia bytes no tail. O molde correcto já foi aplicado e provado duas vezes:
+`state_digest` (AOS-514) e `media_sha256` (AOS-546, «OS BYTES NUNCA ENTRAM NO TAIL»,
+`media.go:17-19`).
+
+### Critérios de Aceitação
+
+- [ ] A porta ganha a operação **`generate`** (síncrona) na classe de wire que já existe. O corpo
+      ganha `modalities` **se e só se** o perfil resolvido declarar saída; sem declaração o corpo é
+      o de hoje, byte a byte.
+- [ ] **A versão da porta é decidida e escrita.** Hoje é `1.14.0` (`port/port.go:48`) e cada
+      alteração leva nota SemVer (`:33-47`). A resposta deixar de ser só texto é aditivo **se**
+      `Message.Content` continuar a ser a concatenação dos textos — e é essa a escolha, para não
+      partir `runtime_adapter.go:480` nem os leitores de contrato: **MINOR, `1.15.0`**, com as
+      partes num campo próprio. Se a implementação divergir disto, é MAJOR e o ticket pára.
+- [ ] O perfil da rota declara os **tipos exactos** aceites **dentro da classe de saída que o
+      AOS-567 criou** (não classes soltas — é o que o AOS-546 deixou escrito para esta fase,
+      `specs/EPIC-06:5399-5400`). A declaração entra no `Digest()` do perfil, logo a assinatura do
+      dono cobre-a. **E este ticket troca a recusa de arranque do AOS-567** («um perfil que
+      declare a classe recusa o arranque») por «aceite se os tipos exactos estiverem declarados e
+      a tarifa dessa unidade existir» — não há instante em que um perfil assinado prometa uma
+      capacidade que o nó não impõe.
+- [ ] **A leitura da forma e a decisão de política ficam em sítios DIFERENTES** — correcção da
+      revisão adversarial, medida: `UnmarshalChatResponse(data []byte)` (`port/normalize.go:298`)
+      recebe bytes e mais nada, e a decisão efectiva vive num `UnmarshalJSON` do `encoding/json`
+      (`port/port.go:206-230`), de assinatura fixa — **o perfil nunca chega lá**. Então: o
+      **descodificador** passa a ler uma lista tipada de partes (forma, sem política), e o
+      **gateway** recusa a parte que o perfil da rota resolvida não declare. **E corre DEPOIS do
+      `recordCost`**, no molde do `governRoute` (`gateway.go:447`, comentário em `:445-446`: «a
+      rota é comparada DEPOIS de o custo estar contado — a resposta foi paga, mesmo que em
+      imposição se recuse usá-la») — **nunca** ao lado da barreira de entrada
+      (`recusarImagemSemCapacidade`, `gateway.go:374`), que corre antes do adaptador e onde a
+      resposta ainda não existe, nem entre a resposta (`:422`) e o `recordCost` (`:435`), que
+      deixaria uma chamada paga sem custo contado. Sai como `PaidRejectionError` para quem pediu.
+- [ ] **Uma parte de saída que o perfil não declare é RECUSADA, nunca descartada** — o guard-test
+      que o ADR-043 §8 exige (`:300`), com causa própria no vocabulário fechado, pela razão escrita
+      em `port.go:140-141`.
+- [ ] **O CAMINHO DO TURNO fica protegido pela mesma regra, e tem guard-test próprio.** Relaxar o
+      descodificador relaxa-o para os dois caminhos, porque `UnmarshalChatResponse` é um só. Medido
+      a 2026-10-27: a única chamada de produção de `translateResponse` é `runtime_adapter.go:334`,
+      no `RuntimeAdapter` — **o cliente de modelo do turno do run**, não o da tool —, e ela faz
+      `out.Text = choice.Message.Content` (`:480`), que **deitaria a parte fora em silêncio**. Com
+      a recusa no gateway, o perfil de uma rota de turno não declara saída nesta fase, logo a
+      resposta é **recusada**. Guard-test: uma resposta de turno com uma parte de imagem é recusada
+      com causa, e **nunca** chega a `translateResponse` reduzida a texto.
+- [ ] **Os bytes gerados nunca entram em evento, tail, captura ou SSE — e a garantia é da FORMA
+      do tipo, não de uma amostra.** Correcção da revisão adversarial: os dois precedentes que esta
+      regra invoca (`state_digest`/AOS-514, `media_sha256`/AOS-546) impõem-na porque o segmento só
+      tem rótulos — o tail nunca chega a receber bytes. Aqui vale o mesmo: o tipo que sobe do
+      adaptador leva `{media_type, tamanho, sha256}` e **não tem campo de bytes**, pelo que nenhum
+      campo futuro os pode lá pôr sem mudar o tipo. O guard-test sobre um run é o controlo, não a
+      garantia.
+- [ ] O armazém de artefactos aceita `image/png` e `image/jpeg`, **decididos pelos primeiros
+      bytes** e nunca pelo que o produtor declara, pela mesma `port.ImagePart.Validate` que a
+      `ocr_read` já usa. O tecto por artefacto sobe para o que a porta já impõe a montante
+      (`MaxImageBytes`) e **nunca acima dele**. Os tectos por run são revistos com ele.
+- [ ] **O armazém ganha um produtor que não é uma tool mediada — e isso é uma reversão parcial
+      declarada do AOS-550.** Hoje só a `artifact_write` escreve, e recebe `content` em string nos
+      argumentos do modelo (`artifact_store.go:454`): uma imagem gerada não tem quem a escreva. A
+      geração escreve directamente, com o mesmo `artifact.created`, o mesmo taint `untrusted`
+      selado e a mesma cifra por titular. **Achado da revisão adversarial:** o AOS-550 escreveu que
+      «a escrita do runtime **NÃO passa pelo RM**, pelo que a regra assinada `allow_artifact_write`
+      deixaria de governar todas as escritas que governa hoje» (`handle_store.go:18-19`). Nasce
+      portanto uma classe de escritas que o Cedar não cobre. O ticket **declara-a** e diz o que a
+      governa no lugar: a escrita é do nó e não do modelo, é alcançada pelos tectos do armazém e
+      pela cifra por titular, e o `artifact.created` sela-a. Se isso não bastar ao Responsável de
+      Segurança, a alternativa é mediar a escrita — e isso é decisão, não detalhe.
+- [ ] O evento de proveniência leva **modelo, fornecedor efectivo e custo**, além dos digests das
+      entradas e da instrução — é o que a EPIC-07 declarou fora de âmbito do AOS-548 precisamente
+      porque «nascem com a `model_invoke` da R3, que é quem os produz» (`specs/EPIC-07:1881`).
+- [ ] O modelo recebe uma **referência** com factos de **nível-esquema**, nunca um resumo — a
+      emenda ao ADR-043 §2.4 que o dono decidiu a 2026-10-23
+      (`kernel/agent-runtime/taint_plane.go:75-83`).
+- [ ] **O replay não volta a chamar o modelo**: o resultado vem do step-ledger e da captura, no
+      molde de `TestAOS530_No_ReplaySemNovaChamada`. A geração não é reprodutível e o artefacto é
+      capturado (`ADR-043:113-114`).
+- [ ] A reserva usa as unidades do AOS-567, e **o nó recusa arrancar** com uma configuração de
+      geração cujo (alias, região) não tenha tarifa por imagem.
+- [ ] Desligado por omissão, com interruptor próprio e o banner a declará-lo.
+- [ ] Em produção: um run que recebe uma fotografia pela via de entrada (AOS-561/563) e devolve uma
+      imagem gerada, descarregada pelo dono pela rota soberana.
+- [ ] **A emenda ao ADR-036 §2.8** fica escrita neste ticket: o perfil declara as partes aceites na
+      entrada **e na saída** (`ADR-043:276`).
+
+### Fora de âmbito
+
+- **O modelo do RUN a produzir media.** Esta peça dá saída às tools de modelo. A partir do momento
+  em que é um turno a produzir a parte, o tail precisa de layout novo (a 1.7.0 só tem segmento
+  `media` de **entrada**, construído de um resultado da `media_view`, `media.go:187`), a captura
+  precisa de campos novos, as goldens precisam de reescrita, o SSE precisa de tecto por evento e o
+  transporte entra em jogo. É uma fase por si, e separá-la repete o que a R1a fez: a tool
+  (AOS-530) veio antes do titular (AOS-546).
+- **O `job` assíncrono e o vídeo gerado** (é a R6): §3.1 de
+  `docs/reports/desenho-r3-geracao-2026-10-27.md`. **Fica escrito aqui, porque mais nada o
+  escreve:** o ADR-043 §2.2 põe `generate` e `job` na mesma frase (`:91-93`) e a §7 calendariza-os
+  em fases diferentes (`:287`, `:290`); a R3 entrega a `generate` e **o `job` move-se para a R6**,
+  pelas quatro razões medidas da §3.1 do desenho.
+- **Moderação do conteúdo gerado** — resíduo declarado (`ADR-043:256`), não fechado aqui.
+- **Validação semântica do binário.** Para raster não há equivalente ao «JSON que compila» nem ao
+  «SVG sem script»: valida-se por primeiros bytes e tecto, e a defesa é a entrega já endurecida
+  (`attachment`, `nosniff`, `CSP: sandbox`). É a consequência (c) da §4 de `docs/reports/desenho-r3-geracao-2026-10-27.md`.
+
+---
+
+## AOS-569 — O selo do handle ganha MAC com chave do nó, porque a R3 põe lá conteúdo lido de fora
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-07 — Segurança e Isolamento |
+| Fase | Harness por capacidades (ADR-043), fase R3 — o resíduo do AOS-550 cujo gatilho é esta fase |
+| Tipo | fix |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | Nenhuma. **Tem de aterrar antes de o AOS-568 ir a produção** |
+| Responsável sugerido | Responsável de Segurança |
+| Documentos de referência | `docs/reports/desenho-r3-geracao-2026-10-27.md` (§4(e)); `specs/EPIC-07_Seguranca_Isolamento.md` §Controlo de versões 1.21 (os resíduos declarados do AOS-550); `packages/cmd/aos/handle_store.go` |
+
+### Contexto
+
+O AOS-550 declarou, entre os seus resíduos: «o selo é um hash sem chave (a protecção é o índice, e
+**um MAC com chave do nó só é necessário quando um handle carregar conteúdo lido de fora, na
+R3**)» (`specs/EPIC-07:2025`). A R3 é esta fase, e uma imagem gerada é conteúdo lido de fora. O
+gatilho que o próprio registo nomeou disparou.
+
+**`NÃO VERIFICADO`, e é informação, não desleixo:** num layout 1.8.0 o `tool_result` da `ocr_read`
+já é um handle que carrega texto vindo de fora, pelo que é plausível que a dívida esteja viva
+**desde a R2**. Medi que a dívida existe e que nomeia a R3; **não medi se a R2 já a tornou
+exigível**. A primeira tarefa deste ticket é medi-lo — e se a resposta for «já estava viva», isso
+torna-o mais urgente, não menos, e a prioridade sobe.
+
+### Critérios de Aceitação
+
+- [ ] Medir e registar, com comando próprio, se um `tool_result` por handle de uma tool de modelo
+      já constitui «conteúdo lido de fora» no sentido do resíduo. O resultado entra no registo de
+      deferimentos, qualquer que seja.
+- [ ] O selo do handle passa a ser um **MAC com chave do nó**, mantendo as propriedades que o
+      AOS-550 comprou e que não se negoceiam: determinista, escopado ao run, ligado ao ordinal, sem
+      relógio e sem `rand`.
+- [ ] A chave vive onde as chaves do nó vivem, e **nunca em texto claro** no código, nos logs, nos
+      spans ou nos eventos. Um nó sem a chave composta **recusa arrancar** com o espaço de handles
+      ligado — fail-closed, nunca a cair para o hash sem chave em silêncio.
+- [ ] Teste de mutação: um selo forjado que o índice aceitava e o MAC recusa, com causa própria no
+      vocabulário fechado.
+- [ ] Os handles selados por uma versão anterior continuam legíveis, ou a migração está declarada e
+      é explícita. **Um caminho de leitura que aceite os dois é uma porta aberta**: se existir, é
+      temporário, tem data e está no registo de deferimentos.
+- [ ] O banner declara qual das duas posturas está composta.
+
+### Fora de âmbito
+
+- Os outros resíduos declarados do AOS-550 (as duas conferências que saem da mesma fonte durável; a
+  resolução que não deixa facto selado por leitura; o `CallRewriter` sem ctx; o ordinal sem fence
+  entre processos).
+
+---
