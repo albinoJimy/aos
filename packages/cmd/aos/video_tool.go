@@ -371,39 +371,40 @@ func caixaDoMP4(b []byte, tipo string) ([]byte, bool) {
 }
 
 // executar é a [referencemonitor.CostingToolFunc] da `video_read`. Só o despacho do RM a chama,
-// depois do permit.
+// depois do permit. A sequência é a de qualquer tool de modelo ([executarDeModelo]); o que é da
+// `video_read` é a classe da media que ela lê.
 func (l *ligacaoVideo) executar(ctx context.Context, input []byte) ([]byte, int64, error) {
-	var in entradaOCR
-	if err := json.Unmarshal(input, &in); err != nil || in.Schema != videoInputSchema || in.DocID == "" || in.RunID == "" || in.StepID == "" {
-		return l.falhar(ocrCausaEntrada, 0)
-	}
-	// A IDENTIDADE ANTES DE TUDO: sem o token do run não se lê o ficheiro.
-	credencial := modelCredentialFromContext(ctx)
-	if credencial == "" {
-		return l.falhar(ocrCausaSemNHI, 0)
-	}
+	return executarDeModelo(ctx, &l.ligacaoDeModelo, classeDeMedia{
+		schema:    videoInputSchema,
+		sistema:   videoInstrucaoSistema,
+		pedido:    videoInstrucaoPedido,
+		maxTokens: videoMaxTokens,
+		sucesso:   videoResultadoDescrito,
+		preparar:  l.prepararVideo,
+	}, input)
+}
+
+// prepararVideo lê o vídeo do `doc_id` e apura o que a chamada dela precisa. A diferença para a
+// `ocr_read` é a reserva: a da `video_read` é FUNÇÃO DA DURAÇÃO ([reservaDoVideo]), e dela saem
+// também os tectos que uma resposta não medida cobra. Sem preço para o par (alias, região) não há
+// reserva, e a chamada recusa-se antes de chegar ao modelo.
+func (l *ligacaoVideo) prepararVideo(_ context.Context, in entradaOCR) (pedidoDeMedia, string) {
 	parte, duracao, causa := l.lerVideo(in.DocID)
 	if causa != "" {
-		return l.falhar(causa, 0)
+		return pedidoDeMedia{}, causa
 	}
-	// A RESERVA: com o vídeo lido e antes do pedido, o máximo DESTA chamada — função da duração — no
-	// tecto do run. Não cabe ⇒ negada sem chamar o modelo.
 	maximo, tecto, err := reservaDoVideo(l.tabela, l.alias, l.region, duracao)
 	if err != nil {
-		return l.falhar(ocrCausaOrcamento, 0)
+		return pedidoDeMedia{}, ocrCausaOrcamento
 	}
-	reserva, causa := l.reservar(ctx, in.RunID, maximo)
-	if causa != "" {
-		return l.falhar(causa, 0)
-	}
-	return l.chamar(ctx, in, credencial, reserva, tecto,
-		[]port.Message{
-			{Role: port.RoleSystem, Content: videoInstrucaoSistema},
-			{Role: port.RoleUser, Content: videoInstrucaoPedido, Videos: []port.VideoPart{parte}},
-		}, videoMaxTokens, videoResultadoDescrito,
-		func(resp port.ChatResponse, servido string) ([]byte, string) {
+	return pedidoDeMedia{
+		parte:  port.MediaPart(parte),
+		maximo: maximo,
+		cobrar: tecto,
+		interpretar: func(resp port.ChatResponse, servido string) ([]byte, string) {
 			return l.interpretar(resp, parte, duracao, servido)
-		})
+		},
+	}, ""
 }
 
 // interpretar decide o que uma resposta do modelo é: o resultado `aos-video/v1` e `descrito`, ou a

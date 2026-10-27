@@ -654,35 +654,35 @@ func lerConfinado(raiz raizDoOCR, doc string, maximo int) ([]byte, string) {
 }
 
 // executar é a [referencemonitor.CostingToolFunc] da `ocr_read`. Só o despacho do RM a chama,
-// depois do permit.
+// depois do permit. A sequência é a de qualquer tool de modelo ([executarDeModelo]); o que é da
+// `ocr_read` é a classe da media que ela lê.
 func (l *ligacaoOCR) executar(ctx context.Context, input []byte) ([]byte, int64, error) {
-	var in entradaOCR
-	if err := json.Unmarshal(input, &in); err != nil || in.Schema != ocrInputSchema || in.DocID == "" || in.RunID == "" || in.StepID == "" {
-		return l.falhar(ocrCausaEntrada, 0)
-	}
-	// A IDENTIDADE ANTES DE TUDO: sem o token do run não se lê o ficheiro (ADR-042 §2.2).
-	credencial := modelCredentialFromContext(ctx)
-	if credencial == "" {
-		return l.falhar(ocrCausaSemNHI, 0)
-	}
+	return executarDeModelo(ctx, &l.ligacaoDeModelo, classeDeMedia{
+		schema:    ocrInputSchema,
+		sistema:   ocrInstrucaoSistema,
+		pedido:    ocrInstrucaoPedido,
+		maxTokens: ocrMaxTokens,
+		sucesso:   ocrResultadoTranscrito,
+		preparar:  l.prepararImagem,
+	}, input)
+}
+
+// prepararImagem lê a imagem do `doc_id` e apura o que a chamada dela precisa. A reserva da
+// `ocr_read` é SEMPRE o máximo por chamada ([reservaMax], composto no arranque: não depende da
+// imagem), e uma resposta não medida cobra os tectos fixos da tool.
+func (l *ligacaoOCR) prepararImagem(ctx context.Context, in entradaOCR) (pedidoDeMedia, string) {
 	parte, formato, causa := l.lerImagem(ctx, in.RunID, in.DocID)
 	if causa != "" {
-		return l.falhar(causa, 0)
+		return pedidoDeMedia{}, causa
 	}
-	// A RESERVA (ADR-042 §2.6): com a imagem lida e antes do pedido, o máximo por chamada no tecto
-	// do run. Não cabe ⇒ negada sem chamar o modelo.
-	reserva, causa := l.reservar(ctx, in.RunID, l.reservaMax)
-	if causa != "" {
-		return l.falhar(causa, 0)
-	}
-	return l.chamar(ctx, in, credencial, reserva, tectoDaChamada{entrada: ocrTokensDeEntradaMax, saida: ocrMaxTokens},
-		[]port.Message{
-			{Role: port.RoleSystem, Content: ocrInstrucaoSistema},
-			{Role: port.RoleUser, Content: ocrInstrucaoPedido, Images: []port.ImagePart{parte}},
-		}, ocrMaxTokens, ocrResultadoTranscrito,
-		func(resp port.ChatResponse, servido string) ([]byte, string) {
+	return pedidoDeMedia{
+		parte:  port.MediaPart(parte),
+		maximo: l.reservaMax,
+		cobrar: tectoDaChamada{entrada: ocrTokensDeEntradaMax, saida: ocrMaxTokens},
+		interpretar: func(resp port.ChatResponse, servido string) ([]byte, string) {
 			return l.interpretar(resp, parte, formato, servido)
-		})
+		},
+	}, ""
 }
 
 // interpretar decide o que uma resposta do modelo é: o resultado `aos-ocr/v1` e `transcrito`, ou a
