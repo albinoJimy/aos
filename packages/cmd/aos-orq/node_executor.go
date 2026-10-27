@@ -37,6 +37,7 @@ import (
 	plannerevents "github.com/aos-ref/control-plane/orchestrator/plannerevents"
 	runlifecycle "github.com/aos-ref/control-plane/runlifecycle"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	"github.com/aos-ref/kernel/agent-runtime/durable"
 	arstate "github.com/aos-ref/kernel/agent-runtime/state"
 	"github.com/aos-ref/substrate/eventstore"
 )
@@ -286,8 +287,23 @@ func escaparParaStream(nodeID string) string {
 // Estava tapado pela gramática do `node_id` ter charset fechado, isto é, POR ACASO. É assim que
 // a classe inteira do AOS-424 sobreviveu dez gates; as duas pontas decidem agora pela mesma
 // função.
+//
+// SÃO DUAS REGRAS, NÃO UMA (AOS-483). O id do run filho é ao mesmo tempo um `stream_id` do Event
+// Store e um `run_id` da chave de idempotência do runtime durável, e os dois recusam coisas
+// DIFERENTES: o Event Store recusa `. * >`, espaço e controlo, porque um subject NATS não os
+// representa; o durável recusa `:`, porque é o delimitador de `run_id:step_id` e admiti-lo
+// tornaria a decomposição ambígua. Um subject NATS representa `:` perfeitamente, pelo que o
+// predicado do Event Store deixava-o passar — e um `node_id` como `etapa:build` produzia
+// `run-x~etapa:build`, que o `POST /runs` aceitava (201) e o runtime recusava logo com
+// `ErrDelimiterInInput`. Um plano válido não corria.
+//
+// Cada regra entra pelo SEU predicado, nunca pelo carácter copiado: se uma delas apertar, isto
+// aperta com ela. Foi exactamente o que a nota acima já tinha aprendido sobre a constante do
+// Event Store, e a lição vale duas vezes.
 func deveEscapar(c byte) bool {
-	return eventstore.CaractereNaoRepresentavel(rune(c)) || c == separadorDoRunFilho[0]
+	return eventstore.CaractereNaoRepresentavel(rune(c)) ||
+		durable.CaractereProibidoNaChave(rune(c)) ||
+		c == separadorDoRunFilho[0]
 }
 
 // childRunID é o id do run do nó `aos` que faz o trabalho de um nó do plano.

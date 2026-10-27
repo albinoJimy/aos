@@ -13,6 +13,28 @@ import (
 // dedup do ES — ancora-se nela.
 const keyDelimiter = ":"
 
+// CaractereProibidoNaChave diz se `r` não pode aparecer num `run_id` nem num `step_id`.
+//
+// # PORQUE É EXPORTADO, E PORQUE É UM PREDICADO E NÃO A CONSTANTE
+//
+// Quem COMPÕE um `run_id` a montante precisa de saber o que esta camada recusa — hoje o
+// `childRunID` do `aos-orq`, que junta `<plano>~<nó>` e escapa o que não passa. Até ao AOS-483
+// essa ponta derivava só do predicado do Event Store ([eventstore.CaractereNaoRepresentavel]) e
+// o `:` atravessava intacto, porque um subject NATS representa-o: o `POST /runs` respondia 201 e
+// o run falhava logo com [ErrDelimiterInInput]. Um plano válido não corria.
+//
+// Exportar o PREDICADO e não o `keyDelimiter` é deliberado, e é a lição que o próprio
+// `deveEscapar` já tinha aprendido do lado do Event Store: uma constante copiada vira um
+// SUBCONJUNTO PRÓPRIO da regra no dia em que a regra apertar, e a ponta de fora continua a
+// passar o que a de dentro já recusa — em silêncio, porque a cópia continua a compilar. Com o
+// predicado, apertar a regra aqui aperta a composição lá sem ninguém se lembrar.
+//
+// [TestAOS483PredicadoCasaComAIdempotencyKey] prova que o predicado e o que a
+// [IdempotencyKey] recusa são a mesma coisa, byte a byte, em todo o espaço de um byte.
+func CaractereProibidoNaChave(r rune) bool {
+	return r == rune(keyDelimiter[0])
+}
+
 // IdempotencyKey deriva a chave de idempotência canónica de um passo lógico a
 // partir de (run_id, step_id). É PURA e DETERMINÍSTICA: a mesma entrada produz
 // sempre a mesma chave e nunca tem efeitos colaterais.
