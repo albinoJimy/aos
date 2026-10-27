@@ -3384,7 +3384,7 @@ Só o elo do proxy.
 | Tipo | feat |
 | Prioridade | P1 |
 | Estimativa | M |
-| Dependências | **AOS-568** (a geração; sem ela não há o que medir). **Custo real, autorizado pelo dono** |
+| Dependências | **Parte (a), a medição: NENHUMA** — o banco fala com o proxy directamente, como o spike AOS-558 fez sem geração nenhuma no nó, e é ela que dá a tarifa ao AOS-567. **Parte (b), o portão do registo: AOS-567 e AOS-568.** **Custo real, autorizado pelo dono** |
 | Responsável sugerido | Engenheiro de Plataforma |
 | Documentos de referência | `docs/reports/desenho-r3-geracao-2026-10-27.md` (§5); `docs/reports/spike-litellm-imagem-video-2026-10-25.md` (§4, pontos 1 e 4); `docs/adr/ADR-043-harness-por-capacidades.md` (§2.7); `packages/qa/banco-ensaio/`; `packages/platform/model-gateway/policy/routeentry/verdict.go`; o molde do AOS-547 |
 
@@ -3408,14 +3408,18 @@ de **saída** é recusado sem citar o relatório da geração.
 
 ### Critérios de Aceitação
 
-- [ ] Uma experiência do banco que mede um modelo a **gerar** imagem, pelo proxy fixado, com
-      veredicto contra um limiar e relatório selado, no molde das experiências `ocr` e `video`.
+- [ ] **(a) A MEDIÇÃO, que corre PRIMEIRO e não depende do AOS-568.** Correcção da revisão
+      adversarial: na primeira versão este ticket dependia da geração, e a geração dependia do
+      preço, e o preço dependia desta medida — um círculo. O banco fala com o proxy directamente,
+      como o AOS-558 fez, pelo que a medida corre **antes** de o nó saber gerar. Uma experiência do
+      banco que mede um modelo a **gerar** imagem, pelo proxy fixado, com veredicto contra um
+      limiar e relatório selado, no molde das experiências `ocr` e `video`.
 - [ ] A corrida **mede e regista**: a tarifa por imagem efectiva, os limites do fornecedor
       (resolução, número de imagens por pedido, tamanho), e **em que forma a imagem voltou** — se
       em `message.images[]`, como o spike mediu com o falso, ou noutra. O resultado entra no
       relatório selado e é a fonte da linha da tabela de preços.
-- [ ] Um registo de perfil que declare uma classe de **saída** é **recusado** se não citar um
-      relatório qualificado desta experiência, para o mesmo perfil — com causa própria no
+- [ ] **(b) O PORTÃO, que corre no fim.** Um registo de perfil que declare uma classe de **saída**
+      é **recusado** se não citar um relatório qualificado desta experiência, para o mesmo perfil — com causa própria no
       vocabulário fechado do `routeentry`, no molde de `CheckMediaReport` (AOS-547). O
       `aos-issuer route-profile-sign` exige o relatório quando o registo o cita.
 - [ ] A qualificação real corre com **custo autorizado pelo dono**, e o registo é assinado por ele

@@ -2135,7 +2135,7 @@ Duas decisões de `docs/reports/desenho-r3-geracao-2026-10-27.md` tornam esta pe
   saída volta em `message.images[]` nas duas formas de rota, com o mesmo sha256 (`spike:100-104`),
   e que `modalities` chega ao fornecedor (`spike:114-120`). Não nasce classe de wire, não nasce
   caminho HTTP, não nasce destino de egress.
-- **§3.3 — a geração é uma TOOL, por isso não atravessa o caminho do turno.** No molde do ADR-042
+- **§3.3 — a geração é uma TOOL, e o CAMINHO DO TURNO protege-se pela mesma regra.** No molde do ADR-042
   a chamada de uma tool de modelo não é um turno do run: o que entra no tail, na captura e no
   replay é o **resultado da tool**. O tail, a captura, o replay, a âncora e o SSE **não estão no
   caminho**, e é por isso que esta fase cabe.
@@ -2154,23 +2154,63 @@ servido com `read:trajectory` em vez de `read:artifact`; e `neutralizarDelimitad
 - [ ] A porta ganha a operação **`generate`** (síncrona) na classe de wire que já existe. O corpo
       ganha `modalities` **se e só se** o perfil resolvido declarar saída; sem declaração o corpo é
       o de hoje, byte a byte.
-- [ ] O perfil da rota declara os **tipos exactos** aceites na **saída** (não classes — é o que o
-      AOS-546 deixou escrito para esta fase, `specs/EPIC-06:5400`). A declaração entra no `Digest()`
-      do perfil, logo a assinatura do dono cobre-a.
+- [ ] **A versão da porta é decidida e escrita.** Hoje é `1.14.0` (`port/port.go:48`) e cada
+      alteração leva nota SemVer (`:33-47`). A resposta deixar de ser só texto é aditivo **se**
+      `Message.Content` continuar a ser a concatenação dos textos — e é essa a escolha, para não
+      partir `runtime_adapter.go:480` nem os leitores de contrato: **MINOR, `1.15.0`**, com as
+      partes num campo próprio. Se a implementação divergir disto, é MAJOR e o ticket pára.
+- [ ] O perfil da rota declara os **tipos exactos** aceites **dentro da classe de saída que o
+      AOS-567 criou** (não classes soltas — é o que o AOS-546 deixou escrito para esta fase,
+      `specs/EPIC-06:5399-5400`). A declaração entra no `Digest()` do perfil, logo a assinatura do
+      dono cobre-a. **E este ticket troca a recusa de arranque do AOS-567** («um perfil que
+      declare a classe recusa o arranque») por «aceite se os tipos exactos estiverem declarados e
+      a tarifa dessa unidade existir» — não há instante em que um perfil assinado prometa uma
+      capacidade que o nó não impõe.
+- [ ] **A leitura da forma e a decisão de política ficam em sítios DIFERENTES** — correcção da
+      revisão adversarial, medida: `UnmarshalChatResponse(data []byte)` (`port/normalize.go:298`)
+      recebe bytes e mais nada, e a decisão efectiva vive num `UnmarshalJSON` do `encoding/json`
+      (`port/port.go:206-230`), de assinatura fixa — **o perfil nunca chega lá**. Então: o
+      **descodificador** passa a ler uma lista tipada de partes (forma, sem política), e o
+      **gateway** recusa a parte que o perfil da rota resolvida não declare. **E corre DEPOIS do
+      `recordCost`**, no molde do `governRoute` (`gateway.go:447`, comentário em `:445-446`: «a
+      rota é comparada DEPOIS de o custo estar contado — a resposta foi paga, mesmo que em
+      imposição se recuse usá-la») — **nunca** ao lado da barreira de entrada
+      (`recusarImagemSemCapacidade`, `gateway.go:374`), que corre antes do adaptador e onde a
+      resposta ainda não existe, nem entre a resposta (`:422`) e o `recordCost` (`:435`), que
+      deixaria uma chamada paga sem custo contado. Sai como `PaidRejectionError` para quem pediu.
 - [ ] **Uma parte de saída que o perfil não declare é RECUSADA, nunca descartada** — o guard-test
-      que o ADR-043 §8 exige (`:300`). A recusa corre no descodificador da porta, com causa própria
-      no vocabulário fechado, pela mesma razão escrita em `port.go:142-143`.
-- [ ] **Os bytes gerados nunca entram em evento, tail, captura ou SSE.** Guard-test explícito: um
-      run que gera uma imagem não produz nenhum evento cujo payload serializado contenha os bytes,
-      e nenhum evento do run cresce acima do tecto do transporte.
+      que o ADR-043 §8 exige (`:300`), com causa própria no vocabulário fechado, pela razão escrita
+      em `port.go:140-141`.
+- [ ] **O CAMINHO DO TURNO fica protegido pela mesma regra, e tem guard-test próprio.** Relaxar o
+      descodificador relaxa-o para os dois caminhos, porque `UnmarshalChatResponse` é um só. Medido
+      a 2026-10-27: a única chamada de produção de `translateResponse` é `runtime_adapter.go:334`,
+      no `RuntimeAdapter` — **o cliente de modelo do turno do run**, não o da tool —, e ela faz
+      `out.Text = choice.Message.Content` (`:480`), que **deitaria a parte fora em silêncio**. Com
+      a recusa no gateway, o perfil de uma rota de turno não declara saída nesta fase, logo a
+      resposta é **recusada**. Guard-test: uma resposta de turno com uma parte de imagem é recusada
+      com causa, e **nunca** chega a `translateResponse` reduzida a texto.
+- [ ] **Os bytes gerados nunca entram em evento, tail, captura ou SSE — e a garantia é da FORMA
+      do tipo, não de uma amostra.** Correcção da revisão adversarial: os dois precedentes que esta
+      regra invoca (`state_digest`/AOS-514, `media_sha256`/AOS-546) impõem-na porque o segmento só
+      tem rótulos — o tail nunca chega a receber bytes. Aqui vale o mesmo: o tipo que sobe do
+      adaptador leva `{media_type, tamanho, sha256}` e **não tem campo de bytes**, pelo que nenhum
+      campo futuro os pode lá pôr sem mudar o tipo. O guard-test sobre um run é o controlo, não a
+      garantia.
 - [ ] O armazém de artefactos aceita `image/png` e `image/jpeg`, **decididos pelos primeiros
       bytes** e nunca pelo que o produtor declara, pela mesma `port.ImagePart.Validate` que a
       `ocr_read` já usa. O tecto por artefacto sobe para o que a porta já impõe a montante
       (`MaxImageBytes`) e **nunca acima dele**. Os tectos por run são revistos com ele.
-- [ ] **O armazém ganha um produtor que não é uma tool mediada.** Hoje só a `artifact_write`
-      escreve, e recebe `content` em string nos argumentos do modelo (`artifact_store.go:454`): uma
-      imagem gerada não tem quem a escreva. A geração escreve directamente, com o mesmo
-      `artifact.created`, o mesmo taint `untrusted` selado e a mesma cifra por titular.
+- [ ] **O armazém ganha um produtor que não é uma tool mediada — e isso é uma reversão parcial
+      declarada do AOS-550.** Hoje só a `artifact_write` escreve, e recebe `content` em string nos
+      argumentos do modelo (`artifact_store.go:454`): uma imagem gerada não tem quem a escreva. A
+      geração escreve directamente, com o mesmo `artifact.created`, o mesmo taint `untrusted`
+      selado e a mesma cifra por titular. **Achado da revisão adversarial:** o AOS-550 escreveu que
+      «a escrita do runtime **NÃO passa pelo RM**, pelo que a regra assinada `allow_artifact_write`
+      deixaria de governar todas as escritas que governa hoje» (`handle_store.go:18-19`). Nasce
+      portanto uma classe de escritas que o Cedar não cobre. O ticket **declara-a** e diz o que a
+      governa no lugar: a escrita é do nó e não do modelo, é alcançada pelos tectos do armazém e
+      pela cifra por titular, e o `artifact.created` sela-a. Se isso não bastar ao Responsável de
+      Segurança, a alternativa é mediar a escrita — e isso é decisão, não detalhe.
 - [ ] O evento de proveniência leva **modelo, fornecedor efectivo e custo**, além dos digests das
       entradas e da instrução — é o que a EPIC-07 declarou fora de âmbito do AOS-548 precisamente
       porque «nascem com a `model_invoke` da R3, que é quem os produz» (`specs/EPIC-07:1881`).
@@ -2196,7 +2236,11 @@ servido com `read:trajectory` em vez de `read:artifact`; e `neutralizarDelimitad
   precisa de campos novos, as goldens precisam de reescrita, o SSE precisa de tecto por evento e o
   transporte entra em jogo. É uma fase por si, e separá-la repete o que a R1a fez: a tool
   (AOS-530) veio antes do titular (AOS-546).
-- **O `job` assíncrono e o vídeo gerado** (é a R6): §3.1 de `docs/reports/desenho-r3-geracao-2026-10-27.md`.
+- **O `job` assíncrono e o vídeo gerado** (é a R6): §3.1 de
+  `docs/reports/desenho-r3-geracao-2026-10-27.md`. **Fica escrito aqui, porque mais nada o
+  escreve:** o ADR-043 §2.2 põe `generate` e `job` na mesma frase (`:91-93`) e a §7 calendariza-os
+  em fases diferentes (`:287`, `:290`); a R3 entrega a `generate` e **o `job` move-se para a R6**,
+  pelas quatro razões medidas da §3.1 do desenho.
 - **Moderação do conteúdo gerado** — resíduo declarado (`ADR-043:256`), não fechado aqui.
 - **Validação semântica do binário.** Para raster não há equivalente ao «JSON que compila» nem ao
   «SVG sem script»: valida-se por primeiros bytes e tecto, e a defesa é a entrega já endurecida
