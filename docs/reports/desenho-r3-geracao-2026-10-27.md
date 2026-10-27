@@ -393,10 +393,15 @@ já estava viva, isso torna a peça mais urgente, não menos.
 (`:269-270`), e uma geração custa mais por chamada do que uma transcrição. O mesmo para a queda
 entre a resposta e o ledger: «a chamada paga-se duas vezes» (`ADR-042:392-394`).
 
-**(g) Fora de âmbito, mas encontrado: num turno do executor, uma resposta recusada não é cobrada.**
-O `PaidRejectionError` só se constrói quando `req.OriginTool != ""` (`gateway.go:451`); num turno
-do loop o erro vai nu e a reserva é libertada (`loop.go:843`). O custo foi pago ao fornecedor e
-perde-se do burn-down. **Não é desta fase e não o corrijo aqui** — fica reportado.
+**(g) Fora de âmbito, e NÃO é um defeito: a assimetria da recusa paga é deliberada.** O
+`PaidRejectionError` só se constrói quando `req.OriginTool != ""` (`gateway.go:451`), e o código
+diz porquê, em comentário: «a recusa de uma resposta paga leva o custo a quem fez o pedido — só a
+uma tool; um turno vê o erro de sempre» (`gateway.go:452-454`, AOS-530). Levantei-o como suspeita
+e **a medição desmentiu-a**; fica aqui porque a R3 acrescenta chamadas caras, e vale saber que o
+caminho é esse por desenho. **`NÃO VERIFICADO`, e é a parte que sobra:** se o custo de um turno
+recusado chega ao burn-down durável do nó, que se alimenta do `turn.recorded`. O `recordCost` do
+gateway corre antes da governação da rota (`gateway.go:434`), logo o número existe; se o turno
+falhado grava `turn.recorded`, não medi. Não é desta fase.
 
 ---
 
@@ -436,6 +441,14 @@ fundida com quem escreve.
 **Ordem recomendada.** 1, 3 e 5 são independentes entre si e de tudo o resto — podem correr em
 paralelo, cada uma no seu worktree. 2 é independente mas é a maior e a mais delicada (o
 guard-test), pelo que começa cedo. 4 só depois de 2 e 3. 6 por fim.
+
+**Uma ressalva sobre o paralelo, que não é teórica.** 2 e 5 tocam no **mesmo módulo Go**
+(`packages/cmd/aos`), em ficheiros diferentes — a 2 em `ocr_tool.go`/`video_tool.go`/
+`tool_de_modelo.go` e no guard-test, a 5 em `handle_store.go`. Ficheiros disjuntos não bastam:
+duas tarefas no mesmo módulo quase nunca são independentes na prática, e o `bootstrap.go` é o
+sítio onde as duas se encontram. Se correrem ao mesmo tempo, correm em worktrees separados e com
+o registo de sessões a declarar os ficheiros — e a integração das duas é uma passagem própria,
+não um merge cego.
 
 **Porque é que o preço (3) não está dentro da geração (4).** Pensei fundi-los: uma geração que
 reserva por tarifas de token é um tecto que mente. Mas 3 prova-se sozinha e é um **portão** — o nó
@@ -493,7 +506,9 @@ aterrarem, o AOS-556 passa a ser fechável.
 - **Moderação do conteúdo gerado** — resíduo declarado do ADR, não fechado aqui.
 - **Unificar as fórmulas de digest da instrução** — invalidaria os dois relatórios qualificados
   (§3.7, ponto 2).
-- **A recusa paga de um turno do executor** (§4(g)) — defeito encontrado fora de âmbito, reportado.
+- **A recusa paga de um turno do executor** (§4(g)) — levantada como suspeita e **desmentida pela
+  medição**: é deliberada (`gateway.go:452-454`). Fica o que não medi: se o custo de um turno
+  recusado chega ao burn-down durável.
 
 **Resíduos que a fase herda e não fecha:**
 
