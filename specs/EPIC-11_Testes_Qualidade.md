@@ -949,3 +949,67 @@ passo 15 muda quando AOS-476 e AOS-477 entrarem.
 | Versão | Data | Descrição | Autor |
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
+| 1.1 | 2026-10-27 | +AOS-571 (o `sessoes.py` decodifica a saida do git em UTF-8). Achado fora de ambito ao abrir a sessao do AOS-566: o `registar` abortava com `UnicodeDecodeError` antes de escrever nada, porque `_git` corria `text=True` sem `encoding` e o Windows decodifica em cp1252 enquanto o git emite UTF-8 — um assunto de commit em PT-PT com `I`/`A`/`O` acentuados maiusculos traz um byte que o cp1252 nao define. Bloqueava a disciplina que o AGENTS.md §6 manda correr ANTES de tocar em codigo. Medido que a forma NAO e partilhada: dos onze `.py` de `scripts/`, `sessoes.py` e o unico que decodifica saida de subprocesso, e todas as leituras de ficheiro declaram encoding | Equipa AOS |
+
+## AOS-571 — O `sessoes.py` decodifica a saída do git em UTF-8, e deixa de rebentar com um assunto de commit em PT-PT
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-11 — Testes e Qualidade |
+| Tipo | fix |
+| Prioridade | P1 |
+| Estimativa | S |
+| Dependências | Nenhuma |
+| Responsável sugerido | Engenheiro de Plataforma |
+| Documentos de referência | `AGENTS.md` §6 (Sessões concorrentes); `scripts/ci/sessoes.py` |
+
+### Contexto
+
+Achado **fora de âmbito** a 2026-10-27, ao abrir a sessão do AOS-566: o
+`python scripts/ci/sessoes.py registar` aborta com `UnicodeDecodeError` **antes de escrever o que
+quer que seja**, e com ele a disciplina que o `AGENTS.md` §6 manda correr **antes de abrir tickets
+ou editar `scripts/ci/`**.
+
+A causa, medida: `_git` corria `subprocess.run(..., text=True)` **sem `encoding`**. Com `text=True`
+e sem encoding, o Python decodifica pela codepage da consola — **cp1252** no Windows deste posto —
+enquanto o git emite **UTF-8**. O `registar` lê o assunto do commit (`git log -1 --format=%s`), e
+um assunto em PT-PT com `Í`, `Á` ou `Ó` traz um segundo byte (`c3 8d`, `c3 81`, `c3 93`) que o
+cp1252 **não define**.
+
+O gatilho concreto foi o commit `b7d3c3a3` — «…desenhada e decomposta — a **SAÍDA** (#570)» —, em
+que o `Í` ocupa os bytes 73–74. O `ver` nunca foi afectado porque não lê o assunto; só o `registar`
+o lê, e é precisamente o comando que tem de correr primeiro.
+
+**Não é um defeito de forma partilhado.** Procurado e medido nos onze `.py` de `scripts/`:
+`sessoes.py` é o **único** que decodifica saída de um subprocesso
+(`grep -rn "text=True\|universal_newlines=True" scripts/ --include=*.py`), e **todas** as leituras
+de ficheiro declaram `encoding` (`grep -rn "open(" scripts/ci/*.py | grep -v encoding=` devolve só
+dois `os.open` sobre descritores, que não descodificam).
+
+### Critérios de Aceitação
+
+- [x] `_git` declara `encoding="utf-8"` e `errors="replace"`, com a razão escrita onde é lida.
+      *Nota:* o `errors="replace"` é deliberado — este stdout é texto para mostrar e comparar,
+      nunca autoridade, pelo que um byte indecifrável vale mais como `?` do que como excepção que
+      mata a ferramenta.
+- [x] O `registar` corre sobre o commit exacto que o partia (`b7d3c3a3`) e escreve a sessão.
+      *Nota:* verificado a 2026-10-27 no worktree `elegant-tu-aaee12`.
+- [x] O `ver` e o `reservar` continuam a comportar-se como antes.
+
+### Fora de âmbito
+
+- **Acrescentar o `sessoes.py` aos gates de CI.** O `AGENTS.md` §6 proíbe-o, e com razão medida: o
+  *runner* tem um só worktree, pelo que `ver` não teria com que colidir e passaria sempre —
+  fail-open silencioso, pior do que verificação nenhuma.
+
+### O que fica declarado como resíduo
+
+- **Nenhum portão automático cobre este defeito, e isso é uma escolha, não um esquecimento.** O
+  princípio «um escape vira portão» pedia um; os dois caminhos disponíveis estão fechados: o gate
+  de CI é proibido pela razão acima, e não existe harness de testes Python em `scripts/ci/` (os
+  testes que lá vivem são Go, em `scripts/ci/attest/`). O que protege é o `encoding` explícito mais
+  a razão escrita no *docstring* — e a medição de que a forma não é partilhada pelos outros dez
+  `.py`. Montar um harness Python só para isto seria desproporcionado; **se um segundo defeito
+  desta classe aparecer, o harness deixa de ser desproporcionado e passa a ser o portão.**
+
+---
