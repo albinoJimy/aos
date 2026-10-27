@@ -392,11 +392,18 @@ func (p *planoDeHandles) selarEmQuarentenaComHandle(ctx context.Context, subject
 //
 // É UM RÓTULO, e nenhum guarda depende dele — seguido até ao fim: a resolução confere o par
 // `(digest, titular selador)` contra os `handle.created` do run ([quarentenaDoArmazem.OpenQuarantined],
-// [planoDeHandles.quarentenaDoRun]); o token é cunhado de `(run, digest, ordinal)`
-// ([agentruntime.MintHandleToken]); e `handleCriado.Tool` não tem leitor nenhum. Por isso NÃO se
-// afirma aqui que o nó não oferece uma tool com este nome: as tools vêm de um ficheiro do
-// operador (`AOS_MODEL_TOOLS`) e uma colisão é possível. O que uma colisão produz é proveniência
-// AMBÍGUA num evento de auditoria — nunca um handle resolvível por quem não devia.
+// [planoDeHandles.quarentenaDoRun]); e o token é cunhado de `(run, digest, ordinal)`
+// ([agentruntime.MintHandleToken]). Por isso NÃO se afirma aqui que o nó não oferece uma tool com
+// este nome: as tools vêm de um ficheiro do operador (`AOS_MODEL_TOOLS`) e uma colisão é possível.
+// O que uma colisão produz é proveniência AMBÍGUA num evento de auditoria — nunca um handle
+// resolvível por quem não devia.
+//
+// O `handleCriado.Tool` PASSOU A TER UM LEITOR (AOS-563), e esta frase dizia o contrário:
+// [planoDeHandles.entradaDeMediaDoRun] lê-o para distinguir uma entrada de media ingerida de um
+// `tool_result`. Não muda o que está escrito acima — continua a não ser um guarda SOZINHO: o que
+// torna o predicado de lá insensível a uma colisão de nomes é o TIPO, no vocabulário fechado de
+// imagem, porque um `tool_result` é selado com tipo vazio (ver as duas chamadas de
+// [planoDeHandles.selarEmQuarentena] neste ficheiro).
 const planInputHandleTool = "plan_input"
 
 // planInputHandleStep é o passo que a proveniência de um handle de `plan_input` leva. As entradas

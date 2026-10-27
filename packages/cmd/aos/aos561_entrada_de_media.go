@@ -202,9 +202,17 @@ func tipoDeMediaAceite(tipo string) bool {
 	return tipo == port.ImageMediaPNG || tipo == port.ImageMediaJPEG
 }
 
+// tiposDeMediaAceitesLista é o vocabulário FECHADO em lista, pela ordem em que
+// [tipoDeMediaAceite] o confere. É a ÚNICA escrita das strings deste lado: as mensagens, o banner
+// e o anúncio do `GET /tools` (AOS-563) saem todos daqui, porque três cópias divergiriam — e os
+// valores continuam a ser os do Model Gateway, não uma segunda cópia deles.
+func tiposDeMediaAceitesLista() []string {
+	return []string{port.ImageMediaPNG, port.ImageMediaJPEG}
+}
+
 // tiposDeMediaAceites é o vocabulário, para as mensagens e para o banner.
 func tiposDeMediaAceites() string {
-	return port.ImageMediaPNG + ", " + port.ImageMediaJPEG
+	return strings.Join(tiposDeMediaAceitesLista(), ", ")
 }
 
 // validarMediaInputs verifica as entradas de media do pedido e converte-as para o Goal. Devolve a
@@ -324,11 +332,19 @@ func conferirUmaEntrada(i int, tipo, digest string, dados []byte, total *int) st
 // duas origens classificam untrusted, pelo que a etiqueta não decide nada — o que ela serve é o
 // forense, e para o forense é o `Tool` do evento que se lê.
 //
-// É UM RÓTULO, e nenhum guarda depende dele: a resolução confere o par `(digest, titular selador)`
-// contra os `handle.created` do run, e o token é cunhado de `(run, digest, ordinal)`. Como em
+// A RESOLUÇÃO DO ESPAÇO NÃO DEPENDE DELE: confere o par `(digest, titular selador)` contra os
+// `handle.created` do run, e o token é cunhado de `(run, digest, ordinal)`. Como em
 // [planInputHandleTool], NÃO se afirma aqui que o nó não oferece uma tool com este nome — as tools
 // vêm de um ficheiro do operador e uma colisão é possível. O que uma colisão produz é proveniência
 // AMBÍGUA num evento de auditoria, nunca um handle resolvível por quem não devia.
+//
+// MAS DESDE O AOS-563 ELE ENTRA NUM PREDICADO, e dizer «nenhum guarda depende dele» passou a ser
+// falso: [planoDeHandles.entradaDeMediaDoRun] resolve o `doc_id` de uma tool de imagem por
+// `Tool == mediaInputHandleTool && Name == <doc> && tipoDeMediaAceite(MediaType)`. O que mantém a
+// colisão de nomes inofensiva é a TERCEIRA conjunção e não este rótulo: uma tool do operador
+// chamada `media_input` sela os seus `tool_result` com tipo VAZIO (as duas chamadas de
+// [planoDeHandles.selarEmQuarentena] em handles.go passam `""`), que o vocabulário fechado de
+// imagem recusa. O rótulo escolhe o candidato; o tipo é que decide.
 const mediaInputHandleTool = "media_input"
 
 // mediaInputHandleStep é o passo que a proveniência de um handle de entrada de media leva. As
@@ -567,8 +583,9 @@ func entradaDeMediaBanner(ligado bool, tectoDoCorpo int64) []string {
 	if cabeNoCorpo < maxMediaInputsBytes {
 		mandaNoConjunto = "o tecto do CORPO DO PEDIDO"
 	}
-	return []string{fmt.Sprintf("entrada de media (AOS-561, ADR-043 fase R2): AOS_ENTRADA_DE_MEDIA=on — o POST /runs aceita media_inputs: bytes em base64 no corpo do pedido, vocabulario FECHADO (%s, o que o Model Gateway aceita), tipo conferido PELOS PRIMEIROS BYTES (um ficheiro que declare um tipo e nao o seja RECUSA com 400, antes de o run existir) e digest sha256 dos BYTES conferido na porta. Tectos PROPRIOS, separados dos de texto e contados ANTES de o run existir: %d bytes por entrada (o MENOR dos dois tectos a jusante — o do espaco de handles e os %d do gateway), %d bytes no CONJUNTO (o tecto do trabalho que o no faz ANTES de autenticar: NAO e derivado dos outros, de proposito, para nao se mover com nenhum deles) e %d entradas (posicoes de handle, com folga de 4x contra o tecto do run). QUEM MANDA HOJE: POR ENTRADA, %s; NO CONJUNTO, %s — o corpo em vigor sao %d bytes, que em base64 dao %d bytes de conteudo no TOTAL. Uma entrada de ate %d bytes ENTRA HOJE sem mexer em nada; para uma fotografia de %d bytes entrar sao precisas TRES mudancas de postura: o tecto do corpo (AOS_INGRESS_MAX_BODY, AOS-562), o tecto por handle E este agregado. Os bytes sao SELADOS no espaco de handles do run antes de o run abrir, cifrados pelo cifrador por titular com o run nos dados associados, declarados num handle.created com tool=%s e o tipo nos factos do handle, e NAO entram no contexto do modelo em layout nenhum (uma entrada de media nao e um segmento de tail: o prompt_hash nao depende dela). NENHUMA ROTA HTTP SERVE O CONTEUDO, como o resto do espaco de handles. O objectivo do run nomeia cada entrada pelo nome que o NO cunha, %s-1..n pela ordem de submissao — nunca por um nome escolhido por quem submete. CONSEQUENCIA, e e do DONO: o conteudo ingerido NAO E REDIGIDO (a fronteira de ingestao trata so o objectivo), e quem o pode causar passa a ser quem SUBMETE e nao so quem semeia a pasta do servidor; o que o contem e o SA-ROC pela sensibilidade efectiva, o taint, o egress default-deny e o crypto-shred do titular — redaccao de IMAGEM nao existe. O QUE ISTO AINDA NAO COMPRA: NENHUMA TOOL LE DESTE ESPACO POR doc_id — a ocr_read e a media_view continuam a ler SO da pasta semeada (AOS_OCR_SEED_DIR), e quem as ensina a resolver o doc_id no espaco de handles do run e o AOS-563. Ate la esta via SELA e DECLARA a entrada, e nenhum run a consome. Recuo: off",
+	return []string{fmt.Sprintf("entrada de media (AOS-561, ADR-043 fase R2): AOS_ENTRADA_DE_MEDIA=on — o POST /runs aceita media_inputs: bytes em base64 no corpo do pedido, vocabulario FECHADO (%s, o que o Model Gateway aceita), tipo conferido PELOS PRIMEIROS BYTES (um ficheiro que declare um tipo e nao o seja RECUSA com 400, antes de o run existir) e digest sha256 dos BYTES conferido na porta. Tectos PROPRIOS, separados dos de texto e contados ANTES de o run existir: %d bytes por entrada (o MENOR dos dois tectos a jusante — o do espaco de handles e os %d do gateway), %d bytes no CONJUNTO (o tecto do trabalho que o no faz ANTES de autenticar: NAO e derivado dos outros, de proposito, para nao se mover com nenhum deles) e %d entradas (posicoes de handle, com folga de 4x contra o tecto do run). QUEM MANDA HOJE: POR ENTRADA, %s; NO CONJUNTO, %s — o corpo em vigor sao %d bytes, que em base64 dao %d bytes de conteudo no TOTAL. Uma entrada de ate %d bytes ENTRA HOJE sem mexer em nada; para uma fotografia de %d bytes entrar sao precisas TRES mudancas de postura: o tecto do corpo (AOS_INGRESS_MAX_BODY, AOS-562), o tecto por handle E este agregado. Os bytes sao SELADOS no espaco de handles do run antes de o run abrir, cifrados pelo cifrador por titular com o run nos dados associados, declarados num handle.created com tool=%s e o tipo nos factos do handle, e NAO entram no contexto do modelo em layout nenhum (uma entrada de media nao e um segmento de tail: o prompt_hash nao depende dela). NENHUMA ROTA HTTP SERVE O CONTEUDO, como o resto do espaco de handles. O objectivo do run nomeia cada entrada pelo nome que o NO cunha, %s-1..n pela ordem de submissao — nunca por um nome escolhido por quem submete. CONSEQUENCIA, e e do DONO: o conteudo ingerido NAO E REDIGIDO (a fronteira de ingestao trata so o objectivo), e quem o pode causar passa a ser quem SUBMETE e nao so quem semeia a pasta do servidor; o que o contem e o SA-ROC pela sensibilidade efectiva, o taint, o egress default-deny e o crypto-shred do titular — redaccao de IMAGEM nao existe. QUEM LE A ENTRADA (AOS-563): a ocr_read e a media_view resolvem o doc_id POR ESTA ORDEM — primeiro as entradas de media DESTE run (os handle.created com tool=%s, pelo nome cunhado), depois a pasta semeada (%s); NUNCA as duas para o mesmo doc_id, e uma colisao resolve pelo espaco do RUN e conta em aos_handle_total com resultado=%s. Do espaco de handles o tipo da parte e o CONFERIDO NA PORTA, lido dos factos do handle, e nao uma segunda inferencia dos bytes. A video_read NAO le deste espaco: fica em ticket proprio, porque o tecto de um video nao e o de uma imagem. A leitura da pasta semeada fica inalterada (ADR-042 2.4). Um run SEM entradas de media le o que lia, com UMA excepcao estreita: um doc_id com a FORMA de um nome cunhado (media_input-N) consulta o espaco, e se o stream do run nao se ler a chamada RECUSA em vez de cair para a pasta — e deliberado, porque cair servia o ficheiro do OPERADOR no lugar do conteudo do run. Qualquer outro doc_id nao toca no espaco. A via anuncia-se no GET /tools (media_input), pela MESMA condicao que a porta confere. Recuo: off",
 		tiposDeMediaAceites(), maxMediaInputBytes, port.MaxImageBytes, maxMediaInputsBytes,
 		maxMediaInputs, mandaNaEntrada, mandaNoConjunto, tectoDoCorpo, cabeNoCorpo,
-		maxMediaInputBytes, port.MaxImageBytes, mediaInputHandleTool, mediaInputHandleTool)}
+		maxMediaInputBytes, port.MaxImageBytes, mediaInputHandleTool, mediaInputHandleTool,
+		mediaInputHandleTool, ocrSeedDirEnv, hCausaDoisEspacos)}
 }

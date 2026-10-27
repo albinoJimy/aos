@@ -191,7 +191,27 @@ JPEG, um PDF digitalizado e uma tabela), com e sem acentos.
 ### 2.4 Entrada: a imagem por referência, lida pelo nó, como parte de imagem só deste pedido
 
 - **O media entra pela pasta semeada** (D4 (a)), referido por `doc_id`, com o recurso
-  `doc://{doc_id}` selado pelo RM. Sem upload por API, sem URL.
+  `doc://{doc_id}` selado pelo RM. Sem URL.
+- **EMENDA (AOS-561 + AOS-563, 2026-10-27): há uma SEGUNDA origem, e o «sem upload por API» caiu.**
+  Quem submete um run pode mandar os bytes de uma imagem no corpo do `POST /runs` (`media_inputs`);
+  o nó confere-os pelos primeiros bytes e sela-os no espaço de handles do run antes de o run abrir
+  (ADR-043 §2.6). O `doc_id` resolve-se então por **duas** origens, nesta ordem: as **entradas de
+  media do run** primeiro, a **pasta semeada** depois — nunca as duas para o mesmo `doc_id`, e uma
+  colisão resolve pelo espaço do run e é contada no `/metrics`. A emenda escreve-se aqui, e não no
+  ADR-043, porque é esta a secção que afirmava a exclusividade; o ADR-043 §6 manda que cada emenda
+  se escreva no ticket da fase que a torna verdadeira, e quem a torna é o AOS-563.
+  **O que NÃO muda, e é o que faz disto emenda e não supersessão:** a pasta semeada FICA — é a
+  origem de tudo o que está provado em produção — e as regras de leitura dela, abaixo, ficam byte a
+  byte iguais; o recurso continua `doc://{doc_id}`, a capability `cap:fs.read` e a classe de destino
+  a do ADR-044. Qual das origens serve um nó é **config trusted do operador**, não autorização: a
+  segunda origem só existe com a via **COMPOSTA** — `AOS_ENTRADA_DE_MEDIA=on` **e** `AOS_HANDLE_DIR`
+  definida —, e é esse valor composto que liga o plano de handles às duas tools, que a porta confere
+  para recusar um `media_inputs` com 400, e que o `GET /tools` anuncia. Um nó com `AOS_HANDLE_DIR`
+  só pelo layout 1.8.0 **não** ganha a segunda origem, e o banner de arranque de cada tool declara
+  qual das duas posturas o nó tem (um só eixo decide as quatro coisas, para que não possam
+  divergir). Da origem nova o tipo da parte é o **conferido na porta** (dos factos do handle), não
+  uma segunda inferência dos bytes. A `video_read` fica de fora: o tecto de um vídeo não é o de uma
+  imagem, e é ticket próprio.
 - **O nó lê o ficheiro**, de uma montagem só de leitura da **mesma** pasta semeada que o serviço
   `gvisor` usa, por uma variável própria (não `AOS_SANDBOX_SEED_DIR`, que carrega a pasta inteira
   em memória no arranque). A leitura é confinada à pasta com `os.Root` (Go ≥ 1.24: recusa `..`,
@@ -392,6 +412,9 @@ JPEG, um PDF digitalizado e uma tabela), com e sem acentos.
 - **ADR-038** — a saída por referência entrega os bytes do resultado `aos-ocr/v1` como «outro
   resultado».
 - **ADR-041 §2.1** — emendado: um registo de uso `tool` não é candidato.
+- **ADR-043 §2.6** — o espaço de handles do run passa a ser a **segunda origem** do `doc_id` das
+  tools de imagem (emenda a §2.4, AOS-561 + AOS-563). A ordem é: entrada de media do run, depois a
+  pasta semeada.
 
 ## 7. O que cada ticket implementa
 
@@ -399,3 +422,5 @@ JPEG, um PDF digitalizado e uma tabela), com e sem acentos.
 |---|---|
 | AOS-529 | A medição que justifica a decisão (§1.1) |
 | AOS-530 | §2.1 a §2.8: a tool `ocr_read`, a porta `1.12.0`, o registo de uso `tool` e o veredicto `ocr` no banco, o custo durável e no tecto. Pode ser partido em PR pela ordem: porta e perfil; registo e veredicto; tool, custo e replay |
+| AOS-561 | A via de entrada: os bytes de uma imagem no corpo do `POST /runs`, conferidos pelos bytes e selados no espaço de handles do run (emenda a §2.4) |
+| AOS-563 | As duas tools de imagem resolvem o `doc_id` no espaço de handles do run **antes** da pasta semeada (emenda a §2.4) |

@@ -35,7 +35,7 @@ func aos546Vista(t *testing.T, imagem []byte) agentruntime.PromptView {
 }
 
 func aos546Resolvedor(imagem []byte, chamadas *int) modelgateway.MediaResolver {
-	return func(ref agentruntime.MediaRef) (port.MediaPart, error) {
+	return func(_ context.Context, _ string, ref agentruntime.MediaRef) (port.MediaPart, error) {
 		*chamadas++
 		if ref.Doc != "sala.png" {
 			return port.MediaPart{}, errors.New("documento desconhecido")
@@ -97,20 +97,20 @@ func TestAOS546_SemAImagemCertaOTurnoNaoSai(t *testing.T) {
 		causa string
 	}{
 		"sem resolvedor": {nil, modelgateway.MediaCauseNoResolver},
-		"ilegivel": {func(agentruntime.MediaRef) (port.MediaPart, error) {
+		"ilegivel": {func(context.Context, string, agentruntime.MediaRef) (port.MediaPart, error) {
 			return port.MediaPart{}, errors.New("o ficheiro desapareceu")
 		}, modelgateway.MediaCauseUnreadable},
-		"outros bytes": {func(agentruntime.MediaRef) (port.MediaPart, error) {
+		"outros bytes": {func(context.Context, string, agentruntime.MediaRef) (port.MediaPart, error) {
 			return port.MediaPart{MediaType: port.ImageMediaPNG, Data: outra}, nil
 		}, modelgateway.MediaCauseMismatch},
 		// MUTAÇÃO M1 DA REVISÃO: o ficheiro substituído com o MESMO tamanho e o mesmo tipo (a retoma
 		// com a imagem trocada) só o digest apanha.
-		"um byte trocado": {func(agentruntime.MediaRef) (port.MediaPart, error) {
+		"um byte trocado": {func(context.Context, string, agentruntime.MediaRef) (port.MediaPart, error) {
 			trocada := aos530PNG()
 			trocada[len(trocada)-1] ^= 0xff
 			return port.MediaPart{MediaType: port.ImageMediaPNG, Data: trocada}, nil
 		}, modelgateway.MediaCauseMismatch},
-		"outro tipo": {func(agentruntime.MediaRef) (port.MediaPart, error) {
+		"outro tipo": {func(context.Context, string, agentruntime.MediaRef) (port.MediaPart, error) {
 			return port.MediaPart{MediaType: port.ImageMediaJPEG, Data: jpeg}, nil
 		}, modelgateway.MediaCauseMismatch},
 	}
@@ -150,7 +150,7 @@ func TestAOS546_MediaForaDaA170EFormaInvalida(t *testing.T) {
 	v := aos546Vista(t, aos530PNG())
 	v.AssemblyVersion = agentruntime.AssemblyVersion160
 	n := 0
-	_, err := modelgateway.ProjectNativeVersionWithMedia(modelgateway.NativeProjectionVersion130, v, aos546Resolvedor(aos530PNG(), &n))
+	_, err := modelgateway.ProjectNativeVersionWithMedia(context.Background(), modelgateway.NativeProjectionVersion130, v, "", aos546Resolvedor(aos530PNG(), &n))
 	if !errors.Is(err, modelgateway.ErrNativeProjection) || n != 0 {
 		t.Fatalf("err = %v, resolucoes %d", err, n)
 	}

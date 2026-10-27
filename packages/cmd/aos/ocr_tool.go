@@ -1,7 +1,7 @@
 package main
 
-// ocr_tool.go — A TOOL `ocr_read` (AOS-530, peças 3a e 3b; ADR-042): uma imagem da pasta semeada,
-// transcrita por um modelo de visão, PELO MODEL GATEWAY DO NÓ.
+// ocr_tool.go — A TOOL `ocr_read` (AOS-530, peças 3a e 3b; ADR-042): uma imagem do run ou da pasta
+// semeada, transcrita por um modelo de visão, PELO MODEL GATEWAY DO NÓ.
 //
 // É a primeira tool cujo efeito é uma chamada a um modelo. O desenho é o do ADR-042, e cada peça
 // dele tem um sítio aqui:
@@ -25,11 +25,15 @@ package main
 //     call, que chegam ao input pela reescrita do efeito ([newOCREffectRewriter]), como no
 //     `sandboxwiring.go`; e o pedido leva `OriginTool: "ocr_read"`. Sem credencial a tool falha
 //     ANTES de ler o ficheiro: nunca se forja um principal (AOS-278).
-//   - A LEITURA (§2.4). De uma montagem só de leitura da pasta semeada, por `AOS_OCR_SEED_DIR`
-//     (não `AOS_SANDBOX_SEED_DIR`, que carrega a pasta inteira em memória), confinada com
-//     [os.Root], só no nível de topo, sem seguir ligações simbólicas, só ficheiros regulares (conferidos
-//     outra vez no descritor aberto), até [port.MaxImageBytes], PNG ou JPEG pelos primeiros bytes.
-//     Tudo isto ANTES de chamar o modelo, sem custo ([ligacaoOCR.lerImagem]).
+//   - A LEITURA (§2.4). O `doc_id` resolve-se por DUAS origens, nesta ordem (AOS-563,
+//     [resolverDocDeImagem]): primeiro as ENTRADAS DE MEDIA do run no espaço de handles — o que quem
+//     submeteu mandou no `POST /runs`, cifrado por titular, com o tipo que a porta conferiu nos
+//     factos do handle —, e só depois a pasta semeada. Desta, uma montagem só de leitura por
+//     `AOS_OCR_SEED_DIR` (não `AOS_SANDBOX_SEED_DIR`, que carrega a pasta inteira em memória),
+//     confinada com [os.Root], só no nível de topo, sem seguir ligações simbólicas, só ficheiros
+//     regulares (conferidos outra vez no descritor aberto), até [port.MaxImageBytes], PNG ou JPEG
+//     pelos primeiros bytes — regras INALTERADAS pelo AOS-563. Tudo isto ANTES de chamar o modelo,
+//     sem custo ([ligacaoOCR.lerImagem]).
 //   - O PEDIDO (§2.4). A instrução fixa e versionada que o AOS-529 mediu ([ocrInstrucaoSistema],
 //     [ocrInstrucaoPedido]), na mesma forma — mensagem `system` com a instrução, mensagem `user`
 //     com o pedido e a parte de imagem —; `Tools` vazio; `max_tokens` [ocrMaxTokens]; prazo
@@ -163,7 +167,7 @@ const (
 
 // ocrCausas são todos os resultados, pela ordem da métrica: o de sucesso e as causas de falha.
 func ocrCausas() []string {
-	return []string{
+	causas := []string{
 		ocrResultadoTranscrito,
 		ocrCausaEntrada, ocrCausaSemNHI,
 		ocrCausaForaDaRaiz, ocrCausaNomeNaoCanonico, ocrCausaEmFalta, ocrCausaIlegivel, ocrCausaNaoRegular,
@@ -172,6 +176,21 @@ func ocrCausas() []string {
 		ocrCausaTempo, ocrCausaCancelado, ocrCausaGateway, ocrCausaModeloServido,
 		ocrCausaCortado, ocrCausaVazio, ocrCausaRespostaForma,
 	}
+	// AS CAUSAS DO ESPAÇO DE HANDLES CONTAM-SE NA MÉTRICA DA TOOL (AOS-563). Esta lista alimenta
+	// TRÊS coisas: o vocabulário de erro fechado ([vocabularioDeErro], que já lhes acrescentava
+	// estas), as séries do `/metrics` por resultado da tool (api.go) e o mapa de contadores que
+	// [novaLigacaoDeModelo] constrói. Só as duas primeiras as tinham, pelo que uma chamada que
+	// falhasse por elas saía ao modelo com a causa certa e NÃO somava em resultado nenhum: o
+	// [ligacaoDeModelo.contar] ignora em silêncio um resultado fora do mapa.
+	//
+	// Era pré-existente (desde o produtor do `tool_result`, AOS-551), e o AOS-563 acrescentou-lhe um
+	// caso NOVO e mais frequente — `handle_ilegivel`, com que a resolução do `doc_id` recusa quando o
+	// espaço do run não se lê ou não decifra. Achado da segunda passagem adversarial. NÃO é uma
+	// segunda cópia das strings: é a MESMA [causasDoSeloDeHandle] que o vocabulário usa.
+	//
+	// A `video_read` fica fora, com a sua própria lista: está fora do âmbito deste ticket e não
+	// resolve no espaço de handles, pelo que a lacuna dela é a de sempre.
+	return append(causas, causasDoSeloDeHandle()...)
 }
 
 // causaDaFalhaOCR devolve a causa de um erro da tool, ou "" se não é uma falha da tool. O erro é o
@@ -268,6 +287,13 @@ type gatewayDoOCR interface {
 // da `ocr_read`. A reserva por chamada é sempre o máximo ([reservaMaxDoOCR]).
 type ligacaoOCR struct {
 	ligacaoDeModelo
+	// handles é o plano de handles do nó (AOS-563): onde a tool procura o `doc_id` ANTES da pasta
+	// semeada. nil ⇒ sem espaço de handles composto, e a tool lê só da pasta, como antes.
+	//
+	// VIVE AQUI E NÃO EM [ligacaoDeModelo] de propósito: a parte comum é partilhada com a
+	// `video_read`, que está FORA do âmbito do AOS-563 (o tecto de um vídeo não é o de uma imagem).
+	// Pô-lo lá alcançava-a sem que nada o tivesse pedido.
+	handles *planoDeHandles
 }
 
 // errosDoOCR são os erros de arranque da `ocr_read`.
@@ -303,7 +329,7 @@ func comporLigacaoOCR(spec *modelToolSpec, assinados *perfisAssinados, externa *
 
 // novaLigacaoOCR monta a ligação com as constantes da tool, sem o gateway.
 func novaLigacaoOCR(alias, region, board, perfilDigest, pasta string, raiz *os.Root) *ligacaoOCR {
-	l := &ligacaoOCR{novaLigacaoDeModelo(ocrToolName, "ocr_read (AOS-530)", alias, region, board, perfilDigest, pasta, raiz,
+	l := &ligacaoOCR{ligacaoDeModelo: novaLigacaoDeModelo(ocrToolName, "ocr_read (AOS-530)", alias, region, board, perfilDigest, pasta, raiz,
 		ocrPrazo, ocrDigestDaInstrucao(ocrInstrucaoSistema, ocrInstrucaoPedido), ocrCausas())}
 	l.reservaMax = budget.Amount{Tokens: ocrTokensDeEntradaMax + ocrMaxTokens}
 	return l
@@ -416,11 +442,32 @@ func juntarReescritasDeModelo(rws ...func(referencemonitor.Call) (referencemonit
 	}
 }
 
-// comporReescritas junta a reescrita da sandbox e a das tools de modelo (a `ocr_read` e a
-// `video_read`, [juntarReescritasDeModelo]). Tocam em tools diferentes (os blocos são exclusivos):
-// a das tools de modelo só reescreve essas, e a da sandbox só as tools com binding. Qualquer uma nil
-// ⇒ a outra; as duas nil ⇒ nil (sem reescrita, comportamento byte-idêntico).
-func comporReescritas(sandboxRw, modeloRw func(referencemonitor.Call) (referencemonitor.Call, error)) func(referencemonitor.Call) (referencemonitor.Call, error) {
+// comporReescritas junta a reescrita da sandbox e a das tools do nó ([juntarReescritasDeModelo]).
+// Tocam em tools diferentes (os blocos são exclusivos): a das tools do nó só reescreve essas, e a
+// da sandbox só as tools com binding. Qualquer uma nil ⇒ a outra; as duas nil ⇒ nil (sem reescrita,
+// comportamento byte-idêntico).
+//
+// O DESPACHO É PELO BINDING, E NÃO POR UMA LISTA DE NOMES — e a diferença já custou uma regressão.
+// Até ao AOS-563 isto era um `switch` sobre uma LISTA LITERAL de `ToolID` («é a `ocr_read`, a
+// `video_read` ou a `artifact_write`? então a de modelo; senão a da sandbox»). A lista tinha de ser
+// mantida à mão, e uma tool do nó que se esquecesse de se inscrever nela caía na reescrita ERRADA:
+// a da sandbox devolve inalterada uma tool sem binding, pelo que o executor recebia os args CRUS do
+// modelo e recusava-os. Aconteceu com a `artifact_write` (o `TestAOS548_ReescritaComposta` existe
+// por isso) e voltou a acontecer com a `media_view` quando o AOS-563 lhe deu reescrita de efeito —
+// e só num nó COM binding de sandbox, que é a forma de PRODUÇÃO (o catálogo tem a `doc_read` com
+// bloco `sandbox`), porque sem bindings a da sandbox é nil e o `case` devolvia a de modelo. Um
+// defeito que só aparece na forma de produção é o pior sítio para pôr uma lista à mão.
+//
+// `temBinding` É A PERGUNTA CERTA porque é a MESMA que a reescrita da sandbox se faz a si própria
+// ([newSandboxEffectRewriter]: sem binding, devolve a call inalterada). Deixa de haver duas fontes
+// para a mesma decisão, e uma tool do nó nova não tem onde se esquecer de se inscrever.
+//
+// CONTINUA EXCLUSIVO, e isso é de propósito: uma call vai a UMA reescrita, nunca às duas. Em cadeia
+// seria equivalente — os blocos são exclusivos, imposto no ARRANQUE (`modelo` com `sandbox` na mesma
+// spec aborta, [validarLigacaoModelo]/ErrModelToolBindingConflict; a `media_view` e a
+// `artifact_write` recusam o bloco `sandbox`) — mas o exclusivo não depende dessa validação para
+// estar correcto, e é a propriedade que os testes das tools de modelo asseram.
+func comporReescritas(temBinding func(string) bool, sandboxRw, modeloRw func(referencemonitor.Call) (referencemonitor.Call, error)) func(referencemonitor.Call) (referencemonitor.Call, error) {
 	switch {
 	case modeloRw == nil:
 		return sandboxRw
@@ -428,11 +475,26 @@ func comporReescritas(sandboxRw, modeloRw func(referencemonitor.Call) (reference
 		return modeloRw
 	}
 	return func(call referencemonitor.Call) (referencemonitor.Call, error) {
-		if call.ToolID == ocrToolName || call.ToolID == videoToolName || call.ToolID == artifactWriteToolName {
-			return modeloRw(call)
+		if temBinding != nil && temBinding(call.ToolID) {
+			return sandboxRw(call)
 		}
-		return sandboxRw(call)
+		return modeloRw(call)
 	}
+}
+
+// posturaDaOrigemDoDoc é a parte do banner que declara DE ONDE um `doc_id` se resolve (AOS-563).
+//
+// É CALCULADA DO QUE FOI COMPOSTO, e não afirmada — achado da segunda passagem adversarial, e a
+// regra da casa é a do AOS-203/AOS-248: a postura ANUNCIADA é a postura LIGADA. As duas tools de
+// imagem arrancam sem exigir o espaço de handles, e o `Bootstrap` só lhes liga o plano quando a VIA
+// DE ENTRADA está composta (`AOS_ENTRADA_DE_MEDIA` com `AOS_HANDLE_DIR`). Um banner que afirmasse
+// «duas origens» num nó que tem uma só mandava o operador procurar uma capacidade que ele não
+// habilitou — e era a mesma classe de defeito que este ticket corrigiu no banner do AOS-561.
+func posturaDaOrigemDoDoc(handles *planoDeHandles, pasta string) string {
+	if handles == nil {
+		return fmt.Sprintf("UMA so — o nivel de topo de %s=%q, montada so de leitura (regras do ADR-042 2.4). A via de entrada de media NAO esta composta neste no (AOS_ENTRADA_DE_MEDIA com AOS_HANDLE_DIR), logo nenhum doc_id resolve no espaco de handles", ocrSeedDirEnv, pasta)
+	}
+	return fmt.Sprintf("DUAS, nesta ordem (AOS-563): primeiro as entradas de media DESTE run no espaco de handles — o que quem submeteu mandou no POST /runs, pelo nome que o NO cunhou (%s-1..n), e de onde o tipo vem dos FACTOS do handle, o conferido na porta —, e so depois o nivel de topo de %s=%q, montada so de leitura (regras do ADR-042 2.4, INALTERADAS). NUNCA as duas para o mesmo doc_id: a colisao resolve pelo espaco do RUN e conta em aos_handle_total com resultado=%s", mediaInputHandleTool, ocrSeedDirEnv, pasta, hCausaDoisEspacos)
 }
 
 // raizDoOCR é o que a leitura usa da pasta: o Lstat do nome e a abertura só de leitura. É o
@@ -502,14 +564,25 @@ func conferirFicheiro(info fs.FileInfo, maximo int64) string {
 	return ""
 }
 
-// lerImagem lê a imagem `doc` da pasta, com os limites do ADR-042 §2.4, e devolve a parte de
-// imagem e o formato, ou a causa da recusa. Nada aqui chama o modelo.
-func (l *ligacaoOCR) lerImagem(doc string) (port.ImagePart, string, string) {
-	dados, causa := lerConfinado(l.raiz, doc, port.MaxImageBytes)
+// lerImagem resolve a imagem `doc` e devolve a parte de imagem e o formato, ou a causa da recusa.
+// Nada aqui chama o modelo.
+//
+// A ORDEM DE RESOLUÇÃO É A DO AOS-563, e vive em [resolverDocDeImagem]: primeiro as entradas de
+// media do RUN no espaço de handles, depois a pasta semeada com os limites do ADR-042 §2.4. O
+// `run` é o da tool call (vem em [entradaOCR], posto pela reescrita do efeito); vazio ⇒ só a pasta.
+func (l *ligacaoOCR) lerImagem(ctx context.Context, run, doc string) (port.ImagePart, string, string) {
+	dados, tipo, causa := resolverDocDeImagem(ctx, l.handles, l.raiz, run, doc, port.MaxImageBytes)
 	if causa != "" {
 		return port.ImagePart{}, "", causa
 	}
-	// O FORMATO PELOS PRIMEIROS BYTES, nunca pela extensão. PDF e tudo o resto ficam de fora.
+	// DO ESPAÇO DE HANDLES O TIPO É O CONFERIDO NA PORTA (AOS-563), lido dos factos do handle: a
+	// porta do AOS-561 já o decidiu pelos primeiros bytes antes de o run existir, e selou-o no
+	// `handle.created`. Uma segunda inferência aqui era uma segunda derivação do mesmo tipo.
+	if tipo != "" {
+		return port.ImagePart{MediaType: tipo, Data: dados}, formatoDoTipoDeImagem(tipo), ""
+	}
+	// DA PASTA SEMEADA, O FORMATO PELOS PRIMEIROS BYTES, nunca pela extensão — inalterado. PDF e
+	// tudo o resto ficam de fora.
 	for _, c := range []struct{ tipo, formato string }{{port.ImageMediaPNG, "png"}, {port.ImageMediaJPEG, "jpeg"}} {
 		parte := port.ImagePart{MediaType: c.tipo, Data: dados}
 		if parte.Validate() == nil {
@@ -592,7 +665,7 @@ func (l *ligacaoOCR) executar(ctx context.Context, input []byte) ([]byte, int64,
 	if credencial == "" {
 		return l.falhar(ocrCausaSemNHI, 0)
 	}
-	parte, formato, causa := l.lerImagem(in.DocID)
+	parte, formato, causa := l.lerImagem(ctx, in.RunID, in.DocID)
 	if causa != "" {
 		return l.falhar(causa, 0)
 	}
@@ -652,8 +725,8 @@ func registarOCR(sec interface {
 
 // linhaDoArranque declara a tool ligada: o que ela faz, o que chama e o que esta versão NÃO faz.
 func (l *ligacaoOCR) linhaDoArranque() string {
-	return fmt.Sprintf("tool %s LIGADA (EPIC-07/AOS-530, ADR-042): le uma imagem PNG ou JPEG (ate %d bytes) do nivel de topo de %s=%q, montada so de leitura, e transcreve-a por UMA chamada ao Model Gateway deste no — o mesmo dos turnos —, com o token NHI do run e o run e o passo da tool call. Alias %q (board %q, regiao %q), perfil do registo assinado de uso tool %s; instrucao fixa %s; max_tokens %d; prazo %s; sem tools oferecidas ao modelo de visao; sem nova tentativa. Mediada pelo RM com %s e o recurso %s. CUSTO: %s",
-		ocrToolName, port.MaxImageBytes, ocrSeedDirEnv, l.pasta, l.alias, l.board, l.region, l.perfilDigest, l.digestDaInstrucao, ocrMaxTokens, l.prazo, ocrCapability, ocrResourceValue, l.posturaDoCusto())
+	return fmt.Sprintf("tool %s LIGADA (EPIC-07/AOS-530, ADR-042): le uma imagem PNG ou JPEG (ate %d bytes) e transcreve-a por UMA chamada ao Model Gateway deste no — o mesmo dos turnos —, com o token NHI do run e o run e o passo da tool call. Alias %q (board %q, regiao %q), perfil do registo assinado de uso tool %s; instrucao fixa %s; max_tokens %d; prazo %s; sem tools oferecidas ao modelo de visao; sem nova tentativa. Mediada pelo RM com %s e o recurso %s. ORIGEM DO doc_id: %s. CUSTO: %s",
+		ocrToolName, port.MaxImageBytes, l.alias, l.board, l.region, l.perfilDigest, l.digestDaInstrucao, ocrMaxTokens, l.prazo, ocrCapability, ocrResourceValue, posturaDaOrigemDoDoc(l.handles, l.pasta), l.posturaDoCusto())
 }
 
 // posturaDoCusto declara, no arranque, o que acontece ao custo de cada chamada (ADR-042 §2.6).

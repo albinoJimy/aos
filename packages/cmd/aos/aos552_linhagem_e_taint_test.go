@@ -56,7 +56,7 @@ func aos552Espiao(t *testing.T) (*armazemDeArtefactos, *planoDeHandles, func() [
 // que a gravação cunhou.
 func aos552Grava(t *testing.T, a *armazemDeArtefactos, plano *planoDeHandles, runID, stepID, args string) string {
 	t.Helper()
-	rw := reescritaDoEfeito(nil, nil, nil, true, plano)
+	rw := reescritaDoEfeito(nil, nil, nil, nil, true, plano)
 	call := referencemonitor.Call{ToolID: artifactWriteToolName, RunID: runID, StepID: stepID,
 		Principal: referencemonitor.Principal{NHIID: "nhi:a", Subject: "titular-550"},
 		Input:     []byte(args)}

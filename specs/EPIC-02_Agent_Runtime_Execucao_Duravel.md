@@ -2974,7 +2974,8 @@ campo.
       escolhido por quem submete.
 - [x] O banner de arranque declara a postura: vocabulário, tectos, **qual tecto manda em cada eixo**
       com o número, que o conteúdo **não é redigido**, e que **nenhuma tool lê deste espaço** até ao
-      AOS-563.
+      AOS-563. *(O AOS-563 chegou: a última metade desta linha foi substituída pela ORDEM DE
+      RESOLUÇÃO, e o banner já não afirma que nenhuma tool lê. O resto da linha mantém-se.)*
 - [x] As duas variáveis novas estão documentadas em `deploy/node/README.md` com efeito, default e
       impacto de segurança (gate AOS-203).
 
@@ -2984,6 +2985,10 @@ campo.
   só contra a pasta semeada. Até ao **AOS-563** esta via **sela e declara**, e nenhum run a lê. É
   deliberado e está no banner: o produtor vem primeiro, para que o leitor do AOS-563 possa ser
   desmentido por bytes que existem.
+  **FECHADO pelo AOS-563 (2026-10-27):** as duas tools resolvem o `doc_id` primeiro contra as
+  entradas de media do run, pelo nome cunhado, e só depois contra a pasta semeada; o banner deixou
+  de dizer que nenhuma tool lê deste espaço e passou a declarar a ordem. A `video_read` continua
+  fora, e é ticket próprio.
 - **O conteúdo ingerido NÃO É REDIGIDO**, e é **decisão do dono**, não defeito deste ticket. A
   fronteira de ingestão trata só o objectivo (`IngestObjective`) e bytes de imagem não passam por um
   redactor de texto. Já era verdade para o que o operador semeia; o que muda é **quem o pode causar**,
@@ -3000,6 +3005,10 @@ campo.
   que nenhuma tool consome ainda é anunciar o que não se pode usar. **Gatilho:** o AOS-563, que a
   torna utilizável — e aí o anúncio entra com ele, pela MESMA condição que a porta confere, para
   a porta e o anúncio não poderem divergir.
+  **FECHADO pelo AOS-563 (2026-10-27):** o `GET /tools` leva `media_input` — vocabulário, os três
+  tectos e a ordem de resolução do `doc_id` —, composto pela negação exacta da condição com que a
+  porta recusa (`h.node == nil || !h.node.entradaDeMedia`), e o banner deixou de afirmar que
+  nenhuma tool lê deste espaço.
 - **A pasta semeada não sai.** Sai quando esta via tiver prova em produção, não antes: é a origem de
   tudo o que hoje funciona.
 - **Vídeo e PDF ficam fora.** O vídeo tem outros números e é ticket próprio; o PDF é **decisão do
@@ -3053,26 +3062,32 @@ semeado com o nome que o nó cunha (`media_input-1`) mudava o que uma tool lê s
 
 ### Critérios de Aceitação
 
-- [ ] A `ocr_read` e a `media_view` resolvem o `doc_id` **primeiro** contra os handles de entrada de
+- [x] A `ocr_read` e a `media_view` resolvem o `doc_id` **primeiro** contra os handles de entrada de
       media do run (os `handle.created` com `tool=media_input`), pelo **nome cunhado pelo nó**
       (`HandleFacts.Name`), e só depois contra a pasta semeada.
-- [ ] **Nunca as duas para o mesmo `doc_id`:** uma colisão resolve pelo espaço do run e é contada no
+- [x] **Nunca as duas para o mesmo `doc_id`:** uma colisão resolve pelo espaço do run e é contada no
       `/metrics` com causa própria. Um teste prova que um ficheiro semeado com o nome cunhado não
       muda o que a tool lê.
-- [ ] Os bytes vêm do espaço de handles pelo caminho que já existe — decifrados com o run nos dados
+- [x] Os bytes vêm do espaço de handles pelo caminho que já existe — decifrados com o run nos dados
       associados e **conferidos contra o digest** que um `handle.created` do próprio run declara. Sem
       o evento não há bytes (o guarda (b) do AOS-550 mantém-se).
-- [ ] O tipo com que a parte vai ao gateway é o **conferido na porta** (dos factos do handle), não
+- [x] O tipo com que a parte vai ao gateway é o **conferido na porta** (dos factos do handle), não
       uma segunda inferência dos bytes: duas derivações divergiriam.
-- [ ] A capability, o destino declarado e a classe de destino **não mudam** — `cap:fs.read`,
+- [x] A capability, o destino declarado e a classe de destino **não mudam** — `cap:fs.read`,
       `external_read`. O que muda é **de onde** a tool lê os bytes, e isso é config trusted do
       operador, não autorização. **Nenhuma cerimónia de chave.**
-- [ ] A leitura da pasta semeada fica **byte a byte igual**: as regras do ADR-042 §2.4 (`os.Root`, só
+- [x] A leitura da pasta semeada fica **byte a byte igual**: as regras do ADR-042 §2.4 (`os.Root`, só
       o nível de topo, só ficheiros regulares, uma só ligação física, o Stat do descritor, o tecto na
       leitura) não são tocadas. Um teste prova que um run sem entradas de media lê o que lia.
-- [ ] Um `doc_id` que não resolva em nenhum dos dois falha com a causa que já existe, e a causa não
+- [x] Um `doc_id` que não resolva em nenhum dos dois falha com a causa que já existe, e a causa não
       revela qual dos dois espaços foi consultado nem um byte de conteúdo.
-- [ ] O banner de arranque deixa de dizer que nenhuma tool lê deste espaço, e passa a declarar a
+      **ALCANCE EXACTO, e a excepção está no código e passa a estar aqui** (achado da segunda
+      passagem): o critério vale para o `doc_id` que não resolve em **nenhum** dos dois — esse sai
+      com a causa da pasta (`ficheiro_em_falta`), que não distingue nada. Um `doc_id` que resolve no
+      espaço do run e **não abre** sai com `handle_ilegivel`, que **nomeia** o espaço. É deliberado:
+      um `doc_id` com a forma de um nome cunhado já revelou a forma, e uma causa ambígua custaria ao
+      operador o diagnóstico. Nenhuma das duas leva bytes, digest nem titular.
+- [x] O banner de arranque deixa de dizer que nenhuma tool lê deste espaço, e passa a declarar a
       ordem de resolução.
 
 ### O que fica declarado como resíduo
@@ -3082,6 +3097,88 @@ semeado com o nome que o nó cunha (`media_input-1`) mudava o que uma tool lê s
 - A prova em produção (a peça D do desenho — um `POST /runs` com uma fotografia e o OCR a correr sobre
   ela) é **do dono**, e precisa também da mudança de postura do tecto do corpo (AOS-562) se a
   fotografia passar de 256 KiB.
+- **A `media_view` passou a recusar argumentos malformados no RM, e não na tool.** Ganhou reescrita de
+  efeito, e a reescrita recusa `len(args) != 1` com erro — que o despacho materializa como **Deny
+  fail-closed**. Antes, um campo a mais chegava ao executor e saía como `media_view:
+  entrada_invalida`, um `tool_error` de que o modelo podia recuperar. É a forma que as outras três
+  tools do nó já tinham, e é mais segura; fica declarado porque é mudança de comportamento do loop.
+- **A comparação do titular do evento com o do chamador NÃO entra, e a assimetria é deliberada.** As
+  outras duas leituras do espaço comparam-nos (`OpenQuarantined` exige `SealedSubject == subject`; a
+  travessia recusa com `travessia_outro_titular`); esta lê o titular do próprio `handle.created`. As
+  duas revisões independentes chamaram-lhe «paridade sem custo» e **não é**: a paridade seria
+  PARCIAL, porque a segunda metade da `media_view` — o resolvedor do adaptador, onde os bytes chegam
+  ao modelo — só conhece o token NHI do run e não o titular, e dar-lho alarga o contrato do gateway.
+  Uma comparação em metade do caminho lê-se como uma defesa inteira. O que sustenta a ausência é o
+  invariante «um titular por run» (`selarEmQuarentena` usa sempre `goal.Titular()`, e numa
+  re-hospedagem o `Subject` está na classe «recusado se divergir», AOS-559), mais os três guardas que
+  não mudaram. **Fecha-se com o titular no contrato do resolvedor, e é ticket próprio.**
+- **A métrica da `video_read` continua sem as causas do espaço de handles.** O AOS-563 acrescentou-as
+  à da `ocr_read` e da `media_view` (`ocrCausas`), porque é nelas que a recusa nova aparece. A
+  `video_read` tem lista própria e está fora de âmbito; a lacuna dela é a de sempre (desde AOS-551).
+- **O resíduo do ANÚNCIO do AOS-561 fecha-se aqui**, como ele mandava: o `GET /tools` passa a levar
+  `media_input` (vocabulário, os três tectos e a ordem de resolução), composto pela **negação exacta**
+  da condição com que a porta recusa um `media_inputs` com 400 — a porta e o anúncio não podem
+  divergir. O banner do AOS-561 deixou de dizer que nenhuma tool lê deste espaço.
+- **A `media_view` passou a ter reescrita de efeito**, e isso é alcance deste ticket e não escopo
+  novo: ela recebia os args crus do modelo (`{doc_id}`), que bastavam para ler da pasta; resolver no
+  espaço de handles exige o RUN, que só existe na `Call`. Reutiliza-se a reescrita GENÉRICA que a
+  `ocr_read` e a `video_read` já usam ([newEfeitoDeModeloRewriter]) e a mesma `entradaOCR` com um
+  schema próprio — sem maquinaria nova. O que o modelo vê não muda: os `parameters` continuam a
+  declarar só o `doc_id`.
+
+### Como ficou (2026-10-27)
+
+`packages/cmd/aos/aos563_doc_no_espaco_de_handles.go`: a ordem de resolução ([resolverDocDeImagem],
+a função ÚNICA que as duas tools partilham — duas ordens divergiriam), o predicado da entrada
+([planoDeHandles.entradaDeMediaDoRun]) e o formato do tipo. A `ocr_read` e a `media_view` ganham o
+plano de handles (a `ligacaoOCR` e a `ligacaoMedia`, **não** a `ligacaoDeModelo`, que é a parte comum
+com a `video_read`: pô-lo lá alcançava-a sem que nada o pedisse).
+
+**O QUE A DESCOBERTA MUDOU NO DESENHO, e não estava na ficha.** A `media_view` entrega os bytes ao
+modelo em **DOIS** momentos: a tool devolve a REFERÊNCIA num turno, e no turno seguinte o
+`modelgateway.MediaResolver` **relê** os bytes para os anexar ao pedido, com o adaptador a conferir
+digest, tipo e tamanho contra a referência. Ensinar só o executor a ler do espaço de handles deixava
+a releitura a procurar na pasta semeada um documento que lá não está — o digest não batia e o turno
+falhava com `media_ilegivel`. Por isso o `MediaResolver` passa a receber o `ctx` e o `runID` do
+turno, que o `Call` do adaptador já tem (`agentruntime.ModelCallFromContext`, escrito pelo runtime
+antes de cada turno). O run vem como **argumento** e não dentro da `MediaRef`: a referência é o
+resultado de uma tool call e viaja no tail e no log do run, pelo que um campo novo nela era uma
+mudança de contrato **persistido**. Um mapa por run no plano de handles foi rejeitado por já estar
+medido e registado em `bilheteDaCall` (AOS-552): 100 calls concorrentes perdiam 36 linhagens.
+
+**O TITULAR vem do próprio `handle.created`** (`SealedSubject`), como a rota dos artefactos já faz.
+A tool não o tem — o ctx do despacho não o leva, e o `principal` do gateway é o token NHI, não o
+titular — e um run tem UM titular, pelo que exigi-lo ao chamador compararia o titular do run consigo
+mesmo. O que amarra os bytes continua a ser o guarda (b), os dados associados e o digest.
+
+**O PREDICADO TEM TRÊS PARTES, e a terceira não é redundante:** `tool=media_input`, o nome cunhado
+**e** o tipo no vocabulário fechado de imagem. O `Tool` é um RÓTULO — as tools vêm de um ficheiro do
+operador, e uma tool chamada `media_input` selaria os seus `tool_result` com `Tool=media_input` e
+`Name=media_input-N`. O tipo fecha isso sem fazer nenhum guarda depender do rótulo.
+
+**O QUE A REVISÃO ADVERSARIAL MUDOU, em duas passagens.** A primeira encontrou um **crítico que era
+dívida antiga**: `comporReescritas` escolhia a reescrita por uma LISTA LITERAL de `ToolID` em que a
+`media_view` não estava — e, como este ticket a tornou dependente da reescrita, num nó COM binding de
+sandbox (a forma de PRODUÇÃO) **todas** as chamadas dela passavam a falhar com `entrada_invalida`,
+incluindo as da pasta semeada: a regressão total de uma funcionalidade em produção desde o AOS-546.
+O mesmo defeito já tinha acontecido com a `artifact_write`. O despacho passa a ser pelo PREDICADO
+REAL (`temBinding`), a mesma pergunta que a reescrita da sandbox já se faz. A primeira tentativa de
+correcção — uma cadeia — partiu dois testes existentes e foi abandonada em vez de lhes reescrever os
+fakes.
+
+A segunda passagem mediu que **nenhuma correcção abriu defeito pior**, e trouxe a correcção que
+fecha duas de uma vez: o plano de handles liga-se às tools **só com a VIA DE ENTRADA composta**, e
+não só com `AOS_HANDLE_DIR`. Sem isto o caminho novo ficava vivo (e o seu fail-closed podia recusar
+uma `ocr_read`) numa postura que o operador não pediu, e as frases do README e da emenda ao ADR-042
+— que atribuem a segunda origem ao `AOS_ENTRADA_DE_MEDIA` — eram falsas. Os banners das duas tools
+passaram também a **calcular** a ordem do que foi composto, pela regra do AOS-203/248: a postura
+anunciada é a postura ligada.
+
+**O que as mutações provaram** (e não só os testes verdes): inverter a ordem de resolução, remover o
+contador da colisão, tirar o tipo do predicado, remover a cablagem do `Bootstrap`, resolver só no
+executor e não no resolvedor, tirar a `media_view` da cadeia das reescritas, repor o fail-open do
+erro de stream, desligar o anúncio da condição da porta e trocar o gate da via pelo do espaço —
+**nove mutações**, cada uma a avermelhar uma asserção diferente.
 
 ## Controlo de versões
 

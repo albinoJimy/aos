@@ -2557,12 +2557,18 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	if videoDeclarada && videoLigada == nil {
 		return nil, ErrVideoSemGateway
 	}
-	var ocrRewriter, videoRewriter func(referencemonitor.Call) (referencemonitor.Call, error)
+	var ocrRewriter, videoRewriter, mediaRewriter func(referencemonitor.Call) (referencemonitor.Call, error)
 	if ocrLigada != nil {
 		ocrRewriter = newOCREffectRewriter()
 	}
 	if videoLigada != nil {
 		videoRewriter = newEfeitoDeModeloRewriter(videoToolName, videoInputSchema)
+	}
+	// AOS-563: a `media_view` passa a receber o RUN da tool call pela MESMA reescrita genérica das
+	// outras tools de modelo — é dele que a resolução do `doc_id` no espaço de handles parte. O que
+	// o modelo escolhe continua a ser só o `doc_id`.
+	if cfg.MediaNoTurno != nil {
+		mediaRewriter = newEfeitoDeModeloRewriter(mediaViewToolName, mediaViewInputSchema)
 	}
 	// (7-ante) ORÇAMENTO POR-RUN (AOS-008, ligado em AOS-256/AOS-257). nil ⇒ AOS_BUDGET_MAX_TOKENS
 	// não está definida ⇒ o ponto de injecção "budget" da cadeia fica com o stub neutro. É ESTE
@@ -2685,7 +2691,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	}
 
 	sec, err := integration.NewSecuredRuntime(integration.SecuredConfig{
-		EffectRewriter: reescritaDoEfeito(sandboxBindings, ocrRewriter, videoRewriter, armazem != nil, planoHandles), // AOS-005: args→ExecRequest; AOS-530/536: args→entrada da ocr_read/video_read; AOS-548: args→entrada da artifact_write; AOS-550: handle→bytes antes da mediação; nil ⇒ sem reescrita
+		EffectRewriter: reescritaDoEfeito(sandboxBindings, ocrRewriter, videoRewriter, mediaRewriter, armazem != nil, planoHandles), // AOS-005: args→ExecRequest; AOS-530/536: args→entrada da ocr_read/video_read; AOS-563: args→entrada da media_view; AOS-548: args→entrada da artifact_write; AOS-550: handle→bytes antes da mediação; nil ⇒ sem reescrita
 		// AOS-551: a cadeia acima inclui SEMPRE a [reescritaDaAutoridade], logo o nó declara-o. É
 		// o que permite a um run correr num layout por handle; nos outros layouts não muda nada.
 		PerArgumentAuthority: true,
@@ -2754,6 +2760,29 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// peça 3b) liga-se aqui, onde já há o orçamento por-run e o Event Store: a reserva no tecto do
 	// run antes de cada chamada e o evento durável do custo depois.
 	ocrLigada.ligarCusto(runBudget, registoDeCustoDeTool(es, producerDoCustoDeTool()), log)
+	// AOS-563: o plano de handles, de onde a tool resolve o `doc_id` ANTES da pasta semeada. Liga-se
+	// aqui pela razão pela qual o `armazem.handles` se liga mais abaixo: o plano só existe depois de
+	// o Event Store e o espaço estarem compostos. nil ⇒ a tool lê só da pasta, como antes.
+	//
+	// SÓ COM A VIA DE ENTRADA COMPOSTA, e não só com o espaço de handles — achado da SEGUNDA
+	// passagem adversarial, e a correcção certa por três razões que convergem:
+	//
+	//  1. A DOCUMENTAÇÃO JÁ O DIZIA. O `deploy/node/README.md` e a emenda ao ADR-042 §2.4 atribuem a
+	//     segunda origem ao `AOS_ENTRADA_DE_MEDIA`. Ligar o plano com `AOS_HANDLE_DIR` sozinha —
+	//     que um nó pode ter só pelo layout 1.8.0 (AOS-550) — punha o caminho novo VIVO numa postura
+	//     que o operador nunca habilitou, e tornava falsas as duas frases que este ticket escreveu.
+	//  2. O FAIL-CLOSED DEIXA DE ALCANÇAR QUEM NÃO PEDIU NADA. Com a via desligada, um erro de
+	//     leitura do stream deixa de poder recusar uma `ocr_read` que antes lia da pasta.
+	//  3. É O MESMO VALOR COMPOSTO que a porta confere e que o `GET /tools` anuncia
+	//     ([Node.entradaDeMedia], abaixo): um só predicado para «este nó tem entradas de media».
+	//
+	// O RECUO DOCUMENTADO FICA COERENTE: um nó que desliga a via volta a ler só da pasta, que é
+	// exactamente o comportamento de antes do AOS-563. Um run retomado com entradas JÁ SELADAS
+	// continua a correr (o selo não as re-sela, AOS-561), e nenhuma tool as lê — como antes deste
+	// ticket. O preço está escrito aqui em vez de ser descoberto.
+	if ocrLigada != nil && cfg.EntradaDeMedia {
+		ocrLigada.handles = planoHandles
+	}
 	if err := registarOCR(sec, ocrLigada, log); err != nil {
 		return nil, err
 	}
@@ -2768,6 +2797,12 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// fechado, conferido no arranque mais abaixo. Ver erro_de_tool.go.
 	var toolsDoNo []string
 	if cfg.MediaNoTurno != nil {
+		// AOS-563: o mesmo plano, sob a MESMA condição da `ocr_read` acima (a via COMPOSTA, não só
+		// o espaço de handles) — e é ele que o resolvedor do adaptador usa no turno SEGUINTE,
+		// quando relê os bytes da referência para os anexar ao pedido.
+		if cfg.EntradaDeMedia {
+			cfg.MediaNoTurno.handles = planoHandles
+		}
 		if err := sec.Register(mediaViewToolName, cfg.MediaNoTurno.executar); err != nil {
 			return nil, fmt.Errorf("aos: registar a tool %s: %w", mediaViewToolName, err)
 		}

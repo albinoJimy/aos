@@ -441,7 +441,7 @@ func aos551CorrerNa180(t *testing.T, plano *planoDeHandles, es eventstore.EventS
 		&toolEnrichingClient{inner: &aos551Modelo{invs: invs}, bindings: bindings},
 		rm, agentruntime.NewTurnRecorder(es),
 		agentruntime.WithActivityDispatcher(disp),
-		agentruntime.WithCallRewriter(reescritaDoEfeito(nil, nil, nil, false, plano)),
+		agentruntime.WithCallRewriter(reescritaDoEfeito(nil, nil, nil, nil, false, plano)),
 		agentruntime.WithPerArgumentAuthority(),
 	)
 	if _, err := rt.Run(context.Background(), agentruntime.Goal{
@@ -511,7 +511,7 @@ func TestAOS551_Bateria_InjeccaoNumHandleConsumidoPorCallPrivilegiada(t *testing
 
 	// META-TESTE: o handle foi resolvido PARA DENTRO da Call. Sem isto o caso passaria com o
 	// handle a não resolver, e não mediria nada sobre handles.
-	rw := reescritaDoEfeito(nil, nil, nil, false, plano)
+	rw := reescritaDoEfeito(nil, nil, nil, nil, false, plano)
 	reescrita, rerr := rw(referencemonitor.Call{
 		RunID: runID, StepID: "s1", ToolID: "web_post", Capability: "cap:http.post",
 		Principal: referencemonitor.Principal{NHIID: medAgentID, Subject: "titular-550"},
@@ -547,7 +547,10 @@ func TestAOS551_Bateria_InjeccaoVisualNumRunDa180NaoLevantaNada(t *testing.T) {
 	}
 	// A imagem é a fixture; a «injecção visual» é o que estaria pintado nela — e o que importa é
 	// que a imagem CHEGA ao modelo, não o que tem escrito.
-	out, err := lig.executar(context.Background(), []byte(`{"doc_id":"sala.png"}`))
+	// AOS-563: a entrada é a da reescrita do efeito, que é o que o executor recebe numa tool call
+	// mediada. O documento continua a ser o da pasta semeada — este caso é sobre o PISO de taint
+	// de um turno com media, não sobre de onde os bytes vieram.
+	out, err := lig.executar(context.Background(), aos546Entrada("sala.png"))
 	if err != nil {
 		t.Fatalf("media_view: %v", err)
 	}

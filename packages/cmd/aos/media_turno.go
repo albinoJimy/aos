@@ -2,12 +2,18 @@ package main
 
 // MEDIA NO TURNO DO MODELO DO RUN (AOS-546, ADR-043 §2.2) — `AOS_MEDIA_NO_TURNO`.
 //
-// O modelo do run passa a VER uma imagem: a tool LOCAL `media_view` lê uma imagem PNG ou JPEG do
-// nível de topo da pasta semeada (`AOS_OCR_SEED_DIR`, a mesma das tools de modelo) e devolve uma
-// REFERÊNCIA — o documento, o `sha256`, o tipo e o tamanho ([agentruntime.MediaRef]), nunca os
-// bytes. No layout 1.7.0 o turno seguinte do run leva um segmento `media` com a referência, e o
-// adaptador do gateway resolve os bytes pela mesma pasta, confere o digest e envia a imagem ao
+// O modelo do run passa a VER uma imagem: a tool LOCAL `media_view` lê uma imagem PNG ou JPEG e
+// devolve uma REFERÊNCIA — o documento, o `sha256`, o tipo e o tamanho ([agentruntime.MediaRef]),
+// nunca os bytes. No layout 1.7.0 o turno seguinte do run leva um segmento `media` com a
+// referência, e o adaptador do gateway resolve os bytes, confere o digest e envia a imagem ao
 // modelo do run como parte da mensagem `user` desse segmento.
+//
+// DE ONDE VÊM OS BYTES (AOS-563): o `doc_id` resolve-se primeiro nas ENTRADAS DE MEDIA do run (o
+// que quem submeteu mandou no `POST /runs` e o nó selou no espaço de handles), e só depois no nível
+// de topo da pasta semeada (`AOS_OCR_SEED_DIR`, a mesma das tools de modelo). As DUAS metades desta
+// tool resolvem pela mesma ordem e pela mesma função ([resolverDocDeImagem]) — a tool, quando cunha
+// a referência, e o adaptador, quando relê os bytes no turno seguinte. Ordens diferentes faziam a
+// tool devolver uma referência que o turno seguinte não honrava.
 //
 //   - `off` (por omissão): nada muda. Os runs novos ficam nos layouts de sempre e a tool não existe.
 //   - `on`: os runs NOVOS ficam no layout 1.7.0; a `media_view` é registada no RM se o registo de
@@ -63,6 +69,20 @@ const (
 	mediaViewEgress        = "none"
 )
 
+// mediaViewInputSchema é a forma do input DEPOIS da reescrita do efeito ([entradaOCR], com este
+// schema) — o MESMO molde da `ocr_read` e da `video_read` (AOS-563).
+//
+// PORQUE A `media_view` PASSOU A TER REESCRITA DE EFEITO. Até ao AOS-563 ela recebia os args crus
+// do modelo (`{doc_id}`), que era tudo o que precisava para ler da pasta semeada. Resolver o
+// `doc_id` no espaço de handles exige o RUN, e o run só existe na [referencemonitor.Call] — não no
+// ctx do despacho. A reescrita do efeito é o caminho por onde as outras três tools do nó já o
+// recebem ([newEfeitoDeModeloRewriter], que é genérica e não ganhou nada para isto), e reusá-la
+// não acrescenta maquinaria.
+//
+// O QUE O MODELO VÊ NÃO MUDA: os `parameters` do registo continuam a declarar só o `doc_id`, e é
+// só isso que o modelo escolhe. A reescrita corre entre a escolha do modelo e o executor.
+const mediaViewInputSchema = "aos-media-view-entrada/v1"
+
 var (
 	// ErrBadMediaNoTurno — AOS_MEDIA_NO_TURNO fora do vocabulário. O nó recusa arrancar.
 	ErrBadMediaNoTurno = errors.New("aos: AOS_MEDIA_NO_TURNO invalida — valores aceites: off (por omissao; o modelo do run nao ve media) e on (os runs novos ficam no layout 1.7.0 e a tool media_view envia a imagem ao modelo do run no turno seguinte)")
@@ -97,6 +117,9 @@ type ligacaoMedia struct {
 	root  *os.Root
 	raiz  raizDoOCR
 	pasta string
+	// handles é o plano de handles do nó (AOS-563): onde a tool procura o `doc_id` ANTES da pasta
+	// semeada. nil ⇒ sem espaço de handles composto, e a tool lê só da pasta, como antes.
+	handles *planoDeHandles
 	// lidas e recusadas contam as chamadas da tool; resolvidas e falhadas, as resoluções do
 	// adaptador.
 	lidas, recusadas, resolvidas, falhadas atomic.Int64
@@ -158,12 +181,19 @@ func (l *ligacaoMedia) opcaoDoAdaptador() []opcaoDoAdaptador {
 	return []opcaoDoAdaptador{modelgateway.WithMediaResolver(l.resolver)}
 }
 
-// lerParte lê a imagem `doc` da pasta com as regras das tools de modelo e devolve a parte, ou a
-// causa da recusa. O tipo sai dos primeiros bytes, nunca da extensão.
-func (l *ligacaoMedia) lerParte(doc string) (port.MediaPart, string) {
-	dados, causa := lerConfinado(l.raiz, doc, port.MaxImageBytes)
+// lerParte resolve a imagem `doc` e devolve a parte, ou a causa da recusa.
+//
+// A ORDEM DE RESOLUÇÃO É A DO AOS-563 ([resolverDocDeImagem]): primeiro as entradas de media do
+// RUN no espaço de handles, depois a pasta semeada com as regras das tools de modelo. Da pasta o
+// tipo sai dos primeiros bytes, nunca da extensão; do espaço sai dos FACTOS do handle, que é o
+// tipo que a porta conferiu. `run` vazio ⇒ só a pasta.
+func (l *ligacaoMedia) lerParte(ctx context.Context, run, doc string) (port.MediaPart, string) {
+	dados, tipo, causa := resolverDocDeImagem(ctx, l.handles, l.raiz, run, doc, port.MaxImageBytes)
 	if causa != "" {
 		return port.MediaPart{}, causa
+	}
+	if tipo != "" {
+		return port.MediaPart{MediaType: tipo, Data: dados}, ""
 	}
 	for _, tipo := range []string{port.ImageMediaPNG, port.ImageMediaJPEG} {
 		parte := port.MediaPart{MediaType: tipo, Data: dados}
@@ -176,8 +206,25 @@ func (l *ligacaoMedia) lerParte(doc string) (port.MediaPart, string) {
 
 // resolver é o [modelgateway.MediaResolver]: lê de novo o documento da referência. O adaptador
 // confere o digest, o tipo e o tamanho contra ela.
-func (l *ligacaoMedia) resolver(ref agentruntime.MediaRef) (port.MediaPart, error) {
-	parte, causa := l.lerParte(ref.Doc)
+//
+// O `run` É O DO TURNO, e é o que torna o AOS-563 possível nesta tool. A `media_view` entrega os
+// bytes ao modelo em DOIS momentos — a tool devolve a REFERÊNCIA num turno, e no turno seguinte o
+// adaptador relê os bytes por aqui para os anexar ao pedido. Resolver o `doc_id` no espaço de
+// handles só no executor e não aqui deixava a releitura a procurar na pasta semeada um documento
+// que lá não está: o digest não batia com a referência e o turno falhava com
+// [modelgateway.MediaCauseMismatch] ou [modelgateway.MediaCauseUnreadable]. As duas metades
+// resolvem pela MESMA função, ou a tool diz uma coisa e entrega outra.
+//
+// O run vem do ctx do turno, que o runtime escreve antes de chamar o modelo
+// ([agentruntime.ContextWithModelCall]) e o adaptador lê. Vazio ⇒ só a pasta semeada, que é o
+// comportamento de antes deste ticket.
+//
+// O ctx VEM COM ELE, e não é um [context.Background] aqui: a resolução pelo espaço de handles lê o
+// stream do run e faz uma decifra que pode ser remota (o cifrador por titular), e o ctx do turno é
+// o que lhe dá o prazo e o cancelamento do run. É a lacuna que o [handleResolveTimeout] teve de
+// tapar com um prazo próprio no `CallRewriter`, cuja porta não recebe ctx; esta recebe.
+func (l *ligacaoMedia) resolver(ctx context.Context, run string, ref agentruntime.MediaRef) (port.MediaPart, error) {
+	parte, causa := l.lerParte(ctx, run, ref.Doc)
 	if causa != "" {
 		l.falhadas.Add(1)
 		return port.MediaPart{}, fmt.Errorf("aos: media %s ilegivel: %s", mediaViewToolName, causa)
@@ -186,18 +233,18 @@ func (l *ligacaoMedia) resolver(ref agentruntime.MediaRef) (port.MediaPart, erro
 	return parte, nil
 }
 
-// entradaMediaView é o input da tool, tal como o modelo o pede.
-type entradaMediaView struct {
-	DocID string `json:"doc_id"`
-}
-
 // executar é a [referencemonitor.ToolFunc] da `media_view`. Só o despacho do RM a chama, depois do
 // permit. Devolve a referência, ou um erro com a causa (vocabulário das tools de modelo).
-func (l *ligacaoMedia) executar(_ context.Context, input []byte) ([]byte, error) {
+//
+// O INPUT É O DA REESCRITA DO EFEITO ([entradaOCR] com [mediaViewInputSchema]), e não os args crus
+// do modelo: é de lá que vem o RUN com que o `doc_id` se resolve no espaço de handles (AOS-563).
+// Sem run, sem passo ou com outro schema, a entrada é inválida — a reescrita corre sempre antes do
+// executor, pelo que um input sem eles não vem de uma tool call mediada.
+func (l *ligacaoMedia) executar(ctx context.Context, input []byte) ([]byte, error) {
 	dec := json.NewDecoder(bytes.NewReader(input))
 	dec.DisallowUnknownFields()
-	var in entradaMediaView
-	if err := dec.Decode(&in); err != nil || in.DocID == "" {
+	var in entradaOCR
+	if err := dec.Decode(&in); err != nil || in.Schema != mediaViewInputSchema || in.DocID == "" || in.RunID == "" || in.StepID == "" {
 		return l.recusar(ocrCausaEntrada)
 	}
 	// Um documento que a referência não pode levar (fora do alfabeto dos rótulos, ou longo demais) é
@@ -208,7 +255,7 @@ func (l *ligacaoMedia) executar(_ context.Context, input []byte) ([]byte, error)
 	if _, err := dec.Token(); err != io.EOF {
 		return l.recusar(ocrCausaEntrada)
 	}
-	parte, causa := l.lerParte(in.DocID)
+	parte, causa := l.lerParte(ctx, in.RunID, in.DocID)
 	if causa != "" {
 		return l.recusar(causa)
 	}
@@ -250,6 +297,6 @@ func mediaNoTurnoBanner(l *ligacaoMedia) []string {
 	if l == nil {
 		return nil
 	}
-	return []string{fmt.Sprintf("media no turno (AOS-546, ADR-043 §2.2): AOS_MEDIA_NO_TURNO=on — os runs NOVOS ficam no layout %s; a tool %s le uma imagem PNG ou JPEG (ate %d bytes) do nivel de topo de %s=%q e devolve uma REFERENCIA (documento, sha256, tipo, tamanho), sem bytes e sem egress; no turno seguinte o adaptador resolve a imagem pela mesma pasta, confere o digest e envia-a ao MODELO DO RUN, so se o perfil da rota declarar a capacidade imagem (senao o gateway recusa e o run falha). Resultado e segmento untrusted. Retoma sem o ficheiro: o turno falha (media_ilegivel). Recuo: off",
-		agentruntime.AssemblyVersion170, mediaViewToolName, port.MaxImageBytes, ocrSeedDirEnv, l.pasta)}
+	return []string{fmt.Sprintf("media no turno (AOS-546, ADR-043 §2.2): AOS_MEDIA_NO_TURNO=on — os runs NOVOS ficam no layout %s; a tool %s le uma imagem PNG ou JPEG (ate %d bytes) e devolve uma REFERENCIA (documento, sha256, tipo, tamanho), sem bytes e sem egress; no turno seguinte o adaptador resolve a imagem PELA MESMA ORDEM, confere o digest e envia-a ao MODELO DO RUN, so se o perfil da rota declarar a capacidade imagem (senao o gateway recusa e o run falha). ORIGEM DO doc_id: %s. As DUAS metades (a tool e a releitura do adaptador) resolvem pela MESMA ordem, senao a tool devolvia uma referencia que o turno seguinte nao honrava. Resultado e segmento untrusted. Retoma sem o ficheiro nem a entrada: o turno falha (media_ilegivel). Recuo: off",
+		agentruntime.AssemblyVersion170, mediaViewToolName, port.MaxImageBytes, posturaDaOrigemDoDoc(l.handles, l.pasta))}
 }
