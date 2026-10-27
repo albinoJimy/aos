@@ -10,8 +10,9 @@ package main
 //      (`deploy/server/model-tools/tools.json`) deixa de oferecer o `web_post` — e nenhuma tool de
 //      `cap:http.post` ou de egress externo. [TestAOS069_ManifestoDeProducaoNaoOfereceEgressExterno]
 //      avermelha se alguém a reintroduzir: fazê-lo é uma decisão explícita, não uma edição. A
-//      única excepção é a `ocr_read` (emenda de 2026-10-18 ao ADR-034 §2.7, ADR-042), por nome e
-//      forma.
+//      única excepção é uma tool de modelo na FORMA das emendas de 2026-10-18 (a `ocr_read`,
+//      ADR-042) e 2026-10-19 (a `video_read`) ao ADR-034 §2.7 — por forma, e desde o AOS-566 só
+//      por forma: ver [excepcaoDaEmendaDasToolsDeModelo].
 //   2. Onde o `web_post` ainda é oferecido (os demos dev-hardened, fixture aqui), quem o mata com o
 //      bundle de referência é a REGIÃO: `allow_http_post` exige `resource.region == "eu"`, e a tool
 //      declara `eu-west` (desde o AOS-407 a região da tool alinha-se ao board, nunca o contrário)
@@ -63,10 +64,10 @@ const toolsJSONComWebPost = "../../../deploy/node/dev-hardened/model-tools/tools
 // obrigar a uma decisão escrita — com a opção C, um efeito externo pedido em contexto limpo já não
 // morre no taint.
 //
-// AS ÚNICAS EXCEPÇÕES são as das emendas ao ADR-034 §2.7 (decisões do dono): a `ocr_read` do
-// ADR-042 (2026-10-18, AOS-530) e a `video_read` (2026-10-19, AOS-536), e só com a forma que as
-// decisões cobrem — ver [excepcaoOCRDaEmenda]. Uma entrada com o mesmo nome e outra forma volta a
-// avermelhar.
+// A ÚNICA EXCEPÇÃO é a das emendas ao ADR-034 §2.7 (decisões do dono): a `ocr_read` do ADR-042
+// (2026-10-18, AOS-530) e a `video_read` (2026-10-19, AOS-536), e só com a FORMA que as decisões
+// cobrem — ver [excepcaoDaEmendaDasToolsDeModelo]. Uma entrada com o mesmo nome e outra forma
+// volta a avermelhar.
 func TestAOS069_ManifestoDeProducaoNaoOfereceEgressExterno(t *testing.T) {
 	t.Setenv("AOS_MODEL_TOOLS", toolsJSONProducao)
 	specs, err := readModelToolSpecs()
@@ -81,38 +82,70 @@ func TestAOS069_ManifestoDeProducaoNaoOfereceEgressExterno(t *testing.T) {
 	}
 }
 
-// excepcaoOCRDaEmenda diz se a entrada é EXACTAMENTE uma das excepções das emendas ao ADR-034
-// §2.7: a `ocr_read` (2026-10-18) ou a `video_read` (2026-10-19), com `modelo.alias`,
-// `cap:fs.read` e `doc://{doc_id}`. É por nome E forma: o que o dono aceitou foi uma leitura por run (a `cap:fs.read`, armada em produção) de
-// uma imagem que ele semeou (`doc://{doc_id}`), por um modelo de visão sem tools (o bloco
-// `modelo`). Os literais estão aqui, e não as constantes do código, para que mudar a forma da
-// tool não alargue a excepção em silêncio.
-func excepcaoOCRDaEmenda(s modelToolSpec) bool {
-	return (s.Name == "ocr_read" || s.Name == "video_read") &&
-		s.Modelo != nil && strings.TrimSpace(s.Modelo.Alias) != "" &&
+// excepcaoDaEmendaDasToolsDeModelo diz se a entrada é EXACTAMENTE uma das excepções das emendas ao
+// ADR-034 §2.7 (2026-10-18, a `ocr_read` do ADR-042; 2026-10-19, a `video_read`). O que o dono
+// aceitou foi UMA LEITURA POR RUN (a `cap:fs.read`, armada em produção) de um ficheiro que ele
+// semeou (`doc://{doc_id}`), mandado a um modelo de visão sem tools (o bloco `modelo`), que não
+// altera nada e se desfaz.
+//
+// ERA POR NOME E FORMA; PASSA A SER SÓ POR FORMA (AOS-566). O nome deixou de ser o que liga uma
+// tool de modelo — o que a liga é a CLASSE DE MEDIA que o bloco declara, e o efeito continua a ser
+// código do nó. Uma excepção por nome passaria a medir a coisa errada: nomear-se `ocr_read` não
+// prova forma nenhuma, e a mesma leitura com outro nome ficaria de fora do que o dono decidiu. Em
+// troca, a excepção APERTA nos eixos que o registo já exige explícitos e que o nome não media —
+// egress externo declarado, mutação nenhuma, reversível, e a sensibilidade do recurso declarada —,
+// pelo que cobre estritamente menos formas do que antes.
+//
+// Os literais estão aqui, e não as constantes do código, para que mudar a forma da tool não
+// alargue a excepção em silêncio.
+func excepcaoDaEmendaDasToolsDeModelo(s modelToolSpec) bool {
+	return s.Modelo != nil && strings.TrimSpace(s.Modelo.Alias) != "" &&
+		classeDeMediaDaExcepcao(s.Modelo.Classe) &&
 		s.Capability == "cap:fs.read" &&
-		s.ResourceValue == "doc://{doc_id}"
+		s.ResourceValue == "doc://{doc_id}" &&
+		s.Egress == "external" &&
+		s.Mutation == "none" &&
+		s.Reversibility == "reversible" &&
+		strings.TrimSpace(s.ResourceSensitivity) != ""
+}
+
+// classeDeMediaDaExcepcao: a classe de media declarada é do vocabulário FECHADO que o nó conhece.
+//
+// A VAZIA CONTA, e é a única folga do predicado: o manifesto de produção é ANTERIOR ao campo, e as
+// duas tools que o trazem resolvem a classe pela ponte de compatibilidade do carregador. A folga
+// não abre porta nenhuma, porque o carregador RECUSA o bloco `modelo` sem classe em qualquer outro
+// nome — o par (predicado, carregador) continua fechado, e
+// [TestAOS069_ExcepcaoDaOCRNaoCobreOutraTool] prova as duas metades.
+func classeDeMediaDaExcepcao(classe string) bool {
+	switch strings.ToLower(strings.TrimSpace(classe)) {
+	case "", "imagem", "video":
+		return true
+	}
+	return false
 }
 
 // violacoesDoADR034Seccao27 devolve, para um manifesto, as entradas que a regra do ADR-034 §2.7
-// proíbe em produção: `cap:http.post`, o `web_post`, ou egress diferente de `none` — salvo a
-// excepção da emenda de 2026-10-18.
+// proíbe em produção: `cap:http.post`, o `web_post`, ou egress diferente de `none` — salvo uma
+// tool de modelo na FORMA das emendas ([excepcaoDaEmendaDasToolsDeModelo]).
 func violacoesDoADR034Seccao27(specs []modelToolSpec) []string {
 	var v []string
 	for _, s := range specs {
 		if s.Capability == "cap:http.post" || s.Name == "web_post" {
 			v = append(v, fmt.Sprintf("o manifesto de producao voltou a oferecer %q (%s) — retirado por decisao do dono a 2026-09-26 (ADR-034 §2.7); reintroduzir é decisao explicita", s.Name, s.Capability))
 		}
-		if s.Egress != "none" && !excepcaoOCRDaEmenda(s) {
-			v = append(v, fmt.Sprintf("o manifesto de producao oferece %q com egress %q — so tools sem egress externo ate a fase 2 / opcao A do ADR-034 (§2.7); as unicas excepcoes sao a ocr_read e a video_read com modelo.alias, cap:fs.read e doc://{doc_id} (emendas de 2026-10-18 e 2026-10-19)", s.Name, s.Egress))
+		if s.Egress != "none" && !excepcaoDaEmendaDasToolsDeModelo(s) {
+			v = append(v, fmt.Sprintf("o manifesto de producao oferece %q com egress %q — so tools sem egress externo ate a fase 2 / opcao A do ADR-034 (§2.7); a unica excepcao e uma tool de modelo na forma das emendas de 2026-10-18 e 2026-10-19: bloco modelo com alias e classe de media conhecida, cap:fs.read, doc://{doc_id}, egress external, mutation none, reversibility reversible e resource_sensitivity declarada", s.Name, s.Egress))
 		}
 	}
 	return v
 }
 
-// MUTAÇÃO da excepção: um manifesto temporário com o de produção e MAIS uma tool de egress
-// externo avermelha; e uma `ocr_read` com outra forma (sem o bloco `modelo`, ou com outro
-// recurso) também — a excepção da emenda de 2026-10-18 não é por nome.
+// MUTAÇÃO da excepção, um eixo de cada vez: um manifesto temporário com o de produção e MAIS uma
+// tool de egress externo avermelha; e uma tool de modelo com outra FORMA — sem o bloco `modelo`,
+// com outra capability, outro recurso, uma classe de media que o nó não conhece, mutadora, não
+// reversível, ou sem a sensibilidade do recurso — também. Desde o AOS-566 a excepção não é por
+// nome, e as duas metades que a fecham provam-se aqui: o predicado recusa a forma errada, e o
+// carregador recusa uma tool nova que não declare a classe.
 func TestAOS069_ExcepcaoDaOCRNaoCobreOutraTool(t *testing.T) {
 	raw, err := os.ReadFile(toolsJSONProducao)
 	if err != nil {
@@ -174,32 +207,61 @@ func TestAOS069_ExcepcaoDaOCRNaoCobreOutraTool(t *testing.T) {
 			}
 		})
 	}
-	// Com outro recurso o carregador já recusa a ocr_read (validarLigacaoModelo); o predicado
-	// recusa-a por si, para a excepção não depender dessa validação.
-	outra := modelToolSpec{Name: "ocr_read", Capability: "cap:fs.read", ResourceValue: "doc://outra/{doc_id}", Egress: "external", Modelo: &modeloMapping{Alias: "ocr-visao"}}
-	if excepcaoOCRDaEmenda(outra) {
-		t.Error("a excepcao da emenda de 2026-10-18 cobriu uma ocr_read com outro recurso")
+	// A FORMA DECIDIDA, tal como o manifesto de produção a escreve (sem `classe`, que é posterior
+	// às duas emendas): coberta. A `video_read` com a forma dela, idem.
+	forma := modelToolSpec{
+		Name: "ocr_read", Capability: "cap:fs.read", ResourceValue: "doc://{doc_id}",
+		Reversibility: "reversible", Mutation: "none", ResourceSensitivity: "public",
+		Egress: "external", Modelo: &modeloMapping{Alias: "ocr-visao"},
 	}
-	if v := violacoesDoADR034Seccao27([]modelToolSpec{outra}); len(v) != 1 {
-		t.Errorf("uma ocr_read com outro recurso tinha de avermelhar; deu %q", v)
+	if !excepcaoDaEmendaDasToolsDeModelo(forma) {
+		t.Error("a emenda de 2026-10-18 nao cobriu a ocr_read com a forma decidida")
 	}
-	// A emenda de 2026-10-19 (AOS-536): a `video_read` com a forma está coberta; com outro recurso,
-	// sem o bloco `modelo` ou com outra capability, não. Outro nome com a mesma forma também não.
-	video := modelToolSpec{Name: "video_read", Capability: "cap:fs.read", ResourceValue: "doc://{doc_id}", Egress: "external", Modelo: &modeloMapping{Alias: "video-visao"}}
-	if !excepcaoOCRDaEmenda(video) {
+	video := forma
+	video.Name, video.Modelo = "video_read", &modeloMapping{Alias: "video-visao"}
+	if !excepcaoDaEmendaDasToolsDeModelo(video) {
 		t.Error("a emenda de 2026-10-19 nao cobriu a video_read com a forma decidida")
 	}
+	// AOS-566: a MESMA forma com outro nome e a classe declarada está coberta — é o que mudou, e
+	// está coberta pela forma, não pelo nome.
+	terceira := forma
+	terceira.Name, terceira.Modelo = "recibo_read", &modeloMapping{Alias: "ocr-visao", Classe: "imagem"}
+	if !excepcaoDaEmendaDasToolsDeModelo(terceira) {
+		t.Error("a excepcao tinha de cobrir uma tool de modelo nova com a forma decidida e a classe declarada")
+	}
+	// UM EIXO DE CADA VEZ: cada mutação sai da excepção E avermelha a regra do §2.7.
 	for nome, muda := range map[string]func(*modelToolSpec){
-		"outro recurso":    func(s *modelToolSpec) { s.ResourceValue = "doc://outra/{doc_id}" },
-		"sem modelo":       func(s *modelToolSpec) { s.Modelo = nil },
-		"outra capability": func(s *modelToolSpec) { s.Capability = "cap:http.get" },
-		"outro nome":       func(s *modelToolSpec) { s.Name = "audio_read" },
+		"sem o bloco modelo":  func(s *modelToolSpec) { s.Modelo = nil },
+		"sem alias":           func(s *modelToolSpec) { s.Modelo = &modeloMapping{Alias: " "} },
+		"outra capability":    func(s *modelToolSpec) { s.Capability = "cap:http.get" },
+		"outro recurso":       func(s *modelToolSpec) { s.ResourceValue = "doc://outra/{doc_id}" },
+		"classe desconhecida": func(s *modelToolSpec) { s.Modelo = &modeloMapping{Alias: "ocr-visao", Classe: "audio"} },
+		"mutadora":            func(s *modelToolSpec) { s.Mutation = "mutates" },
+		"irreversivel":        func(s *modelToolSpec) { s.Reversibility = "" },
+		"sem sensibilidade":   func(s *modelToolSpec) { s.ResourceSensitivity = "" },
+		"outro egress":        func(s *modelToolSpec) { s.Egress = "internal" },
 	} {
-		m := video
+		m := terceira
 		muda(&m)
-		if excepcaoOCRDaEmenda(m) {
-			t.Errorf("a excepcao cobriu uma video_read com %s", nome)
+		if excepcaoDaEmendaDasToolsDeModelo(m) {
+			t.Errorf("a excepcao cobriu uma tool de modelo %s", nome)
 		}
+		if v := violacoesDoADR034Seccao27([]modelToolSpec{m}); len(v) != 1 {
+			t.Errorf("uma tool de modelo %s tinha de avermelhar; deu %q", nome, v)
+		}
+	}
+	// A SEGUNDA METADE DO FECHO: o predicado aceita a `classe` vazia porque o manifesto de produção
+	// é anterior ao campo; quem impede que uma tool NOVA entre sem ela é o carregador, que só a
+	// dispensa nas duas tools da ponte de compatibilidade.
+	const semClasse = `[{"name":"recibo_read","capability":"cap:fs.read","resource_type":"file","resource_value":"doc://{doc_id}","resource_region":"eu",` +
+		`"reversibility":"reversible","mutation":"none","resource_sensitivity":"public","egress":"external","modelo":{"alias":"ocr-visao"%s}}]`
+	t.Setenv("AOS_MODEL_TOOLS", writeTools(t, fmt.Sprintf(semClasse, "")))
+	if _, err := readModelToolSpecs(); err == nil {
+		t.Error("uma tool de modelo nova sem `classe` tinha de ser recusada no arranque")
+	}
+	t.Setenv("AOS_MODEL_TOOLS", writeTools(t, fmt.Sprintf(semClasse, `,"classe":"imagem"`)))
+	if _, err := readModelToolSpecs(); err != nil {
+		t.Errorf("a mesma tool com a classe declarada tinha de carregar: %v", err)
 	}
 }
 

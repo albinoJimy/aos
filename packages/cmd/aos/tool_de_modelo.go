@@ -44,9 +44,14 @@ import (
 
 // ligacaoDeModelo é a parte comum de uma tool composta cujo efeito é uma chamada ao gateway do nó.
 type ligacaoDeModelo struct {
-	// tool é o nome da tool (`ocr_read`, `video_read`): a tool de origem do pedido, o prefixo do
-	// erro e o nome no evento de custo. rotulo é como os logs a nomeiam (com o ticket).
-	tool, rotulo         string
+	// tool é o nome da tool (`ocr_read`, `video_read`, ou o que o registo lhe der): a tool de
+	// origem do pedido, o prefixo do erro e o nome no evento de custo. rotulo é como os logs
+	// nomeiam a CLASSE (com o ticket que a trouxe).
+	tool, rotulo string
+	// classe é a classe de media declarada no bloco `modelo` ([classesDeMedia]): o que escolheu o
+	// efeito desta ligação, e por onde o nó volta a encontrar o schema do input e o erro de
+	// arranque da classe sem olhar ao nome.
+	classe               string
 	alias, region, board string
 	// perfilDigest é o digest do perfil do registo assinado de uso `tool` do alias.
 	perfilDigest string
@@ -60,12 +65,24 @@ type ligacaoDeModelo struct {
 	// govAudit é o audit de governação desse gateway: onde a chamada da tool fica selada (o selo
 	// por chamada da allowlist, com o principal, o run e o passo). Ligado com o gateway.
 	govAudit audit.Store
-	// prazo é o prazo da chamada ao gateway.
-	prazo time.Duration
+	// prazo e maxTokens são os limites EFECTIVOS da chamada (os do bloco `modelo`, ou os da
+	// classe): o prazo próprio do pedido ao gateway e o `max_tokens` dele, que entra também na
+	// reserva no tecto do run.
+	prazo     time.Duration
+	maxTokens int
 	// digestDaInstrucao é o digest da instrução fixa da tool.
 	digestDaInstrucao string
 	// contagem é a métrica da tool por resultado.
 	contagem map[string]*atomic.Int64
+	// vocabulario é o conjunto FECHADO de causas com que esta tool pode falhar (AOS-550): os
+	// resultados dela mais as causas do selo de handle, que podem fazer falhar qualquer tool do nó.
+	//
+	// VIVE NA LIGAÇÃO, E NÃO NUMA TABELA POR NOME (AOS-566). Enquanto as tools de modelo eram duas
+	// com nome fixo, [vocabularioDeErro] podia tê-las escritas; com o nome a vir do registo, uma
+	// tabela por nome deixaria toda a causa de uma tool nova sair como `causa_nao_declarada` — e o
+	// arranque recusaria registá-la. O conjunto é o MESMO que a classe já declara para a métrica:
+	// não é uma segunda lista.
+	vocabulario map[string]bool
 	// reservaMax é o máximo que uma chamada pode custar, composto no arranque: o que a `ocr_read`
 	// reserva em cada chamada, e o que a `video_read` reserva para o vídeo mais longo que aceita.
 	reservaMax budget.Amount
@@ -77,18 +94,27 @@ type ligacaoDeModelo struct {
 	logf          func(string, ...any)
 }
 
-// novaLigacaoDeModelo monta a parte comum, com a métrica a zero para cada resultado dado.
-func novaLigacaoDeModelo(tool, rotulo, alias, region, board, perfilDigest, pasta string, raiz *os.Root, prazo time.Duration, digestDaInstrucao string, resultados []string) ligacaoDeModelo {
+// novaLigacaoDeModelo monta a parte comum, com a métrica a zero para cada resultado dado e o
+// vocabulário de erro fechado da tool.
+func novaLigacaoDeModelo(lim limitesDaTool, rotulo, region, board, perfilDigest, pasta string, raiz *os.Root, digestDaInstrucao string, resultados []string) ligacaoDeModelo {
 	l := ligacaoDeModelo{
-		tool: tool, rotulo: rotulo,
-		alias: alias, region: region, board: board, perfilDigest: perfilDigest,
-		raiz: raizOS{raiz}, raizAberta: raiz, pasta: pasta, prazo: prazo,
+		tool: lim.nome, rotulo: rotulo, classe: lim.classe,
+		alias: lim.alias, region: region, board: board, perfilDigest: perfilDigest,
+		raiz: raizOS{raiz}, raizAberta: raiz, pasta: pasta,
+		prazo: lim.prazo, maxTokens: lim.maxTokens,
 		digestDaInstrucao: digestDaInstrucao,
 		contagem:          map[string]*atomic.Int64{},
+		vocabulario:       map[string]bool{},
 		logf:              func(string, ...any) {},
 	}
 	for _, r := range resultados {
 		l.contagem[r] = new(atomic.Int64)
+		l.vocabulario[r] = true
+	}
+	// O SELO DO RESULTADO pode fazer falhar QUALQUER tool do nó, e por isso as causas dele entram
+	// no vocabulário de todas (AOS-551) — mesmo nas classes cuja métrica as não conta.
+	for _, c := range causasDoSeloDeHandle() {
+		l.vocabulario[c] = true
 	}
 	return l
 }
@@ -115,13 +141,31 @@ func (l *ligacaoDeModelo) lido(resultado string) int64 {
 	return l.contagem[resultado].Load()
 }
 
+// vocabularioDaTool é o conjunto FECHADO de causas desta ligação. A ligação declara-o em
+// [novaLigacaoDeModelo], e é ele que manda: é por aí que uma tool de modelo com um nome do REGISTO
+// tem vocabulário sem estar escrita numa tabela por nome (AOS-566).
+//
+// UMA LIGAÇÃO MONTADA À MÃO — sem passar pelo construtor — não declara nenhum, e cai no que a
+// tabela por nome sabe das tools do nó. NÃO é uma segunda fonte de verdade para a mesma tool: o
+// conjunto declarado ganha sempre que exista, e o recuo é estritamente mais ESTREITO para tudo o
+// resto, porque um nome que a tabela não conhece fica com o conjunto vazio e toda a causa dele sai
+// como [causaNaoDeclarada]. Nenhuma ligação composta pelo nó passa por aqui.
+func (l *ligacaoDeModelo) vocabularioDaTool() map[string]bool {
+	if len(l.vocabulario) > 0 {
+		return l.vocabulario
+	}
+	return vocabularioDeErro()[l.tool]
+}
+
 // falhar conta a causa e devolve o erro da tool, com o custo medido (zero antes do provider).
 func (l *ligacaoDeModelo) falhar(causa string, custo int64) ([]byte, int64, error) {
 	l.contar(causa)
 	// AOS-550: a causa é conferida contra o vocabulário FECHADO da tool. A mensagem já era
 	// construída de duas partes conhecidas; o que se acrescenta é recusar uma causa que não esteja
-	// declarada — a mensagem de erro vai no CORPO do segmento `tool_result` (erro_de_tool.go).
-	if !vocabularioDeErro()[l.tool][causa] {
+	// declarada — a mensagem de erro vai no CORPO do segmento `tool_result` (erro_de_tool.go). O
+	// conjunto é o da PRÓPRIA ligação (AOS-566: o nome da tool vem do registo, e uma tabela por
+	// nome não o conheceria).
+	if !l.vocabularioDaTool()[causa] {
 		return nil, custo, &falhaDeTool{tool: l.tool, causa: causaNaoDeclarada}
 	}
 	return nil, custo, &falhaDeTool{tool: l.tool, causa: causa}

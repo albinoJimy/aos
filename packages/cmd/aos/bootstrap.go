@@ -1111,11 +1111,15 @@ type Node struct {
 	// (AOS-509), para o `/metrics`. nil sem gateway de modelo composto. Ver model_rejected.go.
 	respostasRecusadas *contadoresDeRejeicao
 
-	// ocr é a tool `ocr_read` composta (AOS-530), para o `/metrics` (`aos_ocr_read_total`). nil
-	// sem a tool no registo — e a família não é publicada. Ver ocr_tool.go.
+	// deModelo são TODAS as tools de modelo compostas (AOS-566), pela ordem do registo: é esta
+	// lista que o `Node.Close` fecha. Vazia sem nenhuma. Ver classe_de_media.go.
+	deModelo []toolDeModelo
+	// ocr é a ligação da classe IMAGEM (a `ocr_read` composta, AOS-530), para o `/metrics`
+	// (`aos_ocr_read_total`). nil sem nenhuma no registo — e a família não é publicada. Ver
+	// ocr_tool.go.
 	ocr *ligacaoOCR
-	// video é a tool `video_read` composta (AOS-536), para o `/metrics` (`aos_video_read_total`).
-	// nil sem a tool no registo — e a família não é publicada. Ver video_tool.go.
+	// video é a ligação da classe VÍDEO (a `video_read` composta, AOS-536), para o `/metrics`
+	// (`aos_video_read_total`). nil sem nenhuma no registo. Ver video_tool.go.
 	video *ligacaoVideo
 
 	// estadoDoProvider conta os turnos ao vivo cuja resposta trouxe estado opaco do provider, pelo
@@ -2527,42 +2531,49 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	if cfg.TaintEscala && nodeSink != nil {
 		nodeSink.taintPede = referencemonitor.NewEscalatingTaintGate(privileged).RequiresTrustedAuthorization
 	}
-	// A TOOL `ocr_read` (AOS-530, ADR-042): composta na fronteira de ambiente com o gateway do nó
-	// e encontrada no cliente de modelo, como os perfis assinados. Declarada no registo de tools
-	// e sem ligação (sem AOS_MODEL_ENDPOINT, ou com um cliente de modelo injectado) ⇒ o nó não
-	// arranca: o efeito dela é uma chamada a ESSE gateway e não há outro caminho.
-	ocrLigada := ocrDoCliente(cfg.Model)
-	// Uma falha de arranque daqui para baixo fecha a pasta da tool (o os.Root aberto); com o nó
-	// devolvido, quem a fecha é o Node.Close. A flag vale para as duas tools de modelo (AOS-536).
+	// AS TOOLS DE MODELO (AOS-530 e AOS-536, ADR-042): compostas na fronteira de ambiente com o
+	// gateway do nó e encontradas no cliente de modelo, como os perfis assinados. Declaradas no
+	// registo de tools e sem ligação (sem AOS_MODEL_ENDPOINT, ou com um cliente de modelo
+	// injectado) ⇒ o nó não arranca: o efeito delas é uma chamada a ESSE gateway e não há outro
+	// caminho. AOS-566: são quantas o registo declarar, e o nó não as nomeia.
+	toolsDeModelo := toolsDeModeloDoCliente(cfg.Model)
+	ocrLigada, videoLigada := ocrDoCliente(cfg.Model), videoDoCliente(cfg.Model)
+	// Uma falha de arranque daqui para baixo fecha a pasta de cada tool (o os.Root aberto); com o
+	// nó devolvido, quem as fecha é o Node.Close.
 	ocrEntregue := false
 	defer func() {
 		if !ocrEntregue {
-			ocrLigada.fechar()
+			for _, t := range toolsDeModelo {
+				t.comum().fechar()
+			}
 		}
 	}()
-	// AOS-536 (parte 2): a tool `video_read`, pelo mesmo caminho.
-	videoLigada := videoDoCliente(cfg.Model)
-	defer func() {
-		if !ocrEntregue {
-			videoLigada.fechar()
-		}
-	}()
-	ocrDeclarada, videoDeclarada, err := toolsDeModeloNoRegisto()
+	declaradas, err := specsDeModeloNoRegisto()
 	if err != nil {
 		return nil, err
 	}
-	if ocrDeclarada && ocrLigada == nil {
-		return nil, ErrOCRSemGateway
+	// A CONFERÊNCIA É POR ENTRADA E PELA CLASSE DELA: o erro de arranque que o operador lê é o da
+	// classe que ficou sem gateway, e não o da primeira tool que o nó trazia por nome. O nome serve
+	// aqui para EMPARELHAR a declaração com a composição (é único no registo), não para decidir.
+	compostas := make(map[string]bool, len(toolsDeModelo))
+	for _, t := range toolsDeModelo {
+		compostas[t.comum().tool] = true
 	}
-	if videoDeclarada && videoLigada == nil {
-		return nil, ErrVideoSemGateway
+	for _, s := range declaradas {
+		if compostas[strings.TrimSpace(s.Name)] {
+			continue
+		}
+		lim, _, lerr := limitesDoBlocoModelo(s)
+		if lerr != nil {
+			return nil, lerr
+		}
+		return nil, semGatewayDaClasse(lim.classe)
 	}
-	var ocrRewriter, videoRewriter, mediaRewriter func(referencemonitor.Call) (referencemonitor.Call, error)
-	if ocrLigada != nil {
-		ocrRewriter = newOCREffectRewriter()
-	}
-	if videoLigada != nil {
-		videoRewriter = newEfeitoDeModeloRewriter(videoToolName, videoInputSchema)
+	var mediaRewriter func(referencemonitor.Call) (referencemonitor.Call, error)
+	// Uma reescrita do efeito por tool composta — cada uma só toca na sua, pelo que se encadeiam.
+	reescritasDeModelo := make([]func(referencemonitor.Call) (referencemonitor.Call, error), 0, len(toolsDeModelo))
+	for _, t := range toolsDeModelo {
+		reescritasDeModelo = append(reescritasDeModelo, reescritaDaToolDeModelo(t))
 	}
 	// AOS-563: a `media_view` passa a receber o RUN da tool call pela MESMA reescrita genérica das
 	// outras tools de modelo — é dele que a resolução do `doc_id` no espaço de handles parte. O que
@@ -2691,7 +2702,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	}
 
 	sec, err := integration.NewSecuredRuntime(integration.SecuredConfig{
-		EffectRewriter: reescritaDoEfeito(sandboxBindings, ocrRewriter, videoRewriter, mediaRewriter, armazem != nil, planoHandles), // AOS-005: args→ExecRequest; AOS-530/536: args→entrada da ocr_read/video_read; AOS-563: args→entrada da media_view; AOS-548: args→entrada da artifact_write; AOS-550: handle→bytes antes da mediação; nil ⇒ sem reescrita
+		EffectRewriter: reescritaDoEfeito(sandboxBindings, juntarReescritasDeModelo(reescritasDeModelo...), nil, mediaRewriter, armazem != nil, planoHandles), // AOS-005: args→ExecRequest; AOS-530/536/566: args→entrada de cada tool de modelo composta; AOS-563: args→entrada da media_view; AOS-548: args→entrada da artifact_write; AOS-550: handle→bytes antes da mediação; nil ⇒ sem reescrita
 		// AOS-551: a cadeia acima inclui SEMPRE a [reescritaDaAutoridade], logo o nó declara-o. É
 		// o que permite a um run correr num layout por handle; nos outros layouts não muda nada.
 		PerArgumentAuthority: true,
@@ -2755,11 +2766,13 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	if err := registerSandboxLaunchers(sec, es, sandboxBindings, semArtefactos(semMediaView(sandboxSemExecutor, cfg.MediaNoTurno != nil), armazem != nil), cfg.ProductionMode, log); err != nil {
 		return nil, err
 	}
-	// (7-ter) A TOOL `ocr_read` (AOS-530, ADR-042 §2.1) — uma CostingToolFunc no RM do nó, cujo
-	// efeito é UMA chamada ao gateway do nó. Só com ela composta; sem ela, nada. O custo (§2.6,
-	// peça 3b) liga-se aqui, onde já há o orçamento por-run e o Event Store: a reserva no tecto do
-	// run antes de cada chamada e o evento durável do custo depois.
-	ocrLigada.ligarCusto(runBudget, registoDeCustoDeTool(es, producerDoCustoDeTool()), log)
+	// (7-ter) AS TOOLS DE MODELO (AOS-530, ADR-042 §2.1) — cada uma uma CostingToolFunc no RM do
+	// nó, cujo efeito é UMA chamada ao gateway do nó. Só as compostas; sem nenhuma, nada. O custo
+	// (§2.6, peça 3b) liga-se aqui, onde já há o orçamento por-run e o Event Store: a reserva no
+	// tecto do run antes de cada chamada e o evento durável do custo depois.
+	for _, t := range toolsDeModelo {
+		t.comum().ligarCusto(runBudget, registoDeCustoDeTool(es, producerDoCustoDeTool()), log)
+	}
 	// AOS-563: o plano de handles, de onde a tool resolve o `doc_id` ANTES da pasta semeada. Liga-se
 	// aqui pela razão pela qual o `armazem.handles` se liga mais abaixo: o plano só existe depois de
 	// o Event Store e o espaço estarem compostos. nil ⇒ a tool lê só da pasta, como antes.
@@ -2780,16 +2793,23 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// exactamente o comportamento de antes do AOS-563. Um run retomado com entradas JÁ SELADAS
 	// continua a correr (o selo não as re-sela, AOS-561), e nenhuma tool as lê — como antes deste
 	// ticket. O preço está escrito aqui em vez de ser descoberto.
-	if ocrLigada != nil && cfg.EntradaDeMedia {
-		ocrLigada.handles = planoHandles
+	//
+	// SÓ AS TOOLS DA CLASSE IMAGEM resolvem no espaço de handles: o plano vive na [ligacaoOCR] e
+	// não na parte comum (ver o campo), porque o tecto de um vídeo não é o de uma imagem.
+	if cfg.EntradaDeMedia {
+		for _, t := range toolsDeModelo {
+			if o, ok := t.(*ligacaoOCR); ok {
+				o.handles = planoHandles
+			}
+		}
 	}
-	if err := registarOCR(sec, ocrLigada, log); err != nil {
-		return nil, err
-	}
-	// (7-quater) A TOOL `video_read` (AOS-536 parte 2), no mesmo molde.
-	videoLigada.ligarCusto(runBudget, registoDeCustoDeTool(es, producerDoCustoDeTool()), log)
-	if err := registarVideo(sec, videoLigada, log); err != nil {
-		return nil, err
+	// (7-quater) O REGISTO NO RM, uma por entrada composta e pela ordem do registo de tools
+	// (AOS-566): a `ocr_read` e a `video_read` do manifesto de produção entram por aqui como
+	// qualquer outra.
+	for _, t := range toolsDeModelo {
+		if err := registarToolDeModelo(sec, t, log); err != nil {
+			return nil, err
+		}
 	}
 	// (7-quinquies) A TOOL `media_view` (AOS-546): uma leitura local, sem custo de modelo.
 	//
@@ -2808,11 +2828,8 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		}
 		toolsDoNo = append(toolsDoNo, mediaViewToolName)
 	}
-	if ocrLigada != nil {
-		toolsDoNo = append(toolsDoNo, ocrToolName)
-	}
-	if videoLigada != nil {
-		toolsDoNo = append(toolsDoNo, videoToolName)
+	for _, t := range toolsDeModelo {
+		toolsDoNo = append(toolsDoNo, t.comum().tool)
 	}
 	// (7-sexies) A TOOL `artifact_write` (AOS-548): grava no armazém do run, cifrado pelo MESMO
 	// cifrador por titular das capturas, e sela a proveniência no stream do run.
@@ -2829,7 +2846,9 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	}
 	// (7-septies) O VOCABULÁRIO DE ERRO DAS TOOLS DO NÓ (AOS-550), conferido no arranque: uma tool
 	// que o nó registe e não declare o seu conjunto fechado de causas NÃO ARRANCA.
-	if err := conferirVocabularioDeErro(toolsDoNo); err != nil {
+	// As tools de modelo trazem o seu vocabulário consigo: o nome delas é do registo, e uma tabela
+	// por nome não as conheceria (AOS-566).
+	if err := conferirVocabularioDeErro(toolsDoNo, toolsDeModelo...); err != nil {
 		return nil, err
 	}
 	// A CONFERÊNCIA CORRE SEMPRE; a LINHA só sai com o espaço de handles ligado. O nó sem handles
@@ -3662,8 +3681,9 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		canary:                  canaryDoModelo,                // AOS-520: o candidato e o livro do canary (nil ⇒ sem pasta de perfis)
 		formaDaResposta:         formaDoCliente(cfg.Model),     // AOS-507: turnos pela forma da resposta, para o /metrics (nil ⇒ desligada)
 		respostasRecusadas:      rejeicoesDoCliente(cfg.Model), // AOS-509: respostas recusadas por causa, para o /metrics
-		ocr:                     ocrLigada,                     // AOS-530: a tool ocr_read, para o /metrics (nil ⇒ sem a tool)
-		video:                   videoLigada,                   // AOS-536: a tool video_read, para o /metrics (nil ⇒ sem a tool)
+		deModelo:                toolsDeModelo,                 // AOS-566: todas as tools de modelo compostas, para o Close
+		ocr:                     ocrLigada,                     // AOS-530: a ligacao da classe imagem, para o /metrics (nil ⇒ sem nenhuma)
+		video:                   videoLigada,                   // AOS-536: a ligacao da classe video, para o /metrics (nil ⇒ sem nenhuma)
 		estadoDoProvider:        estadoDoCliente(cfg.Model),    // AOS-514: estado opaco do provider por resultado, para o /metrics (nil ⇒ desligada)
 		completionVerdict:       completionVerdict,             // AOS-493: modo do veredicto de conclusão dos runs novos
 		pedirAntesDeLer:         pedirAntesDeLer,               // ADR-034 §4: runs novos com plan_input no layout 1.6.0
@@ -3729,9 +3749,11 @@ func (n *Node) Close() error {
 	if err := n.posseWAL.Largar(); err != nil && firstErr == nil {
 		firstErr = err
 	}
-	// AOS-530: a pasta semeada da `ocr_read`, aberta com os.Root no arranque. Nil-safe sem a tool.
-	n.ocr.fechar()
-	n.video.fechar()      // AOS-536: a pasta da `video_read`, idem.
+	// AOS-530/536/566: a pasta semeada de cada tool de modelo composta, aberta com os.Root no
+	// arranque. Lista vazia sem nenhuma.
+	for _, t := range n.deModelo {
+		t.comum().fechar()
+	}
 	n.media.fechar()      // AOS-546: a pasta da `media_view`, idem.
 	n.artefactos.fechar() // AOS-548: a pasta do armazém de artefactos, idem.
 	n.handles.fechar()    // AOS-550: a pasta do espaço de handles, idem.

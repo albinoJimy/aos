@@ -363,15 +363,14 @@ func newGatewayModelClientComPerfis(verifier authn.Verifier, baseURL, model, api
 		opts = append(opts, modelgateway.WithRouteProfileSet(conjunto))
 	}
 	opts = append(opts, extra...)
-	// AOS-530 (ADR-042 §2.1): a tool `ocr_read`, quando composta, chama ESTE gateway — o mesmo
+	// AOS-530 (ADR-042 §2.1): uma tool de modelo, quando composta, chama ESTE gateway — o mesmo
 	// objecto que serve os turnos, não um segundo —, e é no audit de governação dele que a chamada
-	// fica selada.
-	if assinados != nil && assinados.ocr != nil {
-		assinados.ocr.gw, assinados.ocr.govAudit = gw, govAudit
-	}
-	// AOS-536 (parte 2): o mesmo para a tool `video_read`.
-	if assinados != nil && assinados.video != nil {
-		assinados.video.gw, assinados.video.govAudit = gw, govAudit
+	// fica selada. AOS-566: são as que o registo declarou, não duas com nome fixo.
+	if assinados != nil {
+		for _, t := range assinados.deModelo {
+			c := t.comum()
+			c.gw, c.govAudit = gw, govAudit
+		}
 	}
 	titular := modelgateway.NewModelClient(gw, model, opts...)
 	// AOS-520 (ADR-041 §2.5): UM GATEWAY, UM ADAPTADOR POR ALIAS. Com um perfil assinado para um

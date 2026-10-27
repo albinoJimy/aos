@@ -2062,26 +2062,45 @@ auto-assinado com uma chave ed25519 **efémera gerada no arranque** (`modelcatal
 
 ### Critérios de Aceitação
 
-- [ ] Existe **uma** implementação do efeito «chamar um modelo» em `packages/cmd/aos`, no molde do
+- [x] Existe **uma** implementação do efeito «chamar um modelo» em `packages/cmd/aos`, no molde do
       ADR-042 (`CostingToolFunc`, registo de uso `tool`, comparação do modelo servido, custo no
       run, selo), e **várias configurações** no registo de tools.
-- [ ] `ocr_read` e `video_read` passam a ser duas configurações dessa implementação, com
+- [x] `ocr_read` e `video_read` passam a ser duas configurações dessa implementação, com
       **comportamento idêntico**. A prova é dura e não se negoceia: **as 88 funções de teste que
       hoje as cobrem passam sem alteração de asserção** (`aos530_*`, `aos536_*`, `modeltools*`,
       `aos563_*`). Uma asserção que tenha de mudar é um comportamento que mudou, e abre discussão
       em vez de se editar.
-- [ ] As validações específicas de classe de media ficam em Go, num *handler* por classe
+- [x] As validações específicas de classe de media ficam em Go, num *handler* por classe
       (`imagem`: primeiros bytes PNG/JPEG, tecto; `video`: caixas MP4, `mvhd`, duração, reserva
       função da duração). A configuração declara **qual** a classe, nunca **como** se valida.
-- [ ] **O registo de rota assinado ganha o digest da instrução**, e o nó **recusa arrancar** se a
+- [ ] **MOVIDO PARA O AOS-573 — e a razão é uma medição, não uma desistência.** Pinar uma
+      instrução configurável exige **acto do dono**: o registo de rota assinado não tem membro de
+      instrução, e o relatório de qualificação do **vídeo** carrega o digest da instrução mas o do
+      **OCR não** (`banco-ensaio/video.go:111-134` contra `ocr_visao.go`) — pelo que as duas saídas
+      (membro novo no registo; relatório novo para o OCR) obrigam a re-assinar, e a segunda
+      possivelmente a re-qualificar com custo. Ficar neste ticket parava-o inteiro à espera de uma
+      assinatura. **A instrução ficou em Go, por classe**, onde continua presa pelo teste de
+      compilação contra o banco. O critério original fica aqui, por cumprir:
+      ~~**O registo de rota assinado ganha o digest da instrução**, e o nó **recusa arrancar** se a
       instrução configurada não bater com o digest do registo. Sem este critério o ticket é uma
       regressão de segurança, e não se funde sem ele.
-- [ ] **As duas fórmulas de digest da instrução mantêm-se, por classe.** A da `ocr_read` é sha256
+- [x] **As duas fórmulas de digest da instrução mantêm-se, por classe.** *Nota de 2026-10-27:*
+      cumprido por não se ter mexido nelas — a instrução não saiu do código. O critério volta a
+      morder no AOS-573, que é quem a move.
+- [ ] *(texto original do critério acima, para o AOS-573)* A da `ocr_read` é sha256
       sobre JSON canónico `{pedido, sistema}` (`ocr_tool.go:122-129`); a da `video_read` é sha256
       de `sistema + "\n" + pedido` (`video_tool.go:112-115`). Unificá-las invalidaria os dois
       relatórios qualificados que os registos assinados citam e obrigaria a re-qualificar com
       custo real. A divergência fica **declarada no código, onde é lida**, com esta razão.
-- [ ] **O guard-test AOS-069 passa de nomes literais a forma declarada e limitada.** Hoje
+- [x] **O guard-test AOS-069 passa de nomes literais a forma declarada e limitada.** *Nota de
+      2026-10-27:* `excepcaoDaEmendaDasToolsDeModelo` excepciona por forma e **aperta** — além do
+      alias, da `cap:fs.read` e do `doc://{doc_id}` que já exigia, passa a exigir classe de media do
+      vocabulário fechado, `egress: external`, `mutation: none`, `reversibility: reversible` e
+      sensibilidade do recurso declarada. A classe **vazia** é aceite pelo predicado (o manifesto de
+      produção é anterior ao campo e não muda neste ticket) e quem fecha essa folga é o
+      **carregador**, que recusa o bloco `modelo` sem classe em qualquer nome fora da ponte de
+      compatibilidade — verificado por leitura, e o teste prova as duas metades. O teste de mutação
+      cobre agora onze eixos, um por cláusula. *Original:* Hoje
       excepciona `name == "ocr_read" || name == "video_read"` com `capability == "cap:fs.read"` e
       `resource_value == "doc://{doc_id}"` (`aos069_…_test.go:90-95`). A forma nova continua a
       recusar por omissão qualquer tool com `egress != "none"`, e a excepção é por **propriedades
@@ -2090,15 +2109,38 @@ auto-assinado com uma chave ed25519 **efémera gerada no arranque** (`modelcatal
       de mutação que existe (`TestAOS069_ExcepcaoDaOCRNaoCobreOutraTool`) é alargado: uma tool com
       `egress: external` **sem** bloco `modelo` continua a avermelhar, e uma com `cap:http.post`
       também.
-- [ ] A tool declara um **argumento de conteúdo que não é o slot do recurso** — é o que o ADR-044
+- [ ] **POR FAZER, e fica para o AOS-568.** Este critério só compra alguma coisa quando houver
+      quem passe um handle, e quem o passa é a geração. Tentá-lo aqui mudaria o
+      `resource_value == "doc://{doc_id}"` que a excepção do guard-test ainda exige, sem ter
+      consumidor. *Original:* A tool declara um **argumento de conteúdo que não é o slot do recurso** — é o que o ADR-044
       §7.4 exige para que a isenção `external_read`+`handle_argument` tenha exercício
       (`ADR-044:452-463`). Com o layout por handle **desligado** o comportamento é o de hoje.
-- [ ] Guard-test do ADR-043 §8: «a `model_invoke` não aceita URLs nem texto livre como entrada de
-      media» (`ADR-043:303`).
-- [ ] O banner de arranque declara as configurações compostas e a origem de cada uma, derivado do
-      que foi composto.
-- [ ] **A emenda ao ADR-042** fica escrita neste ticket, como o ADR-043 §6 manda: de «tool com nome
+- [ ] **POR FAZER.** Hoje é verdade por construção — o único argumento é o `doc_id` e o
+      `resource_value` é o slot dele —, mas **não há guard-test que o afirme**, e «verdadeiro por
+      construção» é exactamente o que deixa de ser verdade quando a construção muda. Entra com o
+      AOS-568, ao lado do critério acima. *Original:* Guard-test do ADR-043 §8: «a `model_invoke`
+      não aceita URLs nem texto livre como entrada de media» (`ADR-043:303`).
+- [x] O banner de arranque declara as configurações compostas e a origem de cada uma, derivado do
+      que foi composto. *Nota de 2026-10-27:* `linhaDoArranque` passa a imprimir o nome da tool e o
+      `max_tokens` efectivo por ligação composta; com os valores por omissão o texto é
+      byte-idêntico ao de hoje.
+- [x] **A emenda ao ADR-042** fica escrita neste ticket, como o ADR-043 §6 manda: de «tool com nome
       fixo» a «tool genérica configurável», respondendo à objecção original do §2.1.
+
+### O que fica declarado como resíduo
+
+- **O `/metrics` publica uma família por CLASSE, não por tool composta (AOS-572).** Com o uso a
+  passar a configuração o nó compõe N ligações, mas o `api.go` tem dois blocos escritos à mão que
+  lêem a **primeira** de cada classe: os contadores de uma segunda tool da mesma classe existem e
+  ficam **invisíveis**. Declarado em vez de descoberto depois. Não foi fechado aqui porque não é a
+  linha de código que custa — derivar um nome de família Prometheus do nome da tool, que vem de
+  configuração do operador, é decisão de forma com três saídas e nenhuma óbvia.
+- **O `max_tokens` declarado pode divergir daquele com que a instrução foi medida** (AOS-529,
+  AOS-537). Nada hoje o impede nem o avisa. É o preço de tornar o limite configurável, e a ligação
+  entre limite declarado e relatório assinado pertence ao AOS-573.
+- **A prova local é 85 de 88.** Uma das 88 salta por não haver cluster NATS no posto
+  (`TestAOS530_No_SobreJetStream`) e duas são `//go:build unix` — as três são trabalho do CI, e não
+  se dão por verdes a partir de um posto Windows.
 
 ### Fora de âmbito
 
@@ -2260,6 +2302,7 @@ servido com `read:trajectory` em vez de `read:artifact`; e `neutralizarDelimitad
 | Dependências | Nenhuma. **Tem de aterrar antes de o AOS-568 ir a produção** |
 | Responsável sugerido | Responsável de Segurança |
 | Documentos de referência | `docs/reports/desenho-r3-geracao-2026-10-27.md` (§4(e)); `specs/EPIC-07_Seguranca_Isolamento.md` §Controlo de versões 1.21 (os resíduos declarados do AOS-550); `packages/cmd/aos/handle_store.go` |
+| 1.25 | 2026-10-27 | +AOS-573 (a instrucao de uma tool de modelo passa a configuracao, presa por um digest que o dono assina): a metade do AOS-566 que, medida, exige acto do dono. O registo de rota assinado NAO tem membro de instrucao, o «registo assinado de tools» do no e auto-assinado com chave efemera, e — o que nao estava escrito em lado nenhum — o no LE o relatorio citado e confere-lhe o veredicto, mas so o relatorio do VIDEO carrega o digest da instrucao; o do OCR nao. Pinar uma instrucao configuravel exige ou membro novo no registo ou relatorio novo para o OCR, e as duas obrigam a re-assinar | Equipa AOS |
 
 ### Contexto
 
@@ -2297,5 +2340,70 @@ torna-o mais urgente, não menos, e a prioridade sobe.
 - Os outros resíduos declarados do AOS-550 (as duas conferências que saem da mesma fonte durável; a
   resolução que não deixa facto selado por leitura; o `CallRewriter` sem ctx; o ordinal sem fence
   entre processos).
+
+---
+
+## AOS-573 — A instrução de uma tool de modelo passa a configuração, presa por um digest que o dono assina
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-07 — Segurança e Isolamento |
+| Fase | Harness por capacidades (ADR-043), fase R3 — a metade do AOS-566 que exige acto do dono |
+| Tipo | feat |
+| Prioridade | P2 |
+| Estimativa | M |
+| Dependências | AOS-566. **E um acto do dono: re-assinar os registos de rota** (§Contexto) |
+| Responsável sugerido | Responsável de Segurança |
+| Documentos de referência | `docs/reports/desenho-r3-geracao-2026-10-27.md` (§3.7, ponto 1); `packages/cmd/aos/aos530_ocr_instrucao_test.go`; `packages/platform/model-gateway/policy/routeentry/entry.go`; `packages/platform/model-gateway/policy/routeentry/verdict.go` (`CheckReport`); `packages/qa/banco-ensaio/video.go:111-134` |
+
+### Contexto
+
+O AOS-566 entregou o USO de uma tool de modelo como configuração — alias, classe de media,
+`max_tokens`, prazo — e deixou **a instrução em Go, por classe**. Não foi esquecimento: foi a única
+peça do desenho da R3 que, medida, exige um acto do dono, e pô-la no mesmo ticket teria parado o
+ticket inteiro à espera de uma assinatura.
+
+**O que foi medido a 2026-10-27, e não estava escrito em lado nenhum:**
+
+1. A instrução está hoje presa por **um único trinco de compilação** —
+   `TestAOS530_OCR_AInstrucaoEADoBanco` parseia o código-fonte do banco de ensaio e compara digests
+   (`aos530_ocr_instrucao_test.go:52-60`). Move-la para o `tools.json` destrói esse trinco.
+2. O registo de rota assinado **não tem membro de instrução** (`routeentry/entry.go:64-93`, lista de
+   membros lida na íntegra).
+3. O «registo assinado de tools» do nó é **auto-assinado com uma chave ed25519 efémera gerada no
+   arranque** (`modelcatalog.go:127-134`): dá integridade dentro do processo, **não** proveniência
+   do dono.
+4. O nó **lê** o relatório de qualificação que o registo cita e confere-lhe o veredicto
+   (`routeentry/verdict.go:353`, `CheckReport`) — portanto a cadeia para um trinco **já existe**.
+5. Mas só **metade** da matéria-prima existe: o relatório do **vídeo** carrega o digest da instrução
+   (`banco-ensaio/video.go:111-134`, escrito em `video_cli.go:256`); o do **OCR não**.
+
+Daí a conclusão que dá origem a este ticket: pinar uma instrução configurável exige **ou** um membro
+novo no registo de rota assinado, **ou** um relatório novo para o OCR que o carregue. **As duas
+obrigam o dono a re-assinar**, e a segunda possivelmente a re-qualificar, com custo.
+
+### Critérios de Aceitação
+
+- [ ] Uma decisão escrita entre as duas saídas (membro no registo vs. digest no relatório do OCR),
+      com o custo de cada uma para o dono.
+- [ ] A instrução de uma tool de modelo passa a vir da configuração.
+- [ ] **O nó recusa arrancar** se a instrução configurada não bater com o digest que a fonte de
+      verdade escolhida declara. Sem este critério o ticket é uma regressão de segurança e não se
+      funde.
+- [ ] O membro novo (se for essa a saída) é **opcional**, para que um registo escrito antes dele
+      continue a validar — e uma configuração que traga instrução **exige-o**, para que a ausência
+      não seja uma porta.
+- [ ] **As duas fórmulas de digest mantêm-se, por classe.** A da `ocr_read` é sha256 sobre JSON
+      canónico `{pedido, sistema}` (`ocr_tool.go:122-129`); a da `video_read` é sha256 de
+      `sistema + "\n" + pedido` (`video_tool.go:112-115`). Unificá-las invalidaria os dois
+      relatórios qualificados que os registos citam e obrigaria a re-qualificar com custo real. A
+      divergência fica declarada no código, onde é lida.
+- [ ] O dono re-assina, e a prova corre em produção.
+
+### Fora de âmbito
+
+- Unificar as fórmulas de digest (ver CA acima).
+- Pôr os tectos e o `max_tokens` debaixo de assinatura: passaram a configuração no AOS-566 **sem**
+  trinco assinado, e isso é a consequência (a) da §4 do desenho da R3, que o dono aceita ou recusa.
 
 ---

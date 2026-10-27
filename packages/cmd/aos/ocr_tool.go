@@ -7,14 +7,15 @@ package main
 // dele tem um sítio aqui:
 //
 //   - O REGISTO (§2.1). A tool entra pelo registo de tools do operador (`AOS_MODEL_TOOLS`) com um
-//     bloco de ligação próprio, `"modelo": {"alias": "..."}`, trusted e exclusivo do bloco
-//     `sandbox`. O modelo que pede a tool escolhe só o nome dela e o `doc_id`; o alias, a
-//     instrução e os limites vêm do registo e deste ficheiro, nunca dos args. Só a tool
-//     `ocr_read` e a `video_read` (AOS-536, video_tool.go) podem ter o bloco: o efeito (ler uma
-//     imagem e transcrevê-la) é código, não config.
+//     bloco de ligação próprio, `"modelo": {"alias": "...", "classe": "imagem"}`, trusted e
+//     exclusivo do bloco `sandbox`. O modelo que pede a tool escolhe só o nome dela e o `doc_id`;
+//     o alias e os limites vêm do registo, a instrução deste ficheiro, nunca dos args. Desde o
+//     AOS-566 o bloco não é de duas tools com nome fixo: qualquer entrada o pode ter, declarando a
+//     CLASSE DE MEDIA que escolhe o efeito (classe_de_media.go) — o efeito (ler uma imagem e
+//     transcrevê-la) continua a ser código, e só o USO dele é configuração.
 //   - A MEDIAÇÃO (§2.1). A tool é uma [referencemonitor.CostingToolFunc] registada no RM do nó
-//     com `RegisterCosting`, pela raiz de composição ([registarOCR], chamado pelo Bootstrap). O RM
-//     decide como para qualquer tool — identidade, `cap:fs.read`, recurso `doc://{doc_id}`,
+//     com `RegisterCosting`, pela raiz de composição ([registarToolDeModelo], chamado pelo
+//     Bootstrap). O RM decide como para qualquer tool — identidade, `cap:fs.read`, recurso `doc://{doc_id}`,
 //     taint, risco, aprovação — e só depois do permit o despacho chama [ligacaoOCR.executar]. A
 //     leitura da imagem e a chamada ao modelo são o efeito DESSA call; nenhuma é uma segunda.
 //   - O GATEWAY (§2.1). O efeito é UMA chamada `Gateway.Chat` ao gateway que o nó já compõe para
@@ -215,15 +216,41 @@ var (
 	ErrOCRSemGateway = errors.New("aos: a tool ocr_read esta no registo de tools e o no nao compos o Model Gateway a partir do ambiente (AOS_MODEL_ENDPOINT) — o efeito da tool e uma chamada a esse gateway, e nao ha outro caminho (ADR-042 2.1)")
 )
 
-// modeloMapping é o bloco `modelo` de uma entrada do registo de tools: o alias que a tool chama.
+// modeloMapping é o bloco `modelo` de uma entrada do registo de tools: o que o OPERADOR escolhe
+// numa tool cujo efeito é uma chamada ao Model Gateway do nó.
+//
+// O ALIAS é o modelo que a tool chama. A CLASSE DE MEDIA escolhe, de entre os efeitos que o nó
+// traz em código, qual é o desta tool (classe_de_media.go): é ela que substituiu o NOME como
+// critério (AOS-566, emenda do ADR-043 §6 ao ADR-042 §2.1). Os LIMITES — o `max_tokens` da chamada
+// e o prazo dela — são os da classe por omissão, e o registo pode declarar outros.
+//
+// A INSTRUÇÃO NÃO ESTÁ AQUI, e é decisão e não esquecimento: ela está presa por teste à do banco de
+// ensaio que a mediu, e o registo de rota ASSINADO não tem membro de instrução. Movê-la para
+// configuração sem esse trinco assinado seria uma regressão de segurança — passaria a mudar-se o
+// que o modelo faz com o ficheiro sem acto do dono. Fica em Go, por classe.
+//
+// CAMPOS AUSENTES VALEM O DE HOJE: um manifesto escrito antes deste bloco ter classe e limites
+// carrega sem alteração (ver [classePorOmissao]).
 type modeloMapping struct {
 	Alias string `json:"alias"`
+	// Classe é a classe de media do efeito, do vocabulário FECHADO [classesDeMedia]. Ausente só
+	// nas duas tools anteriores ao campo.
+	Classe string `json:"classe,omitempty"`
+	// MaxTokens é o `max_tokens` da chamada; 0 — a omissão — vale o da classe. Entra também na
+	// reserva no tecto do run.
+	MaxTokens int `json:"max_tokens,omitempty"`
+	// PrazoSegundos é o prazo próprio da chamada ao gateway, em segundos; 0 vale o da classe.
+	PrazoSegundos int `json:"prazo_s,omitempty"`
 }
 
 // validarLigacaoModelo confere, na leitura do registo, uma entrada com o bloco `modelo`. Sem o
-// bloco não confere nada. A forma do recurso e a capability são as da tool, fixas: o que o RM
-// decide e o WORM sela tem de ser o que a tool lê. Só as tools `ocr_read` e `video_read` (AOS-536)
-// podem ter o bloco, e as duas com a MESMA capability e o MESMO recurso (video_tool.go).
+// bloco não confere nada. A forma do recurso e a capability são FIXAS e iguais em todas as classes:
+// o que o RM decide e o WORM sela tem de ser o que a tool lê.
+//
+// O QUE DEIXOU DE SER CONFERIDO É O NOME (AOS-566). Qualquer entrada pode ter o bloco, desde que
+// declare uma CLASSE do vocabulário fechado — é a classe que escolhe o efeito, e o efeito continua
+// a ser código do nó. Uma entrada sem classe que a ponte de compatibilidade não cubra é recusada
+// por [limitesDoBlocoModelo]: o arranque continua fail-closed, pelo eixo certo.
 func validarLigacaoModelo(s modelToolSpec) error {
 	if s.Modelo == nil {
 		return nil
@@ -232,9 +259,12 @@ func validarLigacaoModelo(s modelToolSpec) error {
 		return fmt.Errorf("%w: tool %q", ErrModelToolBindingConflict, strings.TrimSpace(s.Name))
 	}
 	nome := strings.TrimSpace(s.Name)
+	// A CLASSE E OS LIMITES PRIMEIRO: sem classe não há efeito, e é a recusa que diz ao operador o
+	// que falta declarar.
+	if _, _, err := limitesDoBlocoModelo(s); err != nil {
+		return err
+	}
 	switch {
-	case nome != ocrToolName && nome != videoToolName:
-		return fmt.Errorf("%w: tool %q tem o bloco `modelo`, que so as tools %q e %q podem ter (o efeito e codigo do no, nao configuracao)", ErrBadModelTools, nome, ocrToolName, videoToolName)
 	case strings.TrimSpace(s.Modelo.Alias) == "":
 		return fmt.Errorf("%w: tool %q tem o bloco `modelo` sem `alias`", ErrBadModelTools, nome)
 	case strings.TrimSpace(s.Capability) != ocrCapability:
@@ -257,6 +287,10 @@ func specDoOCR(specs []modelToolSpec) *modelToolSpec { return specDaToolDeModelo
 
 // specDaToolDeModelo devolve a entrada do registo de tools com o nome dado e o bloco `modelo`, ou
 // nil sem ela. Os nomes são únicos no registo ([readModelToolSpecs] recusa os repetidos).
+//
+// A COMPOSIÇÃO JÁ NÃO PASSA POR AQUI (AOS-566): o nó compõe uma ligação por entrada com bloco
+// `modelo`, pela classe dela ([comporToolDeModelo]). Esta procura por nome fica para quem queira
+// uma entrada CONCRETA — o anúncio por nome e as provas que nomeiam as duas tools de hoje.
 func specDaToolDeModelo(specs []modelToolSpec, nome string) *modelToolSpec {
 	for i := range specs {
 		if specs[i].Modelo != nil && strings.TrimSpace(specs[i].Name) == nome {
@@ -301,19 +335,22 @@ var errosDoOCR = errosDeArranque{
 	foraDaAllowlist: ErrOCRAliasForaDaAllowlist, semRegisto: ErrOCRSemRegistoTool, semPreco: ErrOCRSemPreco, semPasta: ErrOCRSemPasta,
 }
 
-// comporLigacaoOCR confere as condições de ARRANQUE da tool e compõe a ligação, sem o gateway
-// (que só existe depois). Corre na fronteira de ambiente ([parseModelFromEnv]), com o que lá já
-// foi lido: a allowlist em vigor (externa, ou nil ⇒ a embebida), os perfis assinados, a fronteira
-// de soberania e se a contabilidade de custo está composta. A ordem é a das conferências sem
-// efeito primeiro ([conferirArranqueDeModelo]: a allowlist, um registo de uso `tool` DE IMAGEM, o
-// preço); a pasta abre-se por último.
-func comporLigacaoOCR(spec *modelToolSpec, assinados *perfisAssinados, externa *allowlist.Policy, region, board string, comCusto bool) (*ligacaoOCR, error) {
+// comporLigacaoDeImagem confere as condições de ARRANQUE de uma tool da CLASSE IMAGEM e compõe a
+// ligação, sem o gateway (que só existe depois). Corre na fronteira de ambiente
+// ([parseModelFromEnv]), com o que lá já foi lido: a allowlist em vigor (externa, ou nil ⇒ a
+// embebida), os perfis assinados, a fronteira de soberania e se a contabilidade de custo está
+// composta. A ordem é a das conferências sem efeito primeiro ([conferirArranqueDeModelo]: a
+// allowlist, um registo de uso `tool` DE IMAGEM, o preço); a pasta abre-se por último.
+//
+// É o efeito da classe, não o da `ocr_read`: o nome da tool e os limites vêm de `lim`, e a
+// `ocr_read` é a configuração dela que o manifesto de produção declara.
+func comporLigacaoDeImagem(lim limitesDaTool, spec *modelToolSpec, assinados *perfisAssinados, externa *allowlist.Policy, region, board string, comCusto bool) (toolDeModelo, error) {
 	alias, perfilDigest, tabela, err := conferirArranqueDeModelo(spec, modelgateway.CapabilityImage, assinados, externa, region, board, comCusto, errosDoOCR)
 	if err != nil {
 		return nil, err
 	}
 	// O custo máximo por chamada que a tool reserva no tecto do run (peça 3b).
-	reservaMax, err := reservaMaxDoOCR(tabela, alias, region)
+	reservaMax, err := reservaDaImagem(tabela, alias, region, lim.maxTokens)
 	if err != nil {
 		return nil, err
 	}
@@ -322,18 +359,29 @@ func comporLigacaoOCR(spec *modelToolSpec, assinados *perfisAssinados, externa *
 	if err != nil {
 		return nil, err
 	}
-	l := novaLigacaoOCR(alias, region, board, perfilDigest, pasta, raiz)
+	l := novaLigacaoDeImagem(lim, region, board, perfilDigest, pasta, raiz)
 	l.reservaMax = reservaMax
 	return l, nil
 }
 
-// novaLigacaoOCR monta a ligação com as constantes da tool, sem o gateway.
+// novaLigacaoOCR monta a ligação da `ocr_read` com os limites POR OMISSÃO da classe imagem, sem o
+// gateway. É a configuração de hoje da máquina da classe ([novaLigacaoDeImagem]).
 func novaLigacaoOCR(alias, region, board, perfilDigest, pasta string, raiz *os.Root) *ligacaoOCR {
-	l := &ligacaoOCR{ligacaoDeModelo: novaLigacaoDeModelo(ocrToolName, "ocr_read (AOS-530)", alias, region, board, perfilDigest, pasta, raiz,
-		ocrPrazo, ocrDigestDaInstrucao(ocrInstrucaoSistema, ocrInstrucaoPedido), ocrCausas())}
-	l.reservaMax = budget.Amount{Tokens: ocrTokensDeEntradaMax + ocrMaxTokens}
+	lim := limitesDaTool{nome: ocrToolName, alias: alias, classe: port.MediaClassImage,
+		maxTokens: ocrMaxTokens, prazo: ocrPrazo}
+	return novaLigacaoDeImagem(lim, region, board, perfilDigest, pasta, raiz)
+}
+
+// novaLigacaoDeImagem monta a ligação de uma tool da classe imagem, sem o gateway.
+func novaLigacaoDeImagem(lim limitesDaTool, region, board, perfilDigest, pasta string, raiz *os.Root) *ligacaoOCR {
+	l := &ligacaoOCR{ligacaoDeModelo: novaLigacaoDeModelo(lim, "ocr_read (AOS-530)", region, board, perfilDigest, pasta, raiz,
+		ocrDigestDaInstrucao(ocrInstrucaoSistema, ocrInstrucaoPedido), ocrCausas())}
+	l.reservaMax = budget.Amount{Tokens: ocrTokensDeEntradaMax + int64(lim.maxTokens)}
 	return l
 }
+
+// comum é a parte partilhada da ligação ([toolDeModelo]).
+func (l *ligacaoOCR) comum() *ligacaoDeModelo { return &l.ligacaoDeModelo }
 
 // fechar liberta a pasta. Idempotente e nil-safe.
 func (l *ligacaoOCR) fechar() {
@@ -661,7 +709,7 @@ func (l *ligacaoOCR) executar(ctx context.Context, input []byte) ([]byte, int64,
 		schema:    ocrInputSchema,
 		sistema:   ocrInstrucaoSistema,
 		pedido:    ocrInstrucaoPedido,
-		maxTokens: ocrMaxTokens,
+		maxTokens: l.maxTokens,
 		sucesso:   ocrResultadoTranscrito,
 		preparar:  l.prepararImagem,
 	}, input)
@@ -678,7 +726,7 @@ func (l *ligacaoOCR) prepararImagem(ctx context.Context, in entradaOCR) (pedidoD
 	return pedidoDeMedia{
 		parte:  port.MediaPart(parte),
 		maximo: l.reservaMax,
-		cobrar: tectoDaChamada{entrada: ocrTokensDeEntradaMax, saida: ocrMaxTokens},
+		cobrar: tectoDaChamada{entrada: ocrTokensDeEntradaMax, saida: int64(l.maxTokens)},
 		interpretar: func(resp port.ChatResponse, servido string) ([]byte, string) {
 			return l.interpretar(resp, parte, formato, servido)
 		},
@@ -704,38 +752,20 @@ func (l *ligacaoOCR) interpretar(resp port.ChatResponse, parte port.ImagePart, f
 	return out, ocrResultadoTranscrito
 }
 
-// registarOCR regista a `ocr_read` no RM do nó com RegisterCosting. Corre no Bootstrap, DEPOIS
-// de o runtime seguro existir. Fail-closed: sem o gateway ligado, ou com o registo recusado, o
-// arranque aborta.
-func registarOCR(sec interface {
-	RegisterCosting(string, referencemonitor.CostingToolFunc) error
-}, l *ligacaoOCR, log func(string, ...any)) error {
-	if l == nil {
-		return nil
-	}
-	if l.gw == nil {
-		return ErrOCRSemGateway
-	}
-	if err := sec.RegisterCosting(ocrToolName, l.executar); err != nil {
-		return fmt.Errorf("aos: registar a tool %s: %w", ocrToolName, err)
-	}
-	log("%s", l.linhaDoArranque())
-	return nil
-}
-
 // linhaDoArranque declara a tool ligada: o que ela faz, o que chama e o que esta versão NÃO faz.
 func (l *ligacaoOCR) linhaDoArranque() string {
 	return fmt.Sprintf("tool %s LIGADA (EPIC-07/AOS-530, ADR-042): le uma imagem PNG ou JPEG (ate %d bytes) e transcreve-a por UMA chamada ao Model Gateway deste no — o mesmo dos turnos —, com o token NHI do run e o run e o passo da tool call. Alias %q (board %q, regiao %q), perfil do registo assinado de uso tool %s; instrucao fixa %s; max_tokens %d; prazo %s; sem tools oferecidas ao modelo de visao; sem nova tentativa. Mediada pelo RM com %s e o recurso %s. ORIGEM DO doc_id: %s. CUSTO: %s",
-		ocrToolName, port.MaxImageBytes, l.alias, l.board, l.region, l.perfilDigest, l.digestDaInstrucao, ocrMaxTokens, l.prazo, ocrCapability, ocrResourceValue, posturaDaOrigemDoDoc(l.handles, l.pasta), l.posturaDoCusto())
+		l.tool, port.MaxImageBytes, l.alias, l.board, l.region, l.perfilDigest, l.digestDaInstrucao, l.maxTokens, l.prazo, ocrCapability, ocrResourceValue, posturaDaOrigemDoDoc(l.handles, l.pasta), l.posturaDoCusto())
 }
 
 // posturaDoCusto declara, no arranque, o que acontece ao custo de cada chamada (ADR-042 §2.6).
 func (l *ligacaoOCR) posturaDoCusto() string {
 	return l.ligacaoDeModelo.posturaDoCusto(fmt.Sprintf("o maximo por chamada — %d tokens (%d de entrada + %d de saida) e %d micro-USD pela tabela de precos —",
-		l.reservaMax.Tokens, ocrTokensDeEntradaMax, ocrMaxTokens, l.reservaMax.CostMicroUSD))
+		l.reservaMax.Tokens, ocrTokensDeEntradaMax, l.maxTokens, l.reservaMax.CostMicroUSD))
 }
 
-// ocrDoCliente devolve a ligação da `ocr_read` do cliente de modelo dado, ou nil.
+// ocrDoCliente devolve a ligação da classe IMAGEM do cliente de modelo dado, ou nil. É a série
+// `aos_ocr_read_total` do `/metrics` e as provas que nomeiam a `ocr_read`.
 func ocrDoCliente(c agentruntime.ModelClient) *ligacaoOCR {
 	m, ok := c.(fonteDosPerfis)
 	if !ok {
@@ -743,6 +773,20 @@ func ocrDoCliente(c agentruntime.ModelClient) *ligacaoOCR {
 	}
 	if p := m.perfisAssinadosDoNo(); p != nil {
 		return p.ocr
+	}
+	return nil
+}
+
+// toolsDeModeloDoCliente devolve TODAS as tools de modelo compostas no cliente de modelo dado, pela
+// ordem do registo. É por aqui que o Bootstrap as liga, regista e fecha, sem saber quantas são nem
+// como se chamam.
+func toolsDeModeloDoCliente(c agentruntime.ModelClient) []toolDeModelo {
+	m, ok := c.(fonteDosPerfis)
+	if !ok {
+		return nil
+	}
+	if p := m.perfisAssinadosDoNo(); p != nil {
+		return p.deModelo
 	}
 	return nil
 }

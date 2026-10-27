@@ -2559,36 +2559,36 @@ func parseModelFromEnv(production bool, extra ...opcaoDoAdaptador) (agentruntime
 	}); err != nil {
 		return nil, nil, err
 	}
-	// A TOOL `ocr_read` (AOS-530, ADR-042): com o bloco `modelo` no registo de tools, o nó só
-	// arranca com o alias na allowlist em vigor, um registo assinado de uso `tool` para ele, o
-	// preço do par (com a contabilidade composta) e a pasta semeada montada. Sem o bloco não lê
-	// nada mais e não compõe nada: o arranque é o de antes.
+	// AS TOOLS DE MODELO (AOS-530 e AOS-536, ADR-042; AOS-566 para a composição POR CLASSE): UMA
+	// ligação por entrada do registo de tools com o bloco `modelo`, montada pela CLASSE DE MEDIA
+	// que ela declara — a `ocr_read` e a `video_read` são duas configurações da mesma máquina, e
+	// uma terceira entrada de classe válida compõe-se pelo mesmo caminho. Cada uma só arranca com o
+	// alias na allowlist em vigor, um registo assinado de uso `tool` DA CLASSE dela, o preço do par
+	// (com a contabilidade composta) e a pasta semeada montada. Sem nenhum bloco não se lê mais nada
+	// e não se compõe nada: o arranque é o de antes.
 	specs, err := readModelToolSpecs()
 	if err != nil {
 		return nil, nil, err
 	}
-	// ocrPorEntregar é a ligação composta e ainda não entregue no cliente: qualquer falha de
-	// arranque daqui para baixo fecha-lhe a pasta (o os.Root aberto). Nil depois da entrega.
-	var ocrPorEntregar *ligacaoOCR
-	defer func() { ocrPorEntregar.fechar() }()
-	if spec := specDoOCR(specs); spec != nil {
-		ligacao, oerr := comporLigacaoOCR(spec, assinados, pol, region, board, costRec != nil)
-		if oerr != nil {
-			return nil, nil, oerr
+	// porEntregar são as ligações compostas e ainda não entregues no cliente: qualquer falha de
+	// arranque daqui para baixo fecha-lhes a pasta (o os.Root aberto). Vazio depois da entrega.
+	var porEntregar []toolDeModelo
+	defer func() {
+		for _, l := range porEntregar {
+			l.comum().fechar()
 		}
-		// O registo `tool` existe (conferido acima), pelo que a pasta de perfis também.
-		assinados.ocr, ocrPorEntregar = ligacao, ligacao
-	}
-	// A TOOL `video_read` (AOS-536 parte 2): as mesmas condições, com um registo de uso `tool` DE
-	// VÍDEO para o alias dela. Sem o bloco na `video_read`, nada.
-	var videoPorEntregar *ligacaoVideo
-	defer func() { videoPorEntregar.fechar() }()
-	if spec := specDaToolDeModelo(specs, videoToolName); spec != nil {
-		ligacao, verr := comporLigacaoVideo(spec, assinados, pol, region, board, costRec != nil)
-		if verr != nil {
-			return nil, nil, verr
+	}()
+	for i := range specs {
+		if specs[i].Modelo == nil {
+			continue
 		}
-		assinados.video, videoPorEntregar = ligacao, ligacao
+		ligacao, lerr := comporToolDeModelo(&specs[i], assinados, pol, region, board, costRec != nil)
+		if lerr != nil {
+			return nil, nil, lerr
+		}
+		// O registo `tool` existe (conferido na composição), pelo que a pasta de perfis também.
+		assinados.juntarToolDeModelo(ligacao)
+		porEntregar = append(porEntregar, ligacao)
 	}
 	// CUTOVER DURO (AOS-278): o gateway compõe-se com um verifier LIGADO TARDIAMENTE. Nasce a
 	// negar fail-closed; o Bootstrap liga-o (via o binder devolvido) ao verifier REAL do nó —
@@ -2654,8 +2654,7 @@ func parseModelFromEnv(production bool, extra ...opcaoDoAdaptador) (agentruntime
 	// replay-then-continue valha para QUALQUER modelo — incluindo um cfg.Model injectado,
 	// que por este caminho a perdia em silêncio. O decorador continua a ser o outermost:
 	// Bootstrap envolve o que quer que saia daqui, incluindo o enriquecedor de tools.
-	ocrPorEntregar = nil   // entregue no cliente: quem a fecha passa a ser o nó (Node.Close)
-	videoPorEntregar = nil // idem para a video_read (AOS-536)
+	porEntregar = nil // entregues no cliente: quem as fecha passa a ser o nó (Node.Close)
 	return client, modelVerifier.bind, nil
 }
 
