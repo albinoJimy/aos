@@ -5880,8 +5880,18 @@ existir qualquer geração.
       (`port/port.go:551-579`) desserializa sem catch-all, logo um campo de topo que o fornecedor
       emita é hoje **descartado em silêncio**. Procurar aí é a primeira coisa a fazer, e é de
       graça.
-- [x] O fornecedor **a montante** entra no `attribution.Record`, no span, no selo da variância
-      de rota e no audit de governação. **Nome próprio em todo o lado** (`UpstreamProvider`), e o
+- [ ] **NÃO CUMPRIDO num turno CONFORME — e a primeira versão desta nota escondia-o.** Achado
+      de revisão adversarial, verificado por leitura: o selo da variância corre **depois** do
+      `if check == RouteCheckEqual { return nil }` (`route.go:442-444` contra `:462`), pelo que
+      **num turno em que nada divergiu o fornecedor a montante não fica selado em sítio durável
+      nenhum** — só no atributo OTel, que é observabilidade e não auditoria. E o `Sink` do
+      `attribution` **não tem consumidor de produção** (`grep attribution.WithSink` sem testes:
+      zero). Eu tinha reescrito o enunciado de «entra no `attribution.Record` e no evento do
+      turno» para uma lista de quatro sítios: a lista é literalmente verdadeira e **esconde que o
+      selo só existe quando algo correu mal**. Sela-se a não-conformidade, não o facto.
+      **O sítio durável que falta é exactamente o `turn.recorded` diferido abaixo** — os dois são
+      a mesma lacuna, e fecham juntos com o AOS-570a. *O que FOI feito:* o fornecedor a montante
+      entra no **Nome próprio em todo o lado** (`UpstreamProvider`), e o
       `ResolvedProvider`/`VarianceEvent.Provider` fica intocado com o seu sentido de sempre — eram
       dois sentidos a caminho do mesmo campo de um evento selado. **Três posturas, não duas:**
       vazio = a sonda não correu; `nao_reportado` = correu e o proxy não declarou (**o caso
@@ -5898,7 +5908,7 @@ existir qualquer geração.
       fornecedor real, o valor de cada turno seria a constante `nao_reportado`, e um campo de um
       evento durável que só sabe dizer uma coisa é um campo sem leitor — a lição do AOS-551. Entra
       quando o valor passar a ser real.
-- [ ] **O nome `fornecedor` já está ocupado, e o ticket não pode fingir que não.** Medido a
+- [x] **O nome `fornecedor` já está ocupado, e o ticket não pode fingir que não.** Medido a
       2026-10-27: `Exchange.ResolvedProvider` (`pipeline/pipeline.go:97`) é o **adaptador do lado
       do nó** (`gateway.go:680-681`, `g.adapter.Provider()`), **já viaja** no `VarianceEvent` como
       `Provider` (`gateway.go:872`, `route.go:411`) e **já tem** um tipo de variância
@@ -5906,9 +5916,21 @@ existir qualquer geração.
       a montante que a OpenRouter escolhe é **outra coisa**. O ticket dá-lhe **nome próprio e
       distinto** no evento e no selo; reutilizar o campo existente seria pôr dois sentidos no
       mesmo campo de um evento selado, e ninguém daria por isso.
-- [ ] Sob governação da rota em `enforce`, um fornecedor a montante que não esteja na ordem
+- [x] Sob governação da rota em `enforce`, um fornecedor a montante que não esteja na ordem
       declarada é uma variância de rota, com **causa nova** no vocabulário fechado de
-      `route.go:62-74` — distinta do `provider_swap` que já existe.
+      `route.go:62-74` — distinta do `provider_swap` que já existe. *Nota de 2026-10-27:*
+      `fornecedor_a_montante_fora_da_ordem`, aplicada **só quando o resto se provou igual** (a
+      gravidade manda: modelo diferente ou endpoint ganham-lhe) e **só com fornecedor reportado** —
+      a ausência não é variância, senão toda a rota fixada falharia em `enforce`.
+- [ ] **EXIGÊNCIA NOVA, de revisão adversarial: uma passagem em `observe` ANTES de fixar em
+      `enforce`.** A comparação com a ordem é **exacta** (sem fold de caixa, deliberadamente —
+      aproximar os dois lados alargaria uma guarda que existe para apertar). Mas **a grafia que o
+      proxy devolve está por medir** (é a metade (i), do AOS-570a): `Google` contra `google`
+      contra `Google AI Studio`. Quem assinar o primeiro perfil que fixe o fornecedor estaria a
+      adivinhar, e um quase-acerto **faz falhar 100% dos turnos dessa rota**, porque o código não
+      oferece nada entre tolerar a ausência e recusar tudo. O procedimento passa a ser: fixar
+      primeiro com a governação em `observe`, ler a grafia real nos eventos de variância, e só
+      depois passar a `enforce`.
 - [ ] **POR FAZER: o banner vive em `packages/cmd/aos`**, fora do âmbito desta passagem, que é o
       módulo do gateway. *Nota:* a sonda **já segue essa regra** — liga-se quando algum perfil
       composto fixa o fornecedor (`perfis.WithProvider()`), derivado do que foi composto e não de
@@ -5932,6 +5954,30 @@ existir qualquer geração.
 - **O `drop_params: false` que produção corre** não foi exercitado nesta medição (a configuração do
   banco é fixa em `true`, como no spike AOS-558). É o mesmo resíduo que o spike declarou para a
   ida, e fecha-se na prova em produção.
+- **O `Sink` do `attribution` passa a receber DOIS registos por chamada** (o de `Record` e o da
+  anotação pós-resposta), e o argumento escrito para **não** selar o segundo no WORM — «mudaria a
+  contagem de registos `model:invoke` por chamada, que é o que o burn-down e a reconciliação
+  lêem» — aplica-se palavra por palavra a um futuro consumidor do `Sink` que conte. Hoje é inócuo
+  (**zero** consumidores de produção), mas a invariante que o comentário defende não está
+  defendida nesta porta.
+- **A sonda procura a chave byte a byte; o `encoding/json` procura por fold.** Um proxy que emita
+  `"Provider"` devolve `nao_reportado` → sem variância → **uma troca real passa por detectar**. É
+  conservador na direcção da disponibilidade, mas esta é a função de detecção, e a sub-detecção é
+  o custo.
+- **A sonda liga-se por *type assertion* silenciosa** (`production.go:361-365`), no padrão do
+  AOS-507/514. A diferença é que ali um `ok == false` perde observabilidade e **aqui perde a
+  verificação** do fornecedor fixado, em silêncio, com o perfil assinado a prometer que está
+  fixado. Hoje não acontece (`newProviderAdapter` devolve sempre esse tipo), mas não há guarda.
+- **`ProviderPolicy` tem `MarshalJSON` e não tem `UnmarshalJSON`**, pelo que o round-trip
+  *despejar → reler* de um perfil que fixe o fornecedor **falha**: o `MarshalJSON` escreve
+  `allow_fallbacks` e a leitura estrita recusa-o. É latente — verificado que o
+  `aos-issuer route-profile-sign` **lê o ficheiro que o operador escreve** (`os.ReadFile`) e não
+  monta o perfil —, mas uma ferramenta que despeje um perfil para assinatura produziria um
+  documento que o nó recusa.
+- **A métrica `RouteParamsRejection` muda de leitura.** A fixação entra no manifesto do turno
+  (deliberado: sem isso um perfil que só fixe o fornecedor não teria métrica de recusa nenhuma),
+  mas com isso **qualquer** 4xx dessa rota passa a contar como recusa de parâmetros — incluindo
+  contexto excedido. Um alerta sobre essa métrica muda de significado.
 - **A forma do valor.** A sonda só aceita uma **string** de topo. Se a OpenRouter puser o
   fornecedor num objecto, ou noutro nome, a sonda devolve `nao_reportado` — deliberado, porque não
   adivinha. É a hipótese que o AOS-570a confirma ou desmente, e aí a sonda muda num sítio só.
