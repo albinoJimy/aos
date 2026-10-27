@@ -303,10 +303,10 @@ func (a *ModelClientAdapter) Call(ctx context.Context, view agentruntime.PromptV
 		if versaoNativa, perr = a.versaoDaProjeccao(view); perr != nil {
 			return agentruntime.ModelResponse{}, perr
 		}
-		if msgs, perr = ProjectNativeVersionWithMedia(versaoNativa, view, a.media); perr != nil {
+		if msgs, perr = ProjectNativeVersionWithMedia(ctx, versaoNativa, view, runID, a.media); perr != nil {
 			return agentruntime.ModelResponse{}, perr
 		}
-	} else if err := anexarMedia(&msgs[0], mediaDoTail(view), a.media); err != nil {
+	} else if err := anexarMedia(ctx, &msgs[0], runID, mediaDoTail(view), a.media); err != nil {
 		// O texto único leva a media do tail inteiro na sua única mensagem `user` (AOS-546).
 		return agentruntime.ModelResponse{}, err
 	}

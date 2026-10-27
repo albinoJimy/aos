@@ -99,7 +99,7 @@ func TestAOS556_Bateria_InjeccaoNumHandleComDestinoQueAPoliticaPermite(t *testin
 		t.Fatalf("selar a injeccao: %s", causa)
 	}
 
-	reescrita := reescritaDoEfeito(nil, nil, nil, false, plano)
+	reescrita := reescritaDoEfeito(nil, nil, nil, nil, false, plano)
 	classificador := referencemonitor.NewRiskClassifier(nil).WithToolDestinations(aos556Destinos())
 	politica := pdp.NewPolicyCheck(aos556PDPDaCandidata(t))
 
@@ -338,7 +338,7 @@ func TestAOS556_Bateria_ACadeiaRealDecideOQue(t *testing.T) {
 		Context:   referencemonitor.CallContext{Taint: taint.Trusted.String()},
 		Input:     args,
 	}
-	reescrita, err := reescritaDoEfeito(nil, nil, nil, false, plano)(call)
+	reescrita, err := reescritaDoEfeito(nil, nil, nil, nil, false, plano)(call)
 	if err != nil {
 		t.Fatalf("reescrita: %v", err)
 	}

@@ -305,7 +305,7 @@ func reescritaDaAutoridade(call referencemonitor.Call, bilhete *bilheteDaCall) (
 // auditado. As reescritas por tool vêm depois e reformam o documento num envelope de execução
 // (`ExecRequest`, `entradaDoArtefacto`) — procurar referências nesse envelope seria procurá-las
 // numa estrutura que o modelo não escreveu.
-func reescritaDoEfeito(bindings map[string]sandbox.SandboxBinding, ocrRw, videoRw func(referencemonitor.Call) (referencemonitor.Call, error), artefactos bool, handles *planoDeHandles) func(referencemonitor.Call) (referencemonitor.Call, error) {
+func reescritaDoEfeito(bindings map[string]sandbox.SandboxBinding, ocrRw, videoRw, mediaRw func(referencemonitor.Call) (referencemonitor.Call, error), artefactos bool, handles *planoDeHandles) func(referencemonitor.Call) (referencemonitor.Call, error) {
 	var artRw reescritaDaCall
 	if artefactos {
 		artRw = newArtifactRewriter()
@@ -319,7 +319,11 @@ func reescritaDoEfeito(bindings map[string]sandbox.SandboxBinding, ocrRw, videoR
 		// o bilhete já está cheio e o rótulo da call fica decidido antes de alguém a usar para
 		// construir um `ExecRequest` ou para selar um artefacto.
 		reescritaDaAutoridade,
-		semBilhete(comporReescritas(newSandboxEffectRewriter(bindings), juntarReescritasDeModelo(ocrRw, videoRw))),
+		// O despacho é pelo BINDING e não por uma lista de nomes (AOS-563) — ver [comporReescritas].
+		semBilhete(comporReescritas(
+			func(tool string) bool { _, tem := bindings[tool]; return tem },
+			newSandboxEffectRewriter(bindings),
+			juntarReescritasDeModelo(ocrRw, videoRw, mediaRw))),
 		artRw,
 	)
 }

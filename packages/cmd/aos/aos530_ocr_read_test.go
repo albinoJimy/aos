@@ -338,14 +338,15 @@ func TestAOS530_OCR_AReescritaDoEfeito(t *testing.T) {
 		c.Input = []byte("sandbox")
 		return c, nil
 	}
-	junta := comporReescritas(sb, rw)
+	// AOS-563: o despacho e pelo BINDING; aqui a tool com binding e a `doc_read`.
+	junta := comporReescritas(func(tool string) bool { return tool == "doc_read" }, sb, rw)
 	if got, _ := junta(outra); string(got.Input) != "sandbox" {
 		t.Fatal("a reescrita da sandbox tinha de correr para as outras tools")
 	}
 	if got, _ := junta(call); !strings.Contains(string(got.Input), ocrInputSchema) {
 		t.Fatal("a reescrita da ocr_read tinha de correr para ela")
 	}
-	if comporReescritas(nil, nil) != nil {
+	if comporReescritas(nil, nil, nil) != nil {
 		t.Fatal("sem nenhuma reescrita fica nil (byte-identico)")
 	}
 }

@@ -552,7 +552,7 @@ func TestAOS550_TectosDeUmaCall(t *testing.T) {
 		}
 		refs = append(refs, aos550Ref(t, out))
 	}
-	rw := reescritaDoEfeito(nil, nil, nil, true, plano)
+	rw := reescritaDoEfeito(nil, nil, nil, nil, true, plano)
 	args := func(n int) string {
 		campos := make([]string, 0, n)
 		for i := 0; i < n; i++ {
@@ -586,7 +586,7 @@ func TestAOS550_TectosDeUmaCall(t *testing.T) {
 		}
 		grandes = append(grandes, aos550Ref(t, out))
 	}
-	rwb := reescritaDoEfeito(nil, nil, nil, true, b.handles)
+	rwb := reescritaDoEfeito(nil, nil, nil, nil, true, b.handles)
 	tresGrandes := `{"doc_id":"notes","k0":"` + grandes[0] + `","k1":"` + grandes[1] + `","k2":"` + grandes[2] + `"}`
 	if _, err := rwb(aos550CallDe("doc_read", tresGrandes)); err == nil {
 		t.Fatal("acima do tecto de bytes por call: aceite")
@@ -602,7 +602,7 @@ func TestAOS550_TectosDeUmaCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref := aos550Ref(t, out)
-	rwc := reescritaDoEfeito(nil, nil, nil, true, c.handles)
+	rwc := reescritaDoEfeito(nil, nil, nil, nil, true, c.handles)
 	duasVezes := `{"doc_id":"notes","k0":"` + ref + `","k1":"` + ref + `"}`
 	got, err := rwc(aos550CallDe("doc_read", duasVezes))
 	if err != nil {
@@ -630,7 +630,7 @@ func TestAOS550_DiferencialDeParser(t *testing.T) {
 	}
 	ref := aos550Ref(t, out)
 	escapada := strings.Replace(ref, "/", `\/`, 1)
-	rw := reescritaDoEfeito(nil, nil, nil, true, plano)
+	rw := reescritaDoEfeito(nil, nil, nil, nil, true, plano)
 	for nome, args := range map[string]string{
 		"aninhada com escape JSON": `{"doc_id":"notes","extra":{"c":"` + escapada + `"}}`,
 		"parcial com escape JSON":  `{"doc_id":"usa o ` + escapada + `"}`,
@@ -744,7 +744,7 @@ func TestAOS550_ResolucaoNoCallRewriter(t *testing.T) {
 	}
 	ref := aos550Ref(t, out)
 	// A reescrita COMPOSTA do nó (a mesma que vai no EffectRewriter), com os handles ligados.
-	rw := reescritaDoEfeito(nil, nil, nil, true, plano)
+	rw := reescritaDoEfeito(nil, nil, nil, nil, true, plano)
 	got, err := rw(aos550Call(`{"name":"copia.json","media_type":"application/json","content":"` + ref + `"}`))
 	if err != nil {
 		t.Fatalf("resolucao: %v", err)
@@ -761,7 +761,7 @@ func TestAOS550_ResolucaoNoCallRewriter(t *testing.T) {
 	// CAMINHO DE SEMPRE: sem referência nos argumentos, a Call sai byte-idêntica à de um nó sem
 	// plano de handles.
 	semRef := aos550Call(`{"name":"a.json","media_type":"application/json","content":"{}"}`)
-	semPlano := reescritaDoEfeito(nil, nil, nil, true, nil)
+	semPlano := reescritaDoEfeito(nil, nil, nil, nil, true, nil)
 	comA, errA := rw(semRef)
 	semA, errB := semPlano(semRef)
 	if errA != nil || errB != nil || string(comA.Input) != string(semA.Input) {
@@ -819,7 +819,7 @@ func TestAOS550_HandleBinarioNaoResolveParaArgumento(t *testing.T) {
 	if causa != "" {
 		t.Fatal(causa)
 	}
-	rw := reescritaDoEfeito(nil, nil, nil, true, plano)
+	rw := reescritaDoEfeito(nil, nil, nil, nil, true, plano)
 	if _, err := rw(aos550Call(`{"name":"a.bin","media_type":"text/plain","content":"` + agentruntime.HandleRefPrefix + p.Token + `"}`)); err == nil {
 		t.Fatal("um handle binario resolveu para uma string JSON")
 	}
@@ -966,7 +966,7 @@ func TestAOS550_DesligadoPorOmissao(t *testing.T) {
 		t.Fatalf("desligado, o resultado nao pode ter campo handle: %s", out)
 	}
 	// A reescrita composta sem plano é a de antes, e não reconhece referência nenhuma.
-	rw := reescritaDoEfeito(nil, nil, nil, true, nil)
+	rw := reescritaDoEfeito(nil, nil, nil, nil, true, nil)
 	texto := agentruntime.HandleRefPrefix + agentruntime.MintHandleToken("run-1", "sha256:"+strings.Repeat("a", 64), 1)
 	got, err := rw(aos550Call(`{"name":"t.txt","media_type":"text/plain","content":"` + texto + `"}`))
 	if err != nil {

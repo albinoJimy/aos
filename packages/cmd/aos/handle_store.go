@@ -128,6 +128,12 @@ const (
 	// fail-closed, e o que este contador acrescenta é deixar de ser silencioso: sem ele, o
 	// operador via `handle_nao_reconhecido` em cada call e nada que dissesse porquê.
 	hCausaSequencia = "sequencia_de_handles_inconsistente"
+	// hCausaDoisEspacos — um `doc_id` que resolve NOS DOIS espaços de onde uma tool de imagem lê:
+	// as entradas de media do run e a pasta semeada do operador (AOS-563). NÃO é uma recusa: a
+	// ambiguidade decide-se fail-closed pelo espaço do RUN e a tool lê. O que este contador compra
+	// é deixar de ser silencioso — sem ele, um ficheiro semeado com o nome que o nó cunha
+	// (`media_input-1`) passava a ser ignorado sem que nada o dissesse ao operador que o semeou.
+	hCausaDoisEspacos = "doc_id_nos_dois_espacos"
 )
 
 // handleResultados é o vocabulário fechado, pela ordem em que sai no `/metrics`. A cauda é a da
@@ -138,7 +144,7 @@ func handleResultados() []string {
 	return append([]string{
 		hSelado, hResolvido,
 		hCausaVazio, hCausaGrande, hCausaRun, hCausaVolume, hCausaCifra, hCausaDisco, hCausaRegisto,
-		hCausaSequencia, handleCausaDesconhecido, handleCausaSemEvento, handleCausaNaoTextual, handleCausaAninhado,
+		hCausaSequencia, hCausaDoisEspacos, handleCausaDesconhecido, handleCausaSemEvento, handleCausaNaoTextual, handleCausaAninhado,
 		handleCausaParcial, handleCausaSlot, handleCausaArgs, handleCausaDuplicadas,
 		handleCausaDemasiadas, handleCausaBytesDaCall, handleCausaSemRun, handleCausaIlegivel,
 	}, causasDaTravessia()...)

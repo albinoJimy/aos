@@ -170,7 +170,7 @@ func TestAOS551C_No_AAutoridadeCorreDepoisDeQuemEncheOBilhete(t *testing.T) {
 // call limpa passar intacta. Compor a cadeia SEM a autoridade é o que esta asserção impede de
 // acontecer em silêncio.
 func TestAOS551C_No_AAutoridadeEstaNaCadeiaDoEfeito(t *testing.T) {
-	cadeia := reescritaDoEfeito(nil, nil, nil, false, nil)
+	cadeia := reescritaDoEfeito(nil, nil, nil, nil, false, nil)
 	if cadeia == nil {
 		t.Fatal("a cadeia de reescritas não foi composta")
 	}

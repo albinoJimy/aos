@@ -45,6 +45,17 @@ func aos546Ligacao(t *testing.T, spec string) (*ligacaoMedia, string, error) {
 	return l, pasta, err
 }
 
+// aos546Entrada é o input da `media_view` DEPOIS da reescrita do efeito (AOS-563): o que o
+// executor recebe numa tool call mediada. O run e o passo são os de um passo qualquer — os testes
+// que precisam de um run REAL (o do espaço de handles) constroem o seu.
+func aos546Entrada(doc string) []byte {
+	raw, err := json.Marshal(entradaOCR{Schema: mediaViewInputSchema, RunID: "r1", StepID: "s1", DocID: doc})
+	if err != nil {
+		panic(err)
+	}
+	return raw
+}
+
 func TestAOS546_Env_Vocabulario(t *testing.T) {
 	for valor, quer := range map[string]bool{"": false, "off": false, "on": true} {
 		t.Setenv("AOS_MEDIA_NO_TURNO", valor)
@@ -108,7 +119,7 @@ func TestAOS546_MediaView_DevolveAReferenciaEOResolvedorConfere(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := l.executar(context.Background(), []byte(`{"doc_id":"sala.png"}`))
+	out, err := l.executar(context.Background(), aos546Entrada("sala.png"))
 	if err != nil {
 		t.Fatalf("executar: %v", err)
 	}
@@ -130,7 +141,7 @@ func TestAOS546_MediaView_DevolveAReferenciaEOResolvedorConfere(t *testing.T) {
 	if !ok || seg.SHA256 != ref.SHA256 {
 		t.Fatalf("o kernel nao reconheceu a referencia da tool: %+v", segs)
 	}
-	parte, err := l.resolver(seg)
+	parte, err := l.resolver(context.Background(), "", seg)
 	if err != nil || parte.Digest() != ref.SHA256 {
 		t.Fatalf("resolver: %v", err)
 	}
@@ -138,7 +149,7 @@ func TestAOS546_MediaView_DevolveAReferenciaEOResolvedorConfere(t *testing.T) {
 	if err := os.Remove(filepath.Join(pasta, "sala.png")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := l.resolver(seg); err == nil {
+	if _, err := l.resolver(context.Background(), "", seg); err == nil {
 		t.Fatal("resolveu um ficheiro que ja nao existe")
 	}
 	if l.lidas.Load() != 1 || l.resolvidas.Load() != 1 || l.falhadas.Load() != 1 {
@@ -151,21 +162,28 @@ func TestAOS546_MediaView_Recusas(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// AOS-563: a entrada e a da REESCRITA DO EFEITO ([entradaOCR] com [mediaViewInputSchema]).
+	// Os casos sao os mesmos do AOS-546 mais os tres que a forma nova traz: sem run, sem passo e
+	// com outro schema — nenhum deles vem de uma tool call mediada.
 	for nome, in := range map[string]string{
-		"nao e imagem":   `{"doc_id":"notas.txt"}`,
-		"inexistente":    `{"doc_id":"nada.png"}`,
-		"fora da raiz":   `{"doc_id":"../sala.png"}`,
-		"campo a mais":   `{"doc_id":"sala.png","url":"http://x"}`,
-		"sem doc":        `{}`,
+		"nao e imagem":   string(aos546Entrada("notas.txt")),
+		"inexistente":    string(aos546Entrada("nada.png")),
+		"fora da raiz":   string(aos546Entrada("../sala.png")),
+		"campo a mais":   `{"schema":"` + mediaViewInputSchema + `","run_id":"r1","step_id":"s1","doc_id":"sala.png","url":"http://x"}`,
+		"sem doc":        `{"schema":"` + mediaViewInputSchema + `","run_id":"r1","step_id":"s1"}`,
+		"sem run":        `{"schema":"` + mediaViewInputSchema + `","step_id":"s1","doc_id":"sala.png"}`,
+		"sem passo":      `{"schema":"` + mediaViewInputSchema + `","run_id":"r1","doc_id":"sala.png"}`,
+		"outro schema":   `{"schema":"aos-ocr-entrada/v1","run_id":"r1","step_id":"s1","doc_id":"sala.png"}`,
+		"args crus":      `{"doc_id":"sala.png"}`,
 		"nao e JSON":     `sala.png`,
-		"dois objectos":  `{"doc_id":"sala.png"}{}`,
-		"doc com espaco": `{"doc_id":"foto 1.png"}`,
+		"dois objectos":  string(aos546Entrada("sala.png")) + `{}`,
+		"doc com espaco": string(aos546Entrada("foto 1.png")),
 	} {
 		if out, err := l.executar(context.Background(), []byte(in)); err == nil || out != nil {
 			t.Fatalf("%s: aceite (%s)", nome, out)
 		}
 	}
-	if l.recusadas.Load() != 8 || l.lidas.Load() != 0 {
+	if l.recusadas.Load() != 12 || l.lidas.Load() != 0 {
 		t.Fatalf("contadores: recusadas %d lidas %d", l.recusadas.Load(), l.lidas.Load())
 	}
 }

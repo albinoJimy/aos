@@ -112,6 +112,59 @@ type respostaDoCatalogo struct {
 	// comportamento do AOS-556 e o que fica num nó anterior a este ticket. Presente só com o
 	// layout por handle habilitado E o espaço de handles composto; campo aditivo.
 	HandleTraversal *anuncioDaTravessia `json:"handle_traversal,omitempty"`
+	// MediaInput anuncia que este nó aceita ENTRADAS DE MEDIA no `POST /runs` (`media_inputs`,
+	// AOS-561) e que uma tool as consome pelo `doc_id` (AOS-563). Campo aditivo.
+	//
+	// PORQUE SÓ AGORA, e não com o produtor. O AOS-561 deixou isto como resíduo com gatilho neste
+	// ticket, e a razão é a que ordena os dois: anunciar uma capacidade que NENHUMA tool consome é
+	// anunciar o que não se pode usar. Depois deste ticket já se pode, e a metade que faltava ao
+	// molde dos campos recusáveis irmãos (`completion_contract`, `output_source`, `run_retry`,
+	// `plan_input_deferral`, `handle_traversal`) fecha-se: sem o anúncio, um submissor automatizado
+	// só descobria se o nó aceita media SUBMETENDO e colhendo um 400.
+	MediaInput *anuncioDaEntradaDeMedia `json:"media_input,omitempty"`
+}
+
+// anuncioDaEntradaDeMedia é o anúncio do AOS-561/563: o vocabulário e os tectos que a porta
+// confere. Os NÚMEROS são as MESMAS constantes que ela impõe, não uma segunda cópia — um anúncio
+// que divergisse da porta era pior do que anúncio nenhum, porque mandaria o submissor preparar um
+// pedido que vai ser recusado.
+//
+// OS TECTOS VÃO NO ANÚNCIO, e não só a presença como nos dois precedentes mais magros: são eles o
+// que produz o 400 que o submissor teria de colher por tentativa, que é exactamente a lacuna que
+// este anúncio fecha. Nenhum deles é configurável, pelo que o anúncio não pode ficar velho.
+type anuncioDaEntradaDeMedia struct {
+	// MediaTypes é o vocabulário FECHADO, pela ordem em que [tiposDeMediaAceites] o escreve.
+	MediaTypes []string `json:"media_types"`
+	// MaxBytes é o tecto de UMA entrada; MaxBytesTotal o do CONJUNTO; MaxInputs a contagem.
+	MaxBytes      int `json:"max_bytes"`
+	MaxBytesTotal int `json:"max_bytes_total"`
+	MaxInputs     int `json:"max_inputs"`
+	// DocIDResolution é a ORDEM por que uma tool de imagem resolve o `doc_id` (AOS-563): a entrada
+	// de media do run primeiro, a pasta semeada do operador depois. É o que diz a um submissor que
+	// o nome cunhado pelo nó (`media_input-1..n`) é utilizável num `doc_id` — sem isto o anúncio
+	// dizia que o nó ACEITA a entrada e não que algum run a LÊ.
+	DocIDResolution []string `json:"doc_id_resolution"`
+}
+
+// anuncioDaEntradaDeMediaDoNo compõe o anúncio, ou nil.
+//
+// A CONDIÇÃO É A MESMA QUE A PORTA CONFERE, e isso é o ponto: `h.node == nil || !h.node.entradaDeMedia`
+// é o que recusa um `media_inputs` com 400 (api.go), e é a negação exacta disto. Escrita assim, a
+// porta e o anúncio não podem divergir — um nó que recusa a via não a anuncia, e um que a anuncia
+// aceita-a. E é o valor COMPOSTO (`cfg.EntradaDeMedia && planoHandles != nil`, bootstrap.go), não
+// a variável crua: um nó com a via pedida e sem espaço de handles nem arranca, mas é o composto que
+// decide, pela regra dos anúncios irmãos.
+func anuncioDaEntradaDeMediaDoNo(n *Node) *anuncioDaEntradaDeMedia {
+	if n == nil || !n.entradaDeMedia {
+		return nil
+	}
+	return &anuncioDaEntradaDeMedia{
+		MediaTypes:      tiposDeMediaAceitesLista(),
+		MaxBytes:        maxMediaInputBytes,
+		MaxBytesTotal:   maxMediaInputsBytes,
+		MaxInputs:       maxMediaInputs,
+		DocIDResolution: []string{"run_media_input", "seed_dir"},
+	}
 }
 
 // anuncioDaTravessia é o anúncio do AOS-553. `PlanInput` é sempre verdadeiro quando o anúncio
@@ -241,5 +294,5 @@ func (h *apiHandler) handleToolCatalog(w http.ResponseWriter, r *http.Request) {
 	if tools == nil {
 		tools = []entradaDoCatalogo{}
 	}
-	writeJSON(w, http.StatusOK, respostaDoCatalogo{Tools: tools, CompletionContract: anuncioDoContratoDoNo(h.node), OutputSource: anuncioDaOrigemDoNo(h.node), RunRetry: anuncioDaNovaTentativaDoNo(h.cfg.runRetryMax, h.cfg.runRetryEmpty), PlanInputDeferral: anuncioDoAdiamentoDoNo(h.node), HandleTraversal: anuncioDaTravessiaDoNo(h.node)})
+	writeJSON(w, http.StatusOK, respostaDoCatalogo{Tools: tools, CompletionContract: anuncioDoContratoDoNo(h.node), OutputSource: anuncioDaOrigemDoNo(h.node), RunRetry: anuncioDaNovaTentativaDoNo(h.cfg.runRetryMax, h.cfg.runRetryEmpty), PlanInputDeferral: anuncioDoAdiamentoDoNo(h.node), HandleTraversal: anuncioDaTravessiaDoNo(h.node), MediaInput: anuncioDaEntradaDeMediaDoNo(h.node)})
 }

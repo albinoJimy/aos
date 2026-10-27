@@ -498,7 +498,8 @@ func TestAOS536_Video_AReescritaDoEfeito(t *testing.T) {
 		c.Input = []byte("sandbox")
 		return c, nil
 	}
-	composta := comporReescritas(sb, junta)
+	// AOS-563: o despacho e pelo BINDING; aqui a tool com binding e a `doc_read`.
+	composta := comporReescritas(func(tool string) bool { return tool == "doc_read" }, sb, junta)
 	if got, _ := composta(outra); string(got.Input) != "sandbox" {
 		t.Fatal("a da sandbox corre para as outras tools")
 	}

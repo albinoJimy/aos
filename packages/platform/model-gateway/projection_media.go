@@ -1,6 +1,7 @@
 package modelgateway
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -21,8 +22,17 @@ import (
 // imagem que o modelo foi avisado de ter junto, nem com outra.
 
 // MediaResolver devolve os bytes do media de uma referência. É composto por quem conhece o sítio
-// de onde a tool os leu (no nó, a pasta semeada).
-type MediaResolver func(ref agentruntime.MediaRef) (port.MediaPart, error)
+// de onde a tool os leu (no nó, a pasta semeada e o espaço de handles do run).
+//
+// O `runID` É O DO TURNO, e é parte do contrato desde o AOS-563: no nó, uma referência pode nomear
+// uma ENTRADA DE MEDIA do próprio run — bytes que quem submeteu mandou no `POST /runs` e que o nó
+// selou no espaço de handles, cifrados com o run nos dados associados. Sem o run, o resolvedor não
+// tem como os abrir, e a mesma referência resolveria na pasta semeada do nó ou em nada.
+//
+// Vem como ARGUMENTO e não dentro da [agentruntime.MediaRef]: a referência é o RESULTADO de uma
+// tool call e viaja no tail e no log do run, pelo que um campo novo nela seria uma mudança de
+// contrato persistido — e o run não pertence à referência, pertence ao turno que a está a resolver.
+type MediaResolver func(ctx context.Context, runID string, ref agentruntime.MediaRef) (port.MediaPart, error)
 
 // WithMediaResolver liga ao adaptador o resolvedor da media do tail (AOS-546). Sem ele, um turno
 // cujo tail tenha media falha com [ErrMediaUnavailable].
@@ -63,13 +73,15 @@ func (e *MediaUnavailableError) Unwrap() error { return ErrMediaUnavailable }
 // ProjectNativeVersionWithMedia é [ProjectNativeVersion] com a media do tail anexada às mensagens
 // `user` dos seus segmentos, resolvida por resolve. Um tail sem media dá exactamente as mensagens
 // de [ProjectNativeVersion].
-func ProjectNativeVersionWithMedia(version string, view agentruntime.PromptView, resolve MediaResolver) ([]port.Message, error) {
+//
+// `ctx` e `runID` são os do turno, e passam ao resolvedor — ver [MediaResolver].
+func ProjectNativeVersionWithMedia(ctx context.Context, version string, view agentruntime.PromptView, runID string, resolve MediaResolver) ([]port.Message, error) {
 	msgs, media, err := projetarNativo(version, view)
 	if err != nil {
 		return nil, err
 	}
 	for i, refs := range media {
-		if err := anexarMedia(&msgs[i], refs, resolve); err != nil {
+		if err := anexarMedia(ctx, &msgs[i], runID, refs, resolve); err != nil {
 			return nil, err
 		}
 	}
@@ -89,7 +101,7 @@ func mediaDoTail(view agentruntime.PromptView) []agentruntime.MediaRef {
 }
 
 // anexarMedia resolve cada referência, confere os bytes contra ela e anexa-os à mensagem.
-func anexarMedia(m *port.Message, refs []agentruntime.MediaRef, resolve MediaResolver) error {
+func anexarMedia(ctx context.Context, m *port.Message, runID string, refs []agentruntime.MediaRef, resolve MediaResolver) error {
 	if len(refs) == 0 {
 		return nil
 	}
@@ -97,7 +109,7 @@ func anexarMedia(m *port.Message, refs []agentruntime.MediaRef, resolve MediaRes
 		return &MediaUnavailableError{Cause: MediaCauseNoResolver}
 	}
 	for _, ref := range refs {
-		parte, err := resolve(ref)
+		parte, err := resolve(ctx, runID, ref)
 		if err != nil {
 			return &MediaUnavailableError{Cause: MediaCauseUnreadable}
 		}
