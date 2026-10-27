@@ -71,6 +71,19 @@ const (
 	// RouteCauseNoProfile — o nome pedido ao proxy não tem perfil: não há esperado com que
 	// comparar. Conta como `diferente`: uma rota sem perfil está fora do que é governado.
 	RouteCauseNoProfile = "rota_sem_perfil"
+	// RouteCauseUpstreamProviderOutOfOrder — o perfil fixa a ordem de fornecedores e o proxy
+	// declarou um fornecedor A MONTANTE que não está nela (AOS-565).
+	//
+	// É DISTINTA do `provider_swap` que já existe, e tem de ser: aquele compara o ADAPTADOR
+	// resolvido com o pedido — quem o nó chama —, e esta compara quem está do lado de lá do
+	// proxy com a ordem que o perfil assinado fixou. Dois sentidos, duas causas; juntá-los
+	// poria dois significados no mesmo campo de um evento selado.
+	//
+	// NÃO DISPARA POR AUSÊNCIA. Um fornecedor por reportar ([port.UpstreamProviderUnreported])
+	// não é uma variância — é o caso esperado em produção hoje, enquanto a metade (i) da
+	// medição não existir (AOS-570a), e tratá-lo como variância faria falhar todos os turnos
+	// de uma rota fixada em imposição.
+	RouteCauseUpstreamProviderOutOfOrder = "fornecedor_a_montante_fora_da_ordem"
 )
 
 // Rótulos do modelo servido para métricas, quando ele não é um dos nomes do conjunto fechado dos
@@ -140,6 +153,16 @@ type RouteProfile struct {
 	// mesmo sítio, como sempre — ou [StateReturnAtTop] — no topo da mensagem `assistant`. Só com
 	// uma classe de estado que não seja `nunca`.
 	StateReturnAt string `json:"devolver_em,omitempty"`
+	// Provider é o FORNECEDOR FIXADO desta rota (AOS-565, ADR-043 §2.4 regra 3): a ordem de
+	// fornecedores, sem fallback, e a política de retenção. nil ⇒ o perfil não o fixa, e o
+	// pedido, o digest e o manifesto são os de sempre, byte a byte. Entra no digest quando
+	// declarado, pelo que um perfil com outro fornecedor é outro perfil e a assinatura do dono
+	// cobre-o. Ver [port.ProviderPolicy].
+	//
+	// FIXAR REDUZ O RISCO E NÃO O FECHA, e o ADR-043 §5 resíduo 1 diz porquê: a comparação da
+	// rota não detecta uma troca feita pelo fornecedor por trás do mesmo nome, e o snapshot do
+	// catálogo não versiona pesos.
+	Provider *port.ProviderPolicy `json:"provider,omitempty"`
 }
 
 // Digest é o digest do perfil: `sha256:` sobre o JSON canónico dos seus campos, com as
@@ -148,6 +171,9 @@ type RouteProfile struct {
 // Os campos opcionais do AOS-513 só entram quando DECLARAM alguma coisa: parâmetros sem nenhum
 // valor e a classe `nunca` são a omissão, e a omissão não muda o digest. Um perfil de antes do
 // AOS-513 tem o digest de antes.
+//
+// O FORNECEDOR DO AOS-565 SEGUE A MESMA REGRA, e é o que mantém válidos os registos assinados
+// que já existem: um perfil que não o declare tem, byte a byte, o digest de hoje.
 func (p RouteProfile) Digest() string {
 	caps := append([]string(nil), p.Capabilities...)
 	sort.Strings(caps)
@@ -164,6 +190,9 @@ func (p RouteProfile) Digest() string {
 	}
 	if p.StateReturnAt != StateReturnAtOrigin {
 		canonico.StateReturnAt = p.StateReturnAt
+	}
+	if !p.Provider.IsZero() {
+		canonico.Provider = p.Provider
 	}
 	canon, err := json.Marshal(canonico)
 	if err != nil {
@@ -384,6 +413,19 @@ func (g *Gateway) governRoute(ctx context.Context, span agentruntime.Span, ex *p
 	}
 	declared.Model = served
 	check, cause := CompareServedRoute(profile, ok, declared, g.route.expectedHost)
+	// AOS-565 — O FORNECEDOR A MONTANTE CONTRA A ORDEM FIXADA, depois de tudo o resto.
+	//
+	// A ORDEM DAS REGRAS É A DA GRAVIDADE, como no resto da comparação: um modelo diferente, um
+	// modelo por reportar e um endpoint diferente ganham a esta. Só se o resto se provou igual é
+	// que a causa do fornecedor passa a ser a causa do turno — senão a causa gravada seria a
+	// menos grave das duas.
+	//
+	// NÃO ESTÁ EM [CompareServedRoute] de propósito: aquela é uma função PÚBLICA com uma
+	// assinatura que chamadores de fora já usam, e o fornecedor não vem dos cabeçalhos — vem do
+	// corpo, pela sonda. Acrescentá-lo ali partia o contrato de quem a chama.
+	if check == port.RouteCheckEqual && g.fornecedorForaDaOrdem(profile, resp.UpstreamProvider) {
+		check, cause = port.RouteCheckDifferent, RouteCauseUpstreamProviderOutOfOrder
+	}
 	digest := ""
 	if ok {
 		digest = profile.Digest()
@@ -409,12 +451,15 @@ func (g *Gateway) governRoute(ctx context.Context, span agentruntime.Span, ex *p
 		ExpectedModel:  profile.ExpectedModel,
 		ServedModel:    served,
 		Provider:       ex.ResolvedProvider,
-		ResolvedRegion: ex.ResolvedRegion,
-		Reason:         cause,
-		Principal:      ex.Principal,
-		Board:          ex.Board,
+		// AOS-565 — ao lado do modelo servido, e com nome próprio: `Provider`, acima, é o
+		// adaptador do lado do nó.
+		UpstreamProvider: resp.UpstreamProvider,
+		ResolvedRegion:   ex.ResolvedRegion,
+		Reason:           cause,
+		Principal:        ex.Principal,
+		Board:            ex.Board,
 	})
-	sealErr := g.sealRouteVariance(ctx, ex, requested, profile.ExpectedModel, served, cause, digest)
+	sealErr := g.sealRouteVariance(ctx, ex, requested, profile.ExpectedModel, served, cause, digest, resp.UpstreamProvider)
 	if sealErr != nil {
 		span.SetAttribute(attrRouteSealFailed, true)
 	}
@@ -428,9 +473,23 @@ func (g *Gateway) governRoute(ctx context.Context, span agentruntime.Span, ex *p
 	return rerr
 }
 
+// fornecedorForaDaOrdem diz se o perfil FIXA o fornecedor e o que o proxy declarou a montante
+// não está na ordem fixada. Falso quando o perfil não o fixa, quando a sonda não correu (campo
+// vazio) e quando o proxy não o declarou ([port.UpstreamProviderUnreported]) — ver a razão em
+// [RouteCauseUpstreamProviderOutOfOrder].
+func (g *Gateway) fornecedorForaDaOrdem(profile RouteProfile, upstream string) bool {
+	if profile.Provider.IsZero() || upstream == "" || upstream == port.UpstreamProviderUnreported {
+		return false
+	}
+	return !profile.Provider.Allows(upstream)
+}
+
 // sealRouteVariance sela a variância no audit de governação do gateway, atribuída ao principal,
 // ao board, ao run e ao passo. Sem selador (um gateway montado à mão) é no-op.
-func (g *Gateway) sealRouteVariance(ctx context.Context, ex *pipeline.Exchange, requested, expected, served, cause, digest string) error {
+//
+// AOS-565: `upstream` é o fornecedor A MONTANTE que o proxy declarou, e entra no selo ao lado do
+// modelo servido — vazio (sonda desligada) não acrescenta nada e o registo é o de antes.
+func (g *Gateway) sealRouteVariance(ctx context.Context, ex *pipeline.Exchange, requested, expected, served, cause, digest, upstream string) error {
 	if g.route.sealer == nil {
 		return nil
 	}
@@ -447,21 +506,22 @@ func (g *Gateway) sealRouteVariance(ctx context.Context, ex *pipeline.Exchange, 
 		hops = append(hops, allowlist.Hop{Sub: h.Sub, ActAs: h.ActAs})
 	}
 	_, err := g.route.sealer.SealRouteVariance(ctx, allowlist.GovRecord{
-		Board:           ex.Board,
-		PrincipalUser:   ex.PrincipalUser,
-		PrincipalAgent:  ex.PrincipalAgent,
-		AgentClass:      ex.AgentClass,
-		HumanRoot:       ex.HumanRoot,
-		DelegationChain: hops,
-		Model:           requested,
-		Region:          ex.ResolvedRegion,
-		Decision:        decision,
-		Reason:          cause,
-		PolicyVersion:   version,
-		Operation:       string(ex.Op),
-		RunID:           ex.RunID,
-		StepID:          ex.StepID,
-		Timestamp:       ex.Now(),
+		Board:            ex.Board,
+		PrincipalUser:    ex.PrincipalUser,
+		PrincipalAgent:   ex.PrincipalAgent,
+		AgentClass:       ex.AgentClass,
+		HumanRoot:        ex.HumanRoot,
+		DelegationChain:  hops,
+		Model:            requested,
+		Region:           ex.ResolvedRegion,
+		Decision:         decision,
+		Reason:           cause,
+		PolicyVersion:    version,
+		Operation:        string(ex.Op),
+		RunID:            ex.RunID,
+		StepID:           ex.StepID,
+		Timestamp:        ex.Now(),
+		UpstreamProvider: upstream,
 	}, expected, served)
 	return err
 }

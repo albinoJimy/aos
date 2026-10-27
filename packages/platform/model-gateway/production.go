@@ -354,6 +354,16 @@ func NewProduction(ctx context.Context, cfg ProductionConfig) (*Gateway, error) 
 			h.CaptureProviderState()
 		}
 	}
+	// AOS-565: a sonda do FORNECEDOR A MONTANTE não tem interruptor próprio — liga-se quando
+	// algum perfil COMPOSTO fixa o fornecedor. É derivada do que foi composto, e não de uma
+	// constante nem de uma bandeira que alguém tem de se lembrar de pôr: sem ordem declarada não
+	// há nada com que comparar o que o proxy reportar, e com ordem declarada medir o efectivo
+	// deixa de ser opcional. No adaptador HTTP, que é quem tem o corpo cru.
+	if len(perfis.WithProvider()) > 0 {
+		if h, ok := adapter.(*adapters.OpenAIHTTPAdapter); ok {
+			h.ObserveUpstreamProvider()
+		}
+	}
 	creds := &credProviderSource{p: cfg.Credentials}
 
 	// (6) Composição fail-closed por construção.

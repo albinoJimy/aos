@@ -1229,6 +1229,35 @@ diz, por rota e por caso, o **encaminhamento** (o caminho a que chegou ao fornec
 AOS_BANCO_PROXY=1 AOS_BANCO_FALSO_BIN=<binário linux do banco> go test -run '^TestAOS558_ProxyReal_ImagemEVideoPeloProxy$' -v -count=1 .
 ```
 
+### O fornecedor efectivo no sentido de volta (AOS-565)
+
+O AOS-558 mediu a **ida** das chaves de roteamento. A **volta** — se o fornecedor efectivo chega
+ao cliente — mede-se com `--fornecedor-na-resposta` (só do subcomando interno `falso-provider`, e
+só com `--estado` e `--forma-do-falso openrouter`): a resposta de chat passa a levar, além do que
+já leva, **três sentinelas de valores distintos**:
+
+- a chave de topo `provider` (`SentinelaDoFornecedor`) — a forma em que a OpenRouter nomeia quem
+  serviu o pedido;
+- a chave de topo **inventada** `aos_sonda` (`SentinelaDaSonda`) — o **controlo**, sem o qual a
+  medida não distingue «o proxy preserva chaves de topo desconhecidas em geral» de «o proxy trata
+  a `provider` de forma especial»;
+- o cabeçalho de resposta `X-Aos-Sonda-Fornecedor` (`SentinelaDoCabecalho`) — porque, se o corpo
+  não passasse, um cabeçalho seria a via alternativa, e saber se ela passa sai de graça.
+
+O cenário `TestAOS565_ProxyReal_FornecedorDeVolta` manda, pelas duas formas de rota e em **três
+corridas** cada, um pedido de chat ao proxy real, e diz por chave se ela chegou **no topo**, no
+topo **com outro valor**, **noutro caminho** do corpo (o caminho vai na medida) ou se foi
+**removida** — em `AOS_BANCO_FORNECEDOR_REPORT`, com os nomes de todos os cabeçalhos da resposta.
+Um pedido que **não chegou ao fornecedor** fica `nao_medida_…` e nunca «removida»: o falso não
+chegou a emitir sentinela nenhuma. Mede, não julga; não corre no gate `banco-ensaio-proxy.sh`:
+
+```bash
+AOS_BANCO_PROXY=1 AOS_BANCO_FALSO_BIN=<binário linux do banco> go test -run '^TestAOS565_ProxyReal_FornecedorDeVolta$' -v -count=1 .
+```
+
+O instrumento tem testes que **correm sem Docker** (`TestAOS565_Falso_*`, `TestAOS565_Classificar`),
+incluindo a regressão de que, **sem** a bandeira, o corpo é o de sempre byte a byte.
+
 O resultado da medição de 2026-10-25 está em
 `docs/reports/spike-litellm-imagem-video-2026-10-25.md`.
 

@@ -29,6 +29,11 @@ import (
 //   - a CLASSE DE ESTADO ([RouteProfile.StateReturn]): se o estado opaco de um turno (ADR-040)
 //     se devolve ao provider. Quem a consome é a projecção 1.3.0 (AOS-515).
 //
+// E, desde o AOS-565, uma quarta — o FORNECEDOR FIXADO ([RouteProfile.Provider]): a ordem de
+// fornecedores, sem fallback, e a política de retenção, que vão na chave de topo `provider` do
+// corpo. Mesma disciplina das outras três: opcional, no fim, e INERTE enquanto nenhum perfil a
+// declarar — sem ela o pedido, o digest e o manifesto são os de sempre, byte a byte.
+//
 // ONDE VIVE O PERFIL. Em código, na tabela [routeProfiles], como desde o AOS-505: muda com uma
 // imagem nova do nó. Desde o AOS-519 (fase A3) um perfil pode também chegar ao nó por um REGISTO
 // DE ENTRADA ASSINADO pelo dono, lido de uma pasta e conferido no arranque (pacote
@@ -144,6 +149,14 @@ func (p RouteProfile) Validate() error {
 		}
 	default:
 		return fmt.Errorf("%w: devolver_em fora do vocabulario (aceites: %s, %s)", ErrBadRouteProfile, StateReturnAtOriginName, StateReturnAtTop)
+	}
+	// AOS-565: a declaração de fornecedor, quando existe, passa pela sua própria validação
+	// fechada. Um objecto `provider` VAZIO é recusado por ela — declarar sem fixar nada seria
+	// uma promessa que o corpo do pedido não cumpre.
+	if p.Provider != nil {
+		if err := p.Provider.Validate(); err != nil {
+			return fmt.Errorf("%w: provider: %w", ErrBadRouteProfile, err)
+		}
 	}
 	return nil
 }
@@ -457,6 +470,20 @@ func (s *RouteProfileSet) WithParams() []string {
 	return out
 }
 
+// WithProvider devolve os nomes pedidos dos perfis do conjunto que FIXAM o fornecedor (AOS-565),
+// pela ordem da tabela. É o que diz, derivado do que foi composto e não de uma constante, se
+// alguma rota deste nó fixa o fornecedor — e por isso se vale a pena medir o fornecedor a
+// montante da volta.
+func (s *RouteProfileSet) WithProvider() []string {
+	var out []string
+	for _, p := range s.todos() {
+		if !p.Provider.IsZero() {
+			out = append(out, p.Requested)
+		}
+	}
+	return out
+}
+
 // parametros devolve os parâmetros do pedido que o perfil declara; o valor-zero quando nenhum.
 func (p RouteProfile) parametros() port.RequestParams {
 	if p.Params == nil {
@@ -514,6 +541,18 @@ func (g *Gateway) aplicarPerfilDaRota(req *port.ChatRequest) map[string]string {
 			manifesto = map[string]string{}
 		}
 		manifesto[port.ParamKeyToolChoice] = escolha
+	}
+	// AOS-565 — O FORNECEDOR FIXADO SAI PELA MESMA PORTA, e pela mesma razão: decide-o o perfil
+	// da rota a que o pedido VAI, e não quem fez o pedido. A atribuição é INCONDICIONAL: sem
+	// perfil que o fixe, o campo fica nil e o que um chamador lhe tivesse posto é apagado — o
+	// fornecedor de um pedido nunca vem de fora do perfil assinado.
+	req.Provider = nil
+	if !perfil.Provider.IsZero() {
+		req.Provider = perfil.Provider
+		if manifesto == nil {
+			manifesto = map[string]string{}
+		}
+		manifesto[port.ParamKeyProvider] = perfil.Provider.Manifest()
 	}
 	return manifesto
 }

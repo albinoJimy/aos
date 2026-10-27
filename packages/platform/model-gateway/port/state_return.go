@@ -172,7 +172,12 @@ func marshalComEstado(w wireChatRequest) ([]byte, error) {
 		Thinking        *ThinkingParam  `json:"thinking,omitempty"`
 		ReasoningEffort string          `json:"reasoning_effort,omitempty"`
 		Reasoning       *ReasoningParam `json:"reasoning,omitempty"`
-	}{w.Tools, w.ToolChoice, w.Stream, w.Temperature, w.Seed, w.MaxTokens, w.Thinking, w.ReasoningEffort, w.Reasoning})
+		// AOS-565 — o fornecedor fixado também sai POR AQUI. Este caminho repete a cauda de
+		// [wireChatRequest], e um pedido com estado, imagem ou vídeo passa só por ele: esquecer
+		// a chave aqui deixaria o fornecedor por fixar exactamente nas chamadas das tools de
+		// modelo, que é onde a media viaja.
+		Provider *ProviderPolicy `json:"provider,omitempty"`
+	}{w.Tools, w.ToolChoice, w.Stream, w.Temperature, w.Seed, w.MaxTokens, w.Thinking, w.ReasoningEffort, w.Reasoning, w.Provider})
 	if err != nil {
 		return nil, err
 	}

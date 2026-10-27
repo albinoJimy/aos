@@ -97,6 +97,17 @@ type Exchange struct {
 	ResolvedProvider string
 	ResolvedRegion   string
 
+	// UpstreamProvider é o FORNECEDOR A MONTANTE que o proxy declarou ter encaminhado
+	// (AOS-565): quem está do LADO DE LÁ do proxy. NÃO É [Exchange.ResolvedProvider] — esse é o
+	// adaptador do lado do nó, quem o nó chama, e é o que o `provider_swap` compara. São dois
+	// sentidos e por isso dois campos: pôr os dois no mesmo poria dois significados no mesmo
+	// campo de um evento selado, e ninguém daria por isso.
+	//
+	// Vazio até a resposta existir — e vazio para sempre quando a sonda não corre. Com a sonda
+	// ligada é o nome que o proxy declarou ou `nao_reportado`
+	// ([port.UpstreamProviderUnreported]), que é o caso esperado em produção hoje.
+	UpstreamProvider string
+
 	// Usage é preenchido pela invocação do provider antes do estágio de metering.
 	Usage port.Usage
 

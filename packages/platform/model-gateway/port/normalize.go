@@ -65,6 +65,10 @@ type wireChatRequest struct {
 	ReasoningEffort string         `json:"reasoning_effort,omitempty"`
 	// AOS-516 — `reasoning`, depois dos outros dois e com `omitempty`, pela mesma razão.
 	Reasoning *ReasoningParam `json:"reasoning,omitempty"`
+	// AOS-565 — o fornecedor FIXADO que o perfil da rota declara, no FIM da struct e com
+	// `omitempty`, pela mesma razão das três de cima: um pedido sem ele serializa os bytes de
+	// sempre. Ver [ProviderPolicy], que escreve sempre `allow_fallbacks: false`.
+	Provider *ProviderPolicy `json:"provider,omitempty"`
 }
 
 // Os modos de [ChatRequest.ToolChoice] que vão no wire como texto (forma OpenAI). Qualquer outro
@@ -192,6 +196,9 @@ func (r ChatRequest) MarshalWire(stream bool) ([]byte, error) {
 		Thinking:        r.Thinking,
 		ReasoningEffort: r.ReasoningEffort,
 		Reasoning:       r.Reasoning,
+		// AOS-565 — e o fornecedor fixado, pela mesma regra: só o que o gateway lá pôs a partir
+		// do perfil da rota.
+		Provider: r.Provider,
 	}
 	// AOS-515 — O ESTADO OPACO SÓ SAI QUANDO O GATEWAY O MARCOU ([MessageState.Return]). Sem
 	// nenhuma mensagem marcada, o caminho é o de sempre e os bytes são os de sempre.

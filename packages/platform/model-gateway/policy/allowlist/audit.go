@@ -98,6 +98,12 @@ type GovRecord struct {
 	// Quando não vazio, sela-se numa obligation própria [ObligationOrigin], a seguir à de governação;
 	// vazio, o selo é, byte a byte, o de sempre.
 	OriginTool string
+	// UpstreamProvider é o FORNECEDOR A MONTANTE que o proxy declarou para esta resposta
+	// (AOS-565): quem está do lado de lá do proxy, e não o adaptador que o nó chama. Só o
+	// preenche a governação da rota, que o tem depois de a resposta existir; vazio — a omissão,
+	// e todo o resto do pacote —, o selo é, byte a byte, o de sempre. Entra na obligation de
+	// governação ao lado do modelo servido.
+	UpstreamProvider string
 	// Timestamp é observacional (a ordem no WORM é o AuditSeq).
 	Timestamp time.Time
 }
@@ -202,6 +208,11 @@ func (r *Recorder) seal(ctx context.Context, rec GovRecord, extra map[string]str
 		"board":          rec.Board,
 		"reason":         rec.Reason,
 		"principal_user": rec.PrincipalUser,
+	}
+	// AOS-565: o fornecedor a montante, quando quem sela o tem. Vazio ⇒ a chave não entra e o
+	// registo é, byte a byte, o de antes.
+	if rec.UpstreamProvider != "" {
+		params["upstream_provider"] = rec.UpstreamProvider
 	}
 	for k, v := range extra {
 		params[k] = v

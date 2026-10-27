@@ -184,6 +184,12 @@ const (
 	// (AOS-526), com o valor [ToolChoiceRequired] ou [ToolChoiceManifestNamed]. A regra do perfil
 	// não entra: o que se grava é o que o pedido levou.
 	ParamKeyToolChoice = "tool_choice"
+	// ParamKeyProvider só entra no manifesto de um turno cujo pedido LEVOU a declaração de
+	// fornecedor do perfil (AOS-565), com o valor de [ProviderPolicy.Manifest]. Não é um
+	// [RequestParams]: é a fixação do fornecedor, que o gateway escreve ao lado dos parâmetros
+	// e pela mesma razão — é por ela que um 4xx deste turno conta como recusa do que o perfil
+	// mandou enviar.
+	ParamKeyProvider = "provider"
 )
 
 // ToolChoiceManifestNamed é o valor de [ParamKeyToolChoice] num turno cujo pedido nomeou a tool.

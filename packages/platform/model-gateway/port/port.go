@@ -45,7 +45,15 @@ import (
 // 1.14.0 (AOS-546, ADR-043 §2.2): a parte de media genérica de entrada ([MediaPart]), com a classe
 // derivada do tipo por uma tabela única ([MediaClassOf]) e posta no campo da sua classe por
 // [Message.AttachMedia]; o wire e as regras das partes de imagem e de vídeo não mudam.
-const Version = "1.14.0"
+//
+// 1.15.0 (AOS-565, ADR-043 §2.4 regra 3): o FORNECEDOR, nos dois sentidos, e os dois aditivos —
+// na IDA, [ChatRequest.Provider] ([ProviderPolicy]: ordem sem fallback e retenção), que o
+// gateway escreve a partir do perfil da rota e que vai na chave de topo `provider` do corpo, no
+// FIM e com `omitempty`, pelo que um pedido sem ela serializa os bytes de sempre; na VOLTA,
+// [ChatResponse.UpstreamProvider], o fornecedor A MONTANTE que o proxy encaminhou, tirado do
+// corpo cru pela sonda [ProbeUpstreamProvider] e por isso fora do wire (`json:"-"`), com
+// [UpstreamProviderUnreported] quando o proxy não o declara. Ver provider.go.
+const Version = "1.15.0"
 
 // Role é o papel de uma mensagem na conversa (forma OpenAI).
 type Role string
@@ -516,6 +524,13 @@ type ChatRequest struct {
 	// allowlist — o único que o nó compõe —, que assim distinguem um turno de uma chamada feita por
 	// uma tool; vazio, os selos são os de sempre. Validado em [ChatRequest.Normalize] ([ErrBadOriginTool]).
 	OriginTool string `json:"-"`
+	// Provider é o FORNECEDOR FIXADO desta rota (AOS-565, ADR-043 §2.4 regra 3; campo aditivo,
+	// MINOR 1.15.0): a ordem de fornecedores, sem fallback, e a política de retenção. As mesmas
+	// regras dos parâmetros do perfil: NÃO se lê de JSON, NÃO é do chamador — o gateway
+	// sobrepõe-no em cada pedido com o do perfil da rota a que o pedido vai, e sem perfil que o
+	// declare fica nil e o pedido é o de sempre. Vai no wire, na chave de topo `provider`, só
+	// quando preenchido. Ver [ProviderPolicy].
+	Provider *ProviderPolicy `json:"-"`
 }
 
 // Choice é uma escolha da resposta de chat (forma OpenAI).
@@ -576,6 +591,17 @@ type ChatResponse struct {
 	// valores de vocabulário fechado. nil quando o perfil não declara nenhum, que é a omissão.
 	// Não é do corpo — é um facto sobre o PEDIDO, escrito pelo gateway —, e não vai no wire.
 	SentParams map[string]string `json:"-"`
+	// UpstreamProvider é o FORNECEDOR A MONTANTE que o proxy encaminhou (AOS-565; campo aditivo,
+	// MINOR 1.15.0): quem está do lado de lá do proxy, e NÃO o adaptador que o nó chama (esse é
+	// o `ResolvedProvider` do pipeline — dois sentidos, dois nomes). Não é um campo do corpo — é
+	// tirado DO corpo cru por [ProbeUpstreamProvider] —, e por isso não vai no wire (`json:"-"`),
+	// como [ChatResponse.Route], [ChatResponse.Shape] e [ChatResponse.State].
+	//
+	// VAZIO ⇒ A SONDA NÃO CORREU (o adaptador não a tem ligada), que é a omissão. Com a sonda
+	// ligada o valor é o nome saneado ou [UpstreamProviderUnreported] — nunca um vazio ambíguo —,
+	// e `nao_reportado` é o caso ESPERADO em produção hoje: que o fornecedor real emita a sua
+	// identidade está por medir (AOS-570a). O caminho de streaming não o preenche.
+	UpstreamProvider string `json:"-"`
 }
 
 // ChatStreamDelta é um incremento (delta) do streaming de chat. Content é o

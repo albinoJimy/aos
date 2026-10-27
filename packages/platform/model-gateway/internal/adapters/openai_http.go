@@ -61,7 +61,18 @@ type OpenAIHTTPAdapter struct {
 	// estado: a sonda do estado opaco do provider corre em cada chat síncrono
 	// ([CaptureProviderState], AOS-514). false — o valor-zero — é o adaptador de sempre.
 	estado bool
+	// fornecedor: a sonda do fornecedor A MONTANTE corre em cada chat síncrono
+	// ([ObserveUpstreamProvider], AOS-565). false — o valor-zero — é o adaptador de sempre.
+	fornecedor bool
 }
+
+// ObserveUpstreamProvider liga a sonda do FORNECEDOR A MONTANTE (AOS-565, ADR-043 §2.4 regra 3):
+// cada resposta de chat síncrona passa a levar em [port.ChatResponse.UpstreamProvider] o que o
+// proxy declarou sobre quem a serviu do lado de lá — ou
+// [port.UpstreamProviderUnreported] quando não o declara, que é o caso esperado hoje. A sonda
+// corre DEPOIS de a resposta ter sido descodificada e não a pode fazer falhar. Chama-se na
+// construção, antes de o adaptador servir tráfego.
+func (a *OpenAIHTTPAdapter) ObserveUpstreamProvider() { a.fornecedor = true }
 
 // CaptureProviderState liga a sonda do estado opaco do provider (AOS-514, ADR-040): cada
 // resposta de chat síncrona passa a levar em [port.ChatResponse.State] o que o provider mandou
@@ -160,6 +171,19 @@ func (a *OpenAIHTTPAdapter) Chat(ctx context.Context, req port.ChatRequest, cred
 		// Conferido contra a resposta descodificada: se as duas leituras não viram a mesma
 		// mensagem, o estado vem marcado como desalinhado e não é guardado.
 		resp.State = port.ProbeProviderStateFor(respBody, resp)
+	}
+	if a.fornecedor {
+		// AOS-565 — o fornecedor A MONTANTE, tirado da chave de topo `provider` do corpo cru. Só
+		// com a sonda ligada; sem ela o campo fica vazio, que é «não se mediu» e não «não foi
+		// reportado».
+		//
+		// É PELO CORPO, E A ALTERNATIVA FICA ESCRITA. Medido a 2026-10-27: o proxy preserva as
+		// chaves de topo desconhecidas (uma chave inventada sobreviveu igual) e reemite TODOS os
+		// cabeçalhos do fornecedor com o prefixo `llm_provider-`. São duas vias; escolhe-se o
+		// corpo e a segunda fica registada para o dia em que o corpo não sirva — duas vias
+		// seriam duas superfícies a manter, e nenhuma das duas está medida contra o fornecedor
+		// REAL (é o AOS-570a).
+		resp.UpstreamProvider = port.ProbeUpstreamProvider(respBody)
 	}
 	return resp, nil
 }

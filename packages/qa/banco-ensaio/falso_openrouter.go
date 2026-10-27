@@ -146,6 +146,8 @@ func erroPedido(msgs []map[string]json.RawMessage) (int, string, bool) {
 
 // servirOpenRouter serve um pedido no wire de chat, na forma da OpenRouter.
 func (f *FalsoDeEstado) servirOpenRouter(w http.ResponseWriter, corpo []byte, topo map[string]json.RawMessage, msgs []map[string]json.RawMessage) {
+	// O cabeçalho da sonda do fornecedor (AOS-565) põe-se antes de qualquer escrita.
+	f.declararFornecedor(w)
 	if codigo, erro, pede := erroPedido(msgs); pede {
 		w.WriteHeader(codigo)
 		_, _ = w.Write([]byte(erro))
@@ -245,10 +247,10 @@ func (f *FalsoDeEstado) servirOpenRouter(w http.ResponseWriter, corpo []byte, to
 	}
 	uso := map[string]any{"prompt_tokens": int64(len(corpo)/4 + 1), "completion_tokens": 16, "total_tokens": int64(len(corpo)/4 + 17)}
 	resposta := func(motivo string, mensagem any) {
-		cru, _ := json.Marshal(map[string]any{
+		cru, _ := json.Marshal(f.comFornecedor(map[string]any{
 			"id": "gen-banco", "object": "chat.completion", "model": modelo, "usage": uso,
 			"choices": []any{map[string]any{"index": 0, "finish_reason": motivo, "message": mensagem}},
-		})
+		}))
 		_, _ = w.Write(cru)
 	}
 	if len(pedido.Tools) == 0 || turnos >= f.turnos() {

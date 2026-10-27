@@ -57,6 +57,11 @@ type FalsoDeEstado struct {
 	// da OpenRouter com o PNG de [PNGDoFalso] (AOS-558). É o que o adaptador `openrouter` do
 	// proxy lê para montar a resposta de `images/generations`.
 	ImagemDeSaida bool
+	// FornecedorNaResposta faz o falso pôr, na resposta de chat na forma da OpenRouter, as
+	// sentinelas do sentido de VOLTA do fornecedor efectivo (AOS-565): as chaves de topo
+	// `provider` e `aos_sonda` e o cabeçalho [CabecalhoDaSondaDoFornecedor]. Só na forma
+	// [FormaOpenRouter]: é a do wire de chat da OpenRouter, que é o que se foi medir.
+	FornecedorNaResposta bool
 
 	chaveEsperada [sha256.Size]byte
 	exigeChave    bool
