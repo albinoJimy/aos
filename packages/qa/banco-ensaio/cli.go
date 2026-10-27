@@ -147,6 +147,9 @@ type opcoes struct {
 	// imagemDeSaida é do subcomando interno `falso-provider` (AOS-558): o falso responde com uma
 	// imagem gerada na forma da OpenRouter.
 	imagemDeSaida bool
+	// fornecedorNaResposta é do subcomando interno `falso-provider` (AOS-565): o falso põe na
+	// resposta de chat as sentinelas do fornecedor efectivo (chaves de topo e cabeçalho).
+	fornecedorNaResposta bool
 	// guardarRespostas liga as respostas guardadas a pedido (AOS-525, ver respostas.go).
 	guardarRespostas bool
 	// As quatro abaixo são da experiência `conselheiro` (AOS-528): o conselheiro real (fornecedor
@@ -332,6 +335,7 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 	fs.StringVar(&o.hostEsperado, "host-esperado", "", "")
 	fs.StringVar(&o.formaDoFalso, "forma-do-falso", "", "")
 	fs.BoolVar(&o.imagemDeSaida, "imagem-de-saida", false, "")
+	fs.BoolVar(&o.fornecedorNaResposta, "fornecedor-na-resposta", false, "")
 	fs.BoolVar(&o.guardarRespostas, "guardar-respostas", false, "")
 	fs.StringVar(&o.conselheiroFornecedor, "conselheiro-fornecedor", "", "")
 	fs.StringVar(&o.conselheiroModelo, "conselheiro-modelo", "", "")
@@ -491,8 +495,8 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 			return SaidaUso
 		}
 	}
-	if o.turnosDoFalso < 0 || o.turnosDoFalso > 15 || (o.turnosDoFalso != 0 && o.estado == "") || o.exigeID || o.imagemDeSaida {
-		fmt.Fprintln(stderr, "aos-ensaio: --turnos-do-falso (1 a 15) so vale com --estado; --exige-id e --imagem-de-saida sao so do subcomando interno falso-provider")
+	if o.turnosDoFalso < 0 || o.turnosDoFalso > 15 || (o.turnosDoFalso != 0 && o.estado == "") || o.exigeID || o.imagemDeSaida || o.fornecedorNaResposta {
+		fmt.Fprintln(stderr, "aos-ensaio: --turnos-do-falso (1 a 15) so vale com --estado; --exige-id, --imagem-de-saida e --fornecedor-na-resposta sao so do subcomando interno falso-provider")
 		return SaidaUso
 	}
 	if o.formaDoFalso != "" && (o.formaDoFalso != FormaOpenRouter || o.estado == "") {
@@ -1317,7 +1321,13 @@ func servirFalso(ctx context.Context, o opcoes, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "aos-ensaio: --imagem-de-saida so vale com --estado")
 		return SaidaUso
 	}
-	doRoteiro, doEstado := NovoProviderFalso(roteiro), &FalsoDeEstado{Proibe: o.estado == EstadoProibe, Turnos: o.turnosDoFalso, ExigeID: o.exigeID, FormaDoEstado: o.formaDoFalso, ImagemDeSaida: o.imagemDeSaida}
+	if o.fornecedorNaResposta && (o.estado == "" || o.formaDoFalso != FormaOpenRouter) {
+		// As sentinelas do fornecedor saem SÓ na forma da OpenRouter ([FalsoDeEstado.servirOpenRouter]):
+		// aceitar o flag nas outras formas dava um ensaio que mede o que o falso nunca emitiu.
+		fmt.Fprintf(stderr, "aos-ensaio: --fornecedor-na-resposta so vale com --estado e --forma-do-falso %s\n", FormaOpenRouter)
+		return SaidaUso
+	}
+	doRoteiro, doEstado := NovoProviderFalso(roteiro), &FalsoDeEstado{Proibe: o.estado == EstadoProibe, Turnos: o.turnosDoFalso, ExigeID: o.exigeID, FormaDoEstado: o.formaDoFalso, ImagemDeSaida: o.imagemDeSaida, FornecedorNaResposta: o.fornecedorNaResposta}
 	var falso http.Handler = doRoteiro
 	if o.estado != "" {
 		falso = doEstado

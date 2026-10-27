@@ -101,6 +101,10 @@ type PedidoDeProxy struct {
 	// ImagemDeSaida faz o falso do estado responder com uma imagem gerada na forma da OpenRouter
 	// ([FalsoDeEstado.ImagemDeSaida], AOS-558). Só com Estado.
 	ImagemDeSaida bool
+	// FornecedorNaResposta faz o falso do estado pôr na resposta de chat as sentinelas do
+	// fornecedor efectivo ([FalsoDeEstado.FornecedorNaResposta], AOS-565). Só com Estado e com
+	// FormaDoFalso = [FormaOpenRouter].
+	FornecedorNaResposta bool
 	// Conselheiro, quando presente, é a SEGUNDA rota do proxy (AOS-528): a do modelo conselheiro,
 	// com o seu alias, o seu adaptador, a sua chave e a sua base — eventualmente de outro
 	// fornecedor. nil ⇒ uma rota só, e a configuração de sempre, byte a byte. Não vale com
@@ -636,6 +640,9 @@ func argumentosDoContentorDoFalso(contentor, rede string, p PedidoDeProxy, chave
 		}
 		if p.ImagemDeSaida {
 			args = append(args, "--imagem-de-saida")
+		}
+		if p.FornecedorNaResposta {
+			args = append(args, "--fornecedor-na-resposta")
 		}
 	} else {
 		args = append(args, "--roteiro", EscreverRoteiro(p.Roteiro))

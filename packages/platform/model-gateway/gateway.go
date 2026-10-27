@@ -108,6 +108,12 @@ type VarianceEvent struct {
 	// declarou). Nesse Kind, Reason é a causa em vocabulário fechado (RouteCause*).
 	ExpectedModel string
 	ServedModel   string
+	// UpstreamProvider é o FORNECEDOR A MONTANTE que o proxy declarou para a resposta (AOS-565),
+	// ao lado do modelo servido. NÃO é [VarianceEvent.Provider], que é o adaptador do lado do nó
+	// — dois sentidos, dois campos. Vazio quando a sonda não corre; `nao_reportado`
+	// ([port.UpstreamProviderUnreported]) quando corre e o proxy não o declara, que é o caso
+	// esperado hoje. Só vem numa variância de rota.
+	UpstreamProvider string
 	// Reason descreve porquê (razão do estágio de roteamento).
 	Reason string
 	// Principal e Board tornam a variância atribuível.
@@ -427,6 +433,9 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 		// comparação da rota, abaixo.
 		declarada := resp.Route
 		resp.Route = port.ServedRoute{Model: declarada.Model}
+		// AOS-565: o fornecedor A MONTANTE que a sonda leu do corpo. Fica no Exchange com nome
+		// próprio — nunca em ResolvedProvider, que é o adaptador do lado do nó.
+		ex.UpstreamProvider = resp.UpstreamProvider
 		ex.Usage = r.Usage
 		// AOS-062: deriva o custo em micro-USD do usage (4 tipos de token × tabela de
 		// preços versionada), agrega por run/árvore e emite no span. Fail-closed: um
@@ -442,6 +451,11 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 		// usage medido estar em mão e de o custo ter sido calculado fail-closed.
 		resp.Usage.CostMicroUSD = ex.Usage.CostMicroUSD
 		pago = true
+		// AOS-565: o fornecedor a montante observado entra na atribuição — no span e no sink —
+		// AQUI, depois de a resposta existir e de o custo estar contado, e antes da comparação
+		// da rota, que pode recusar o turno. A observação de uma chamada que já foi feita não
+		// depende de ela vir a ser aceite.
+		g.noteUpstreamProvider(ctx, span, ex)
 		// AOS-505: a rota declarada pelo proxy é comparada com o perfil DEPOIS de o custo estar
 		// contado — a resposta foi paga, mesmo que em imposição se recuse usá-la.
 		return g.governRoute(ctx, span, ex, &resp, declarada)
@@ -747,6 +761,33 @@ func (g *Gateway) attribute(ctx context.Context, span agentruntime.Span, ex *pip
 		return &attributionError{err: err}
 	}
 	return nil
+}
+
+// noteUpstreamProvider anota na atribuição o FORNECEDOR A MONTANTE desta chamada (AOS-565),
+// depois de a resposta existir. Não sela: o selo da atribuição é PRÉ-EFEITO e já foi escrito —
+// ver [attribution.Recorder.NoteUpstreamProvider] para a razão. No-op sem recorder composto e
+// no-op sem fornecedor medido, que é o caso de um nó em que nenhuma rota fixa o fornecedor.
+func (g *Gateway) noteUpstreamProvider(ctx context.Context, span agentruntime.Span, ex *pipeline.Exchange) {
+	if g.attribution == nil || ex.UpstreamProvider == "" {
+		return
+	}
+	g.attribution.NoteUpstreamProvider(ctx, span, attribution.Record{
+		UserID:           ex.PrincipalUser,
+		AgentID:          ex.PrincipalAgent,
+		AgentClass:       ex.AgentClass,
+		HumanRoot:        ex.HumanRoot,
+		DelegationChain:  toAttrHops(ex.DelegationChain),
+		Model:            ex.ResolvedModel,
+		Region:           ex.ResolvedRegion,
+		KeyID:            ex.KeyID,
+		Operation:        string(ex.Op),
+		PolicyVersion:    ex.PolicyVersion,
+		RunID:            ex.RunID,
+		StepID:           ex.StepID,
+		OriginTool:       ex.OriginTool,
+		UpstreamProvider: ex.UpstreamProvider,
+		Timestamp:        g.clock(),
+	})
 }
 
 // recordCacheSLI mede o cache-hit-rate desta chamada (AOS-061): projecta o usage

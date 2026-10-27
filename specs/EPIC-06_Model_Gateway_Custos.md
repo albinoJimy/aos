@@ -5832,13 +5832,37 @@ existir qualquer geração.
 
 ### Critérios de Aceitação
 
-- [ ] O `RouteProfile` ganha a declaração do fornecedor: ordem de fornecedores (lista, sem
+- [x] O `RouteProfile` ganha a declaração do fornecedor: ordem de fornecedores (lista, sem
       fallback) e a política de retenção. Entra no `Digest()` do perfil, pelo que um perfil com
       fornecedor diferente é um perfil diferente e **a assinatura do dono cobre-o**.
-- [ ] `ChatRequest.MarshalWire` escreve as chaves no corpo **se e só se** o perfil resolvido as
+- [x] `ChatRequest.MarshalWire` escreve as chaves no corpo **se e só se** o perfil resolvido as
       declarar. Um perfil sem declaração produz **exactamente o corpo de hoje**, byte a byte —
-      teste de regressão sobre os bytes do wire.
-- [ ] **PRIMEIRA TAREFA, e é uma medição: o proxy reporta o fornecedor efectivo de volta?**
+      teste de regressão sobre os bytes do wire. *Nota de 2026-10-27:* campo no **fim** da struct
+      com `omitempty`, no molde do AOS-513/516, **e também em `port/state_return.go`** — o
+      `marshalComEstado` repete a cauda à mão e é o único caminho de um pedido com estado, imagem
+      ou vídeo; esquecê-lo deixaria o fornecedor por fixar exactamente nas chamadas das tools de
+      modelo. **A compatibilidade do digest está PROVADA e não afirmada:** os quatro literais que
+      o teste novo assere **já existiam na base** (`route_aos513_test.go:28` e testes de três
+      outros pacotes), pelo que não há circularidade — nenhum registo assinado que exista hoje é
+      invalidado. `allow_fallbacks` **não é declarável**: vai sempre `false`, e é isso que torna a
+      ordem uma *fixação* e não uma preferência.
+- [x] **PRIMEIRA TAREFA, e é uma medição: o proxy reporta o fornecedor efectivo de volta?**
+      *Medido a 2026-10-27, e o resultado destrava o ticket.* Contra o proxy fixado (1.96.2) e o
+      fornecedor falso, nas **duas** formas de rota e **3 corridas cada, 6/6**: uma chave de topo
+      `provider` no corpo da resposta chega **intacta** ao cliente. **O proxy deixa passar.** O que
+      torna a medida sólida é o **controlo**: uma chave *inventada* (`aos_sonda`) sobreviveu
+      exactamente igual, logo não é tratamento especial — é preservação geral de chaves de topo
+      desconhecidas, e **a conclusão não depende do nome da chave**. O LiteLLM até
+      **re-serializa** o documento (acrescenta um `created` que o falso não emite) e mesmo assim as
+      preserva. Instrumento em `packages/qa/banco-ensaio/aos565_*`, repetível sem custo.
+      **Via nova, nunca enumerada:** o proxy reemite **todos** os cabeçalhos do fornecedor com o
+      prefixo `llm_provider-` (o cabeçalho inventado do falso chegou como
+      `llm_provider-x-aos-sonda-fornecedor`) — segunda via viável, **registada e não
+      implementada**, porque uma chega e duas seriam duas superfícies a manter. E confirma-se que
+      **nenhum** `x-litellm-*` nomeia o fornecedor.
+      **`NÃO VERIFICADO`, e é do dono:** se a OpenRouter real emite a identidade, e com que nome e
+      forma. Custa, e é a corrida do AOS-570a. Até lá o valor selado é `nao_reportado`, e o código
+      di-lo assim em vez de prometer o que não vem. *Critério original:*
       Medido a 2026-10-27, os cabeçalhos que ele declara são `x-litellm-model-name` e
       `x-litellm-model-api-base` (`port/route.go:26-30`) — **o modelo e o endpoint, não o
       fornecedor** —, o vocabulário de variância da rota não tem causa de fornecedor
@@ -5856,9 +5880,24 @@ existir qualquer geração.
       (`port/port.go:551-579`) desserializa sem catch-all, logo um campo de topo que o fornecedor
       emita é hoje **descartado em silêncio**. Procurar aí é a primeira coisa a fazer, e é de
       graça.
-- [ ] O fornecedor **efectivo** entra no `attribution.Record` e no evento do turno, ao lado do
-      modelo servido. Quando o proxy não o declara, o valor é o de «não reportado», com o mesmo
-      vocabulário fechado de `ServedLabelUnreported` — **nunca um vazio ambíguo**.
+- [x] O fornecedor **a montante** entra no `attribution.Record`, no span, no selo da variância
+      de rota e no audit de governação. **Nome próprio em todo o lado** (`UpstreamProvider`), e o
+      `ResolvedProvider`/`VarianceEvent.Provider` fica intocado com o seu sentido de sempre — eram
+      dois sentidos a caminho do mesmo campo de um evento selado. **Três posturas, não duas:**
+      vazio = a sonda não correu; `nao_reportado` = correu e o proxy não declarou (**o caso
+      esperado hoje**); nome = declarou.
+      **Uma descoberta que mudou o desenho, e vale registar:** o selo de atribuição é
+      **pré-efeito** (audit-before-effect, ADR-010) — no momento em que sela, o fornecedor a
+      montante **ainda não existe**. Não se lhe pôs um valor inventado: a anotação é pós-resposta,
+      vai ao span e ao sink e **não acrescenta registo ao WORM**, porque acrescentá-lo mudaria a
+      contagem de registos `model:invoke` por chamada, que é o que o burn-down e a reconciliação
+      lêem. Há teste a provar que o selo pré-efeito tem o **mesmo `EntryHash`** com e sem o campo.
+- [ ] **POR FAZER, e amarrado ao AOS-570a: o fornecedor a montante no `turn.recorded`.** Parou na
+      fronteira do módulo — exige um campo em `agentruntime.ModelResponse` (kernel) e uma linha no
+      `runtime_adapter.go`. **Não foi feito de propósito:** até o dono autorizar a medição com
+      fornecedor real, o valor de cada turno seria a constante `nao_reportado`, e um campo de um
+      evento durável que só sabe dizer uma coisa é um campo sem leitor — a lição do AOS-551. Entra
+      quando o valor passar a ser real.
 - [ ] **O nome `fornecedor` já está ocupado, e o ticket não pode fingir que não.** Medido a
       2026-10-27: `Exchange.ResolvedProvider` (`pipeline/pipeline.go:97`) é o **adaptador do lado
       do nó** (`gateway.go:680-681`, `g.adapter.Provider()`), **já viaja** no `VarianceEvent` como
@@ -5870,12 +5909,32 @@ existir qualquer geração.
 - [ ] Sob governação da rota em `enforce`, um fornecedor a montante que não esteja na ordem
       declarada é uma variância de rota, com **causa nova** no vocabulário fechado de
       `route.go:62-74` — distinta do `provider_swap` que já existe.
-- [ ] O banner de postura do nó declara, por rota, se o fornecedor está fixado ou não — pela mesma
-      regra dos outros banners: derivado do que foi composto, não de uma constante.
+- [ ] **POR FAZER: o banner vive em `packages/cmd/aos`**, fora do âmbito desta passagem, que é o
+      módulo do gateway. *Nota:* a sonda **já segue essa regra** — liga-se quando algum perfil
+      composto fixa o fornecedor (`perfis.WithProvider()`), derivado do que foi composto e não de
+      um interruptor, o que evita um knob morto. Falta a linha do banner. *Original:* O banner de
+      postura do nó declara, por rota, se o fornecedor está fixado ou não.
 - [ ] Em produção: um turno cujo corpo leva as chaves e cujo selo nomeia o fornecedor efectivo,
       **com o `drop_params: false` que produção corre**. Este critério é o que fecha o resíduo
       declarado em `docs/reports/desenho-r3-geracao-2026-10-27.md` §3.6: o spike mediu as chaves a chegarem com
       `drop_params: true` e só mediu que, com `false`, **nada as recusa**.
+
+### O que fica declarado como resíduo
+
+- **Nada disto está activo até o dono assinar um perfil que fixe o fornecedor.** Nenhum perfil em
+  código nem em registo assinado o declara, e é por desenho: a declaração é opcional e um perfil
+  que não a traga dá o pedido e o digest de sempre. O mecanismo está provado ponta-a-ponta em
+  teste; em produção é inerte até à assinatura.
+- **O caminho de STREAMING não foi medido**, e o risco é baixo por uma razão medida: **nada em
+  produção chama o `ChatStream`** — os únicos chamadores são o próprio gateway a falar com o
+  adaptador (`gateway.go:523`) e o decorador do banco de ensaio. Numa resposta SSE não há «chave de
+  topo» no mesmo sentido, pelo que se o fornecedor a montante sobrevive aí fica por medir.
+- **O `drop_params: false` que produção corre** não foi exercitado nesta medição (a configuração do
+  banco é fixa em `true`, como no spike AOS-558). É o mesmo resíduo que o spike declarou para a
+  ida, e fecha-se na prova em produção.
+- **A forma do valor.** A sonda só aceita uma **string** de topo. Se a OpenRouter puser o
+  fornecedor num objecto, ou noutro nome, a sonda devolve `nao_reportado` — deliberado, porque não
+  adivinha. É a hipótese que o AOS-570a confirma ou desmente, e aí a sonda muda num sítio só.
 
 ### Fora de âmbito
 
@@ -5898,6 +5957,7 @@ existir qualquer geração.
 | Dependências | **Nenhuma para construir** — os critérios provam-se com qualquer valor de tarifa. **AOS-570a** para a linha REAL da tabela, e portanto para ligar em produção. **O AOS-568 não vai a produção sem este** — uma geração que reserva por tarifas de token é um tecto que mente |
 | Responsável sugerido | Engenheiro de Plataforma |
 | Documentos de referência | `docs/reports/desenho-r3-geracao-2026-10-27.md` (§3.5); `docs/adr/ADR-043-harness-por-capacidades.md` (§2.8, §5 resíduo 4); `packages/platform/model-gateway/pricing/table.go`; `packages/platform/model-gateway/pricing/change.go`; `packages/platform/model-gateway/metering/cost/cost.go`; `packages/cmd/aos/ocr_custo.go`; `packages/integration/model_admission.go` |
+| 1.22 | 2026-10-27 | AOS-565 implementado: a ida (ordem de fornecedores e retencao no perfil, campo opcional que NAO muda o digest — provado contra literais que ja existiam na base) e a volta (uma SONDA sobre o corpo cru, no molde do `State` e do `Shape`, com nome proprio `UpstreamProvider` porque o `ResolvedProvider` ja quer dizer outra coisa). Porta 1.14.0 -> 1.15.0. **A medicao do 1.o criterio deu que o proxy DEIXA PASSAR**, 6/6 nas duas rotas, com um controlo de chave inventada que generaliza a conclusao para alem do nome da chave; e descobriu uma via nunca enumerada, o prefixo `llm_provider-` nos cabecalhos. O selo de atribuicao e PRE-EFEITO e por isso nao podia levar o fornecedor efectivo: a anotacao e pos-resposta e NAO acrescenta registo ao WORM, para nao mudar a contagem que o burn-down le | Equipa AOS |
 
 ### Contexto
 

@@ -66,6 +66,11 @@ const ObligationOrigin = "model_call_origin"
 // AttrOriginTool — a tool que fez a chamada, no span; só quando há uma.
 const AttrOriginTool = "aos.origin.tool"
 
+// AttrUpstreamProvider — o FORNECEDOR A MONTANTE da chamada, no span (AOS-565); só quando a
+// sonda o mediu. O nome é deliberadamente distinto do provedor do lado do nó: este diz quem
+// serviu do lado de lá do proxy.
+const AttrUpstreamProvider = "aos.model.upstream_provider"
+
 // capabilityModelInvoke é a capability selada no registo WORM: a model call é o
 // exercício do direito de invocar um modelo.
 const capabilityModelInvoke = "model:invoke"
@@ -103,6 +108,20 @@ type Record struct {
 	// OriginTool é a tool que fez a chamada (AOS-530, ADR-042 §2.2); vazio num turno do executor.
 	// Quando não vazio, sela-se numa obligation [ObligationOrigin]; vazio, o selo é o de sempre.
 	OriginTool string
+	// UpstreamProvider é o FORNECEDOR A MONTANTE desta chamada (AOS-565, ADR-043 §2.4 regra 3):
+	// quem o proxy encaminhou, do lado de lá — e não o adaptador que o nó chama. Vazio quando a
+	// sonda não corre; `nao_reportado` ([port.UpstreamProviderUnreported]) quando corre e o
+	// proxy não o declara, que é o caso ESPERADO em produção hoje (a outra metade da medição é
+	// o AOS-570a).
+	//
+	// NÃO É UM CAMPO DO SELO PRÉ-EFEITO, E A RAZÃO É UMA INVARIANTE. [Recorder.Record] sela a
+	// atribuição ANTES de o provider ser invocado (audit-before-effect, ADR-010): nesse momento
+	// o fornecedor efectivo ainda NÃO EXISTE, e preenchê-lo ali seria inventá-lo. Quem o escreve
+	// é [Recorder.NoteUpstreamProvider], DEPOIS da resposta — e esse caminho anota o span e o
+	// sink e NÃO acrescenta registo nenhum ao WORM, para que a cadeia de atribuição continue a
+	// ter exactamente um registo por chamada. O selo deste facto, quando ele contradiz o perfil
+	// assinado, é o da variância de rota (`upstream_provider` na obligation de governação).
+	UpstreamProvider string
 	// Timestamp é observacional (a ordem no WORM é o AuditSeq).
 	Timestamp time.Time
 }
@@ -246,6 +265,30 @@ func (r *Recorder) Record(ctx context.Context, span agentruntime.Span, rec Recor
 		return err
 	}
 	return nil
+}
+
+// NoteUpstreamProvider regista o FORNECEDOR A MONTANTE de uma chamada JÁ FEITA (AOS-565):
+// anota-o no span e emite o registo para o [Sink]. É o caminho PÓS-EFEITO da atribuição, e
+// existe por uma razão de ordem, não de gosto:
+//
+//   - [Recorder.Record] sela ANTES do efeito (audit-before-effect), e nesse momento o
+//     fornecedor efectivo ainda não existe;
+//   - acrescentar aqui um segundo registo ao WORM mudaria a contagem de registos `model:invoke`
+//     por chamada, que é o que o burn-down e a reconciliação lêem. Por isso NÃO SELA.
+//
+// Não devolve erro: é observação de um facto de uma chamada que já aconteceu, e falhá-la
+// depois do efeito não desfaz nada. Sem fornecedor medido ([Record.UpstreamProvider] vazio) é
+// no-op — e então nada muda, nem no span nem no sink.
+func (r *Recorder) NoteUpstreamProvider(ctx context.Context, span agentruntime.Span, rec Record) {
+	if rec.UpstreamProvider == "" {
+		return
+	}
+	if span != nil {
+		span.SetAttribute(AttrUpstreamProvider, rec.UpstreamProvider)
+	}
+	if r.sink != nil {
+		r.sink.Emit(ctx, rec)
+	}
 }
 
 // toAuditHops projecta os hops de atribuição para o modelo do audit.
