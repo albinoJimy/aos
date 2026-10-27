@@ -56,6 +56,14 @@ zero, é desconhecida.
   Contá-lo inflacionava o indicador para o lado que faz a fábrica parecer pior do que é — e na
   primeira medição real a diferença foi entre `5/1` e `1/1`.
 
+**O que não entrou é declarado.** O `indicadores` termina com linhas `NÃO CONTADOS` quando há
+linhas ilegíveis, registos sem data situável, ou achados sem veredicto válido. Um achado
+malformado **não entra no denominador** da calibração: já arrastava 100% para 67% em silêncio, e
+baixar a calibração por um registo mal escrito fá-la mentir no sentido exacto em que ninguém
+desconfia — o de parecer que a revisão está a inventar achados. E uma janela `--desde` não
+positiva é recusada com exit `2` em vez de ser lida como «o ledger inteiro», que era o oposto do
+que o flag diz.
+
 **O que este instrumento não é.** Não é um gate, e não entra no `run.sh` — no runner não haveria
 ledger que ler, e um gate que passa sempre é pior do que verificação nenhuma. Continua a
 depender de alguém chamar o `medir`. O que muda é que o número **acumula e lê-se**: uma entrada
