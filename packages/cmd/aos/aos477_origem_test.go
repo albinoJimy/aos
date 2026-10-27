@@ -399,13 +399,20 @@ func TestAOS477IdDoRunFilhoTemOsVectoresDoOrquestrador(t *testing.T) {
 }
 
 // aos477VectoresDoRunFilho: node_id → id do run filho do pedido `p`.
+//
+// ESTES VECTORES SÃO EXEMPLOS, E ISSO NÃO CHEGOU. Quando o AOS-483 acrescentou a regra da chave
+// durável ao escape, estes valores codificavam o `:` cru — e só dois deles o continham. Um
+// vector a menos e a divergência entre os dois binários passava verde. O varrimento por
+// predicado está em `aos483_origem_escape_test.go`; isto fica como amostra legível, não como a
+// prova.
 var aos477VectoresDoRunFilho = map[string]string{
-	// O ALFABETO INTEIRO da gramática: só o `.` se escapa (revisão da ronda 2, B-a).
-	"azAZ09_-.:": "p~azAZ09_-+2e:",
+	// O ALFABETO INTEIRO da gramática: escapam-se o `.` (não representável num subject NATS) e,
+	// desde o AOS-483, o `:` (delimitador de `run_id:step_id` na chave de idempotência).
+	"azAZ09_-.:": "p~azAZ09_-+2e+3a",
 	// 128 bytes (o tecto) com um `.` no fim.
 	strings.Repeat("a", 127) + ".": "p~" + strings.Repeat("a", 127) + "+2e",
 	"n1":                           "p~n1",
-	"recolha.v1:a":                 "p~recolha+2ev1:a",
+	"recolha.v1:a":                 "p~recolha+2ev1+3aa",
 	"a.b":                          "p~a+2eb",
 	"a_2eb":                        "p~a_2eb",
 	"a+b":                          "p~a++b",

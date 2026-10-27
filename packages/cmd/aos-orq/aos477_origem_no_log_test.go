@@ -399,13 +399,18 @@ func planRecorderDeTeste(t *testing.T, runID, planID string) *runlifecycle.PlanR
 // `aos477VectoresDoRunFilho`): o nó confere o `node_id` declarado contra o id do run filho com a sua
 // cópia do escape; se as duas cópias divergirem, um dos dois testes fica vermelho.
 func TestAOS477ChildRunIDTemOsVectoresDoNo(t *testing.T) {
+	// ESTES VECTORES SÃO EXEMPLOS, E ISSO NÃO CHEGOU (AOS-483). Quando a regra da chave durável
+	// entrou no escape, dois destes oito mudaram — e um vector a menos e a divergência entre as
+	// duas cópias passava verde. O varrimento por predicado está em
+	// `aos483_node_id_chave_test.go`; isto fica como amostra legível, não como a prova.
 	for no, quer := range map[string]string{
-		// O ALFABETO INTEIRO da gramática: só o `.` se escapa (revisão da ronda 2, B-a).
-		"azAZ09_-.:": "p~azAZ09_-+2e:",
+		// O ALFABETO INTEIRO da gramática: escapam-se o `.` (não representável num subject NATS)
+		// e, desde o AOS-483, o `:` (delimitador de `run_id:step_id` na chave de idempotência).
+		"azAZ09_-.:": "p~azAZ09_-+2e+3a",
 		// 128 bytes (o tecto) com um `.` no fim.
 		strings.Repeat("a", 127) + ".": "p~" + strings.Repeat("a", 127) + "+2e",
 		"n1":                           "p~n1",
-		"recolha.v1:a":                 "p~recolha+2ev1:a",
+		"recolha.v1:a":                 "p~recolha+2ev1+3aa",
 		"a.b":                          "p~a+2eb",
 		"a_2eb":                        "p~a_2eb",
 		"a+b":                          "p~a++b",

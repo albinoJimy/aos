@@ -88,6 +88,7 @@ import (
 	"fmt"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	"github.com/aos-ref/kernel/agent-runtime/durable"
 	"github.com/aos-ref/substrate/eventstore"
 )
 
@@ -227,7 +228,15 @@ func idDoRunFilho(plano, nodeID string) string {
 		switch {
 		case c == marcaDeEscapeDoRunFilho:
 			b = append(b, marcaDeEscapeDoRunFilho, marcaDeEscapeDoRunFilho)
-		case eventstore.CaractereNaoRepresentavel(rune(c)) || c == separadorDoRunFilho[0]:
+		// AOS-483: SÃO DUAS REGRAS. O id do run filho é ao mesmo tempo um `stream_id` e um
+		// `run_id` da chave de idempotência do runtime durável, e os dois recusam coisas
+		// diferentes — um subject NATS representa `:`, a chave `run_id:step_id` não. Esta
+		// linha lia só o predicado do Event Store, tal como a do `aos-orq`; as duas têm de
+		// ler os mesmos dois, senão o orquestrador compõe uma forma e o nó espera outra, e a
+		// conferência da origem recusa um run legítimo.
+		case eventstore.CaractereNaoRepresentavel(rune(c)) ||
+			durable.CaractereProibidoNaChave(rune(c)) ||
+			c == separadorDoRunFilho[0]:
 			b = append(b, marcaDeEscapeDoRunFilho)
 			b = append(b, hex.EncodeToString([]byte{c})...)
 		default:

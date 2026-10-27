@@ -8239,16 +8239,59 @@ stream NATS. O runtime durável recusa-o (`durable: run_id/step_id não pode con
 
 ### Critérios de Aceitação
 
-- [ ] Ou a gramática do plano recusa `:` num `node_id` (com o validador estrutural, fail-closed,
+- [x] Ou a gramática do plano recusa `:` num `node_id` (com o validador estrutural, fail-closed,
       antes de materializar), ou o `aos-orq` escapa-o no id do run-filho, e o nó (AOS-477) confere
       a mesma forma escapada.
-- [ ] Teste por processo: um plano com um `node_id` com `:` ou é recusado na validação, ou o seu
+- [x] Teste por processo: um plano com um `node_id` com `:` ou é recusado na validação, ou o seu
       run-filho corre até ao fim.
-- [ ] As três gramáticas (plano, escape do `aos-orq`, conferência do nó) ficam presas por teste.
+- [x] As três gramáticas (plano, escape do `aos-orq`, conferência do nó) ficam presas por teste.
 
 ### Estado
 
-**ABERTO.**
+**IMPLEMENTADO (2026-10-27) — por verificar em produção.**
+
+**A saída escolhida foi a segunda, e não por preferência: o canon já a tinha escolhido.** O
+`ADR-029` §3 registou «escapar o `node_id` no `childRunID`» como ESCOLHIDA e implementada, com a
+marca `+` e a razão de não ser o `_`. O mecanismo existia e é injectivo — o defeito era mais fino
+do que o ticket descrevia: **o escape decidia por uma regra só**. O `deveEscapar` derivava de
+`eventstore.CaractereNaoRepresentavel`, e um subject NATS representa `:` perfeitamente, pelo que
+ele atravessava intacto.
+
+O id do run filho serve **duas** regras: é um `stream_id` do Event Store e é um `run_id` da chave
+de idempotência `run_id:step_id` do runtime durável. Cada uma recusa coisas diferentes. Agora
+cada uma entra pelo SEU predicado — `durable.CaractereProibidoNaChave` passou a exportado para o
+efeito, e é um predicado e não a constante, pela mesma razão que a nota do `deveEscapar` já
+tinha aprendido sobre o Event Store: uma constante copiada vira um subconjunto próprio da regra
+no dia em que ela apertar, e a ponta de fora continua a passar o que a de dentro já recusa.
+
+**A gramática do plano não foi tocada**, pelo que o `TestAOS424CharsetDoNodeIDEstaAcopladoAoStream`
+— o tripwire que existe para quem a apertar ver o acoplamento — fica verde, e o prompt de
+decomposição não muda.
+
+**O nó tinha a mesma regra, na cópia antiga, e isso era uma regressão por entregar.** O
+`idDoRunFilho` do `cmd/aos` reconstrói a forma para conferir a origem (ADR-018: os dois binários
+não se importam). Corrigir só o `aos-orq` fazia-o compor `run-x~etapa+3abuild` enquanto o nó
+esperava `run-x~etapa:build` — a falha mudava do runtime durável para `errOrigemMalformada`, e o
+run legítimo continuava a não correr. As duas cópias derivam agora dos mesmos dois predicados.
+
+**E o teste que devia ter apanhado isto não apanhou.** O
+`TestAOS477IdDoRunFilhoTemOsVectoresDoOrquestrador` percorre um mapa de vectores escritos à mão;
+nenhum dos oito exercitava a divergência nova, e ele ficou **verde** com os dois lados a produzir
+ids diferentes. É o padrão da allowlist escrita à mão — um detector que partilha o modo de falha
+do defeito que persegue. Os vectores foram actualizados (dois mudaram, com o `:` escapado) e
+ficam como amostra legível; a prova passou a ser por varrimento do espaço de um byte contra os
+predicados, dos dois lados.
+
+**Prova de discriminação, nos dois binários.** Com a correcção revertida e o import mantido vivo:
+no `aos-orq`, `TestAOS483IDDoRunFilhoEAceitoPelaChaveDuravel`,
+`TestAOS483EscapeCobreOsDoisPredicados` e `TestAOS483OsDoisPontosEscapamDeFacto` ficam vermelhos;
+no `cmd/aos`, `TestAOS483EscapeDoNoCobreOsDoisPredicados` nomeia o `byte 0x3a` e
+`TestAOS483OsDoisPontosNaoChegamCruos` reproduz `run-x~etapa:build`. Um teste que passasse nos
+dois estados não estaria a testar a alteração.
+
+**NÃO VERIFICADO:** um plano real com um `node_id` com `:` submetido a um nó vivo, ponta-a-ponta.
+A prova é em processo — o id composto é aceite pela `IdempotencyKey`, é um `stream_id` válido, e
+a conferência da origem do nó reconhece-o —, não uma corrida de produção.
 
 ---
 
