@@ -73,7 +73,14 @@ func erroDaTool(tool, causa string) error {
 // pode falhar. As listas não são escritas de novo aqui: são as MESMAS que cada tool já declara
 // para a sua métrica ([ocrCausas], [videoCausas]) e para a sua recusa — uma segunda lista
 // divergiria da primeira no PR seguinte.
-func vocabularioDeErro() map[string]map[string]bool {
+//
+// AS TOOLS DE MODELO COMPOSTAS ENTRAM POR ARGUMENTO (AOS-566), e não pelo mapa literal: desde que
+// o bloco `modelo` deixou de ser de duas tools com nome fixo, o nome de uma tool de modelo é do
+// REGISTO, e escrevê-lo aqui repunha pelo lado do erro a barreira por nome que a composição
+// tirou. Cada ligação traz o seu conjunto ([ligacaoDeModelo.vocabulario]), que é o da classe dela.
+// As duas entradas fixas da `ocr_read` e da `video_read` ficam, porque [causaDeclarada] as julga
+// sem ter ligação nenhuma à mão.
+func vocabularioDeErro(compostas ...toolDeModelo) map[string]map[string]bool {
 	conjunto := func(causas ...string) map[string]bool {
 		m := make(map[string]bool, len(causas))
 		for _, c := range causas {
@@ -88,13 +95,18 @@ func vocabularioDeErro() map[string]map[string]bool {
 	}
 	// A `media_view` falha com o vocabulário da leitura local confinada — o mesmo da `ocr_read`,
 	// de que usa o leitor.
-	return map[string]map[string]bool{
+	m := map[string]map[string]bool{
 		artifactWriteToolName: com(artCausaEntrada, artCausaTipo, artCausaConteudo, artCausaGrande,
 			artCausaRun, artCausaVolume, artCausaCifra, artCausaDisco, artCausaRegisto),
 		mediaViewToolName: com(ocrCausas()...),
 		ocrToolName:       com(ocrCausas()...),
 		videoToolName:     com(videoCausas()...),
 	}
+	for _, t := range compostas {
+		c := t.comum()
+		m[c.tool] = c.vocabulario
+	}
+	return m
 }
 
 // causasDoSeloDeHandle são as causas com que a selagem em quarentena pode falhar.
@@ -118,8 +130,8 @@ func causasDoSeloDeHandle() []string {
 
 // conferirVocabularioDeErro exige que toda a tool em `registadas` tenha vocabulário declarado em
 // [vocabularioDeErro]. Fail-closed: uma tool nova sem entrada não arranca.
-func conferirVocabularioDeErro(registadas []string) error {
-	vocab := vocabularioDeErro()
+func conferirVocabularioDeErro(registadas []string, compostas ...toolDeModelo) error {
+	vocab := vocabularioDeErro(compostas...)
 	var faltam []string
 	for _, t := range registadas {
 		if len(vocab[t]) == 0 {

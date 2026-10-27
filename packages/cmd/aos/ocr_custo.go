@@ -150,14 +150,23 @@ func producerDoCustoDeTool() eventstore.Producer {
 	return eventstore.Producer{NHIID: toolModelCostNHI}
 }
 
-// reservaMaxDoOCR devolve o máximo por chamada (ver o cabeçalho). Sem tabela, o custo é zero e a
-// reserva é só de tokens; com tabela e sem preço para o par, erro (o arranque já o recusa antes).
+// reservaMaxDoOCR devolve o máximo por chamada com o `max_tokens` POR OMISSÃO da classe imagem —
+// o da `ocr_read`, e aquele com que o AOS-529 mediu a instrução.
 func reservaMaxDoOCR(tabela *pricing.Table, alias, region string) (budget.Amount, error) {
-	tecto := budget.Amount{Tokens: ocrTokensDeEntradaMax + ocrMaxTokens}
+	return reservaDaImagem(tabela, alias, region, ocrMaxTokens)
+}
+
+// reservaDaImagem é o mesmo com o `max_tokens` EFECTIVO da tool (o do bloco `modelo`, ou o da
+// classe): a reserva de uma tool de imagem é sempre o máximo, e o máximo depende do limite que a
+// entrada do registo declara (AOS-566). Sem tabela, o custo é zero e a reserva é só de tokens; com
+// tabela e sem preço para o par, erro (o arranque já o recusa antes).
+func reservaDaImagem(tabela *pricing.Table, alias, region string, maxTokens int) (budget.Amount, error) {
+	saida := int64(maxTokens)
+	tecto := budget.Amount{Tokens: ocrTokensDeEntradaMax + saida}
 	if tabela == nil {
 		return tecto, nil
 	}
-	amt, err := cost.NewCalculator(tabela).Cost(cost.TokenCounts{PromptTokens: ocrTokensDeEntradaMax, CompletionTokens: ocrMaxTokens}, alias, region)
+	amt, err := cost.NewCalculator(tabela).Cost(cost.TokenCounts{PromptTokens: ocrTokensDeEntradaMax, CompletionTokens: saida}, alias, region)
 	if err != nil {
 		return budget.Amount{}, fmt.Errorf("%w: alias %q, regiao %q: %v", ErrOCRSemPreco, alias, region, err)
 	}

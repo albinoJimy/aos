@@ -7,15 +7,17 @@ package main
 // peça — o que as duas partilham está em tool_de_modelo.go, e é o código da `ocr_read`:
 //
 //   - O REGISTO. A tool entra pelo registo de tools do operador (`AOS_MODEL_TOOLS`) com o bloco
-//     `"modelo": {"alias": "..."}` (por exemplo `video-visao`). Só a `ocr_read` e a `video_read` o
-//     podem ter. A capability e o recurso são FIXOS e são os da `ocr_read`: `cap:fs.read` e
-//     `doc://{doc_id}`. A mesma capability é a mesma leitura por run (ADR-042 §2.8): com
+//     `"modelo": {"alias": "...", "classe": "video"}` (por exemplo `video-visao`). Desde o AOS-566
+//     o que liga esta máquina é a CLASSE declarada, não o nome `video_read`; a `video_read` é a
+//     configuração dela que o manifesto de produção traz, e a classe dispensa-se nela só pela
+//     ponte de compatibilidade ([classePorOmissao]). A capability e o recurso são FIXOS e são os
+//     da `ocr_read`: `cap:fs.read` e `doc://{doc_id}`. A mesma capability é a mesma leitura por run (ADR-042 §2.8): com
 //     `cap:fs.read` armada, um run lê UM ficheiro da pasta semeada, venha da `doc_read`, da
 //     `ocr_read` ou da `video_read` — o vídeo é mais um documento semeado, e uma tool nova não abre
 //     uma segunda leitura. O mesmo recurso nomeia o mesmo ficheiro (ver a pasta, abaixo).
 //   - A MEDIAÇÃO, O GATEWAY, A IDENTIDADE. Como a `ocr_read`: uma [referencemonitor.CostingToolFunc]
-//     registada no RM com `RegisterCosting` ([registarVideo]); o efeito é UMA chamada `Gateway.Chat`
-//     ao gateway do nó, com o token NHI do run, o run e o passo da tool call (pela reescrita do
+//     registada no RM com `RegisterCosting` ([registarToolDeModelo]); o efeito é UMA chamada
+//     `Gateway.Chat` ao gateway do nó, com o token NHI do run, o run e o passo da tool call (pela reescrita do
 //     efeito) e `OriginTool: "video_read"`. Sem credencial a tool falha ANTES de ler o ficheiro.
 //   - O REGISTO ASSINADO. Só um registo de entrada de uso `tool` de VÍDEO (AOS-536 parte 1: perfil
 //     com a capacidade `video`, relatório `video` qualificado do modo real) liga a tool; um registo
@@ -59,7 +61,6 @@ import (
 	budget "github.com/aos-ref/control-plane/budget"
 	"github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
-	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 	modelgateway "github.com/aos-ref/platform/model-gateway"
 	"github.com/aos-ref/platform/model-gateway/metering/cost"
 	"github.com/aos-ref/platform/model-gateway/policy/allowlist"
@@ -191,15 +192,15 @@ type ligacaoVideo struct {
 	tabela *pricing.Table
 }
 
-// comporLigacaoVideo confere as condições de ARRANQUE da tool e compõe a ligação, sem o gateway —
-// como [comporLigacaoOCR]: a allowlist, um registo de uso `tool` DE VÍDEO, o preço (e a reserva do
-// vídeo mais longo, que tem de se calcular), e a pasta por último.
-func comporLigacaoVideo(spec *modelToolSpec, assinados *perfisAssinados, externa *allowlist.Policy, region, board string, comCusto bool) (*ligacaoVideo, error) {
+// comporLigacaoDeVideo confere as condições de ARRANQUE de uma tool da CLASSE VÍDEO e compõe a
+// ligação, sem o gateway — como [comporLigacaoDeImagem]: a allowlist, um registo de uso `tool` DE
+// VÍDEO, o preço (e a reserva do vídeo mais longo, que tem de se calcular), e a pasta por último.
+func comporLigacaoDeVideo(lim limitesDaTool, spec *modelToolSpec, assinados *perfisAssinados, externa *allowlist.Policy, region, board string, comCusto bool) (toolDeModelo, error) {
 	alias, perfilDigest, tabela, err := conferirArranqueDeModelo(spec, modelgateway.CapabilityVideo, assinados, externa, region, board, comCusto, errosDoVideo)
 	if err != nil {
 		return nil, err
 	}
-	reservaMax, _, err := reservaDoVideo(tabela, alias, region, videoDuracaoMax)
+	reservaMax, _, err := reservaDoVideoAte(tabela, alias, region, videoDuracaoMax, lim.maxTokens)
 	if err != nil {
 		return nil, fmt.Errorf("%w: alias %q, regiao %q: %v", ErrVideoSemPreco, alias, region, err)
 	}
@@ -207,25 +208,42 @@ func comporLigacaoVideo(spec *modelToolSpec, assinados *perfisAssinados, externa
 	if err != nil {
 		return nil, err
 	}
-	l := novaLigacaoVideo(alias, region, board, perfilDigest, pasta, raiz)
+	l := novaLigacaoDeVideo(lim, region, board, perfilDigest, pasta, raiz)
 	l.tabela, l.reservaMax = tabela, reservaMax
 	return l, nil
 }
 
-// novaLigacaoVideo monta a ligação com as constantes da tool, sem o gateway e sem preço.
+// novaLigacaoVideo monta a ligação da `video_read` com os limites POR OMISSÃO da classe vídeo, sem
+// o gateway e sem preço.
 func novaLigacaoVideo(alias, region, board, perfilDigest, pasta string, raiz *os.Root) *ligacaoVideo {
-	l := &ligacaoVideo{ligacaoDeModelo: novaLigacaoDeModelo(videoToolName, "video_read (AOS-536)", alias, region, board, perfilDigest, pasta, raiz,
-		videoPrazo, videoDigestDaInstrucao(videoInstrucaoSistema, videoInstrucaoPedido), videoCausas())}
-	l.reservaMax, _, _ = reservaDoVideo(nil, alias, region, videoDuracaoMax)
+	lim := limitesDaTool{nome: videoToolName, alias: alias, classe: port.MediaClassVideo,
+		maxTokens: videoMaxTokens, prazo: videoPrazo}
+	return novaLigacaoDeVideo(lim, region, board, perfilDigest, pasta, raiz)
+}
+
+// novaLigacaoDeVideo monta a ligação de uma tool da classe vídeo, sem o gateway e sem preço.
+func novaLigacaoDeVideo(lim limitesDaTool, region, board, perfilDigest, pasta string, raiz *os.Root) *ligacaoVideo {
+	l := &ligacaoVideo{ligacaoDeModelo: novaLigacaoDeModelo(lim, "video_read (AOS-536)", region, board, perfilDigest, pasta, raiz,
+		videoDigestDaInstrucao(videoInstrucaoSistema, videoInstrucaoPedido), videoCausas())}
+	l.reservaMax, _, _ = reservaDoVideoAte(nil, lim.alias, region, videoDuracaoMax, lim.maxTokens)
 	return l
 }
 
-// reservaDoVideo devolve o máximo que uma chamada sobre um vídeo com a duração dada pode custar — os
-// tokens de entrada da duração ([videoTokensDeEntrada]) mais o `max_tokens` de saída, e o custo
-// desses tokens pela tabela de preços, pelo MESMO calculador que o gateway usa no custo medido —, e
-// os tectos que uma resposta não medida cobra. Sem tabela, o custo é zero.
+// comum é a parte partilhada da ligação ([toolDeModelo]).
+func (l *ligacaoVideo) comum() *ligacaoDeModelo { return &l.ligacaoDeModelo }
+
+// reservaDoVideo é [reservaDoVideoAte] com o `max_tokens` POR OMISSÃO da classe vídeo — o da
+// `video_read`, e aquele com que o AOS-537 mediu a instrução.
 func reservaDoVideo(tabela *pricing.Table, alias, region string, duracao time.Duration) (budget.Amount, tectoDaChamada, error) {
-	tecto := tectoDaChamada{entrada: videoTokensDeEntrada(duracao), saida: videoMaxTokens}
+	return reservaDoVideoAte(tabela, alias, region, duracao, videoMaxTokens)
+}
+
+// reservaDoVideoAte devolve o máximo que uma chamada sobre um vídeo com a duração dada pode custar — os
+// tokens de entrada da duração ([videoTokensDeEntrada]) mais o `max_tokens` EFECTIVO de saída, e o
+// custo desses tokens pela tabela de preços, pelo MESMO calculador que o gateway usa no custo
+// medido —, e os tectos que uma resposta não medida cobra. Sem tabela, o custo é zero.
+func reservaDoVideoAte(tabela *pricing.Table, alias, region string, duracao time.Duration, maxTokens int) (budget.Amount, tectoDaChamada, error) {
+	tecto := tectoDaChamada{entrada: videoTokensDeEntrada(duracao), saida: int64(maxTokens)}
 	amt := budget.Amount{Tokens: tecto.entrada + tecto.saida}
 	if tabela == nil {
 		return amt, tecto, nil
@@ -371,39 +389,40 @@ func caixaDoMP4(b []byte, tipo string) ([]byte, bool) {
 }
 
 // executar é a [referencemonitor.CostingToolFunc] da `video_read`. Só o despacho do RM a chama,
-// depois do permit.
+// depois do permit. A sequência é a de qualquer tool de modelo ([executarDeModelo]); o que é da
+// `video_read` é a classe da media que ela lê.
 func (l *ligacaoVideo) executar(ctx context.Context, input []byte) ([]byte, int64, error) {
-	var in entradaOCR
-	if err := json.Unmarshal(input, &in); err != nil || in.Schema != videoInputSchema || in.DocID == "" || in.RunID == "" || in.StepID == "" {
-		return l.falhar(ocrCausaEntrada, 0)
-	}
-	// A IDENTIDADE ANTES DE TUDO: sem o token do run não se lê o ficheiro.
-	credencial := modelCredentialFromContext(ctx)
-	if credencial == "" {
-		return l.falhar(ocrCausaSemNHI, 0)
-	}
+	return executarDeModelo(ctx, &l.ligacaoDeModelo, classeDeMedia{
+		schema:    videoInputSchema,
+		sistema:   videoInstrucaoSistema,
+		pedido:    videoInstrucaoPedido,
+		maxTokens: l.maxTokens,
+		sucesso:   videoResultadoDescrito,
+		preparar:  l.prepararVideo,
+	}, input)
+}
+
+// prepararVideo lê o vídeo do `doc_id` e apura o que a chamada dela precisa. A diferença para a
+// `ocr_read` é a reserva: a da `video_read` é FUNÇÃO DA DURAÇÃO ([reservaDoVideo]), e dela saem
+// também os tectos que uma resposta não medida cobra. Sem preço para o par (alias, região) não há
+// reserva, e a chamada recusa-se antes de chegar ao modelo.
+func (l *ligacaoVideo) prepararVideo(_ context.Context, in entradaOCR) (pedidoDeMedia, string) {
 	parte, duracao, causa := l.lerVideo(in.DocID)
 	if causa != "" {
-		return l.falhar(causa, 0)
+		return pedidoDeMedia{}, causa
 	}
-	// A RESERVA: com o vídeo lido e antes do pedido, o máximo DESTA chamada — função da duração — no
-	// tecto do run. Não cabe ⇒ negada sem chamar o modelo.
-	maximo, tecto, err := reservaDoVideo(l.tabela, l.alias, l.region, duracao)
+	maximo, tecto, err := reservaDoVideoAte(l.tabela, l.alias, l.region, duracao, l.maxTokens)
 	if err != nil {
-		return l.falhar(ocrCausaOrcamento, 0)
+		return pedidoDeMedia{}, ocrCausaOrcamento
 	}
-	reserva, causa := l.reservar(ctx, in.RunID, maximo)
-	if causa != "" {
-		return l.falhar(causa, 0)
-	}
-	return l.chamar(ctx, in, credencial, reserva, tecto,
-		[]port.Message{
-			{Role: port.RoleSystem, Content: videoInstrucaoSistema},
-			{Role: port.RoleUser, Content: videoInstrucaoPedido, Videos: []port.VideoPart{parte}},
-		}, videoMaxTokens, videoResultadoDescrito,
-		func(resp port.ChatResponse, servido string) ([]byte, string) {
+	return pedidoDeMedia{
+		parte:  port.MediaPart(parte),
+		maximo: maximo,
+		cobrar: tecto,
+		interpretar: func(resp port.ChatResponse, servido string) ([]byte, string) {
 			return l.interpretar(resp, parte, duracao, servido)
-		})
+		},
+	}, ""
 }
 
 // interpretar decide o que uma resposta do modelo é: o resultado `aos-video/v1` e `descrito`, ou a
@@ -425,35 +444,16 @@ func (l *ligacaoVideo) interpretar(resp port.ChatResponse, parte port.VideoPart,
 	return out, videoResultadoDescrito
 }
 
-// registarVideo regista a `video_read` no RM do nó com RegisterCosting. Corre no Bootstrap, DEPOIS
-// de o runtime seguro existir. Fail-closed: sem o gateway ligado, ou com o registo recusado, o
-// arranque aborta.
-func registarVideo(sec interface {
-	RegisterCosting(string, referencemonitor.CostingToolFunc) error
-}, l *ligacaoVideo, log func(string, ...any)) error {
-	if l == nil {
-		return nil
-	}
-	if l.gw == nil {
-		return ErrVideoSemGateway
-	}
-	if err := sec.RegisterCosting(videoToolName, l.executar); err != nil {
-		return fmt.Errorf("aos: registar a tool %s: %w", videoToolName, err)
-	}
-	log("%s", l.linhaDoArranque())
-	return nil
-}
-
 // linhaDoArranque declara a tool ligada: o que ela faz, o que chama e o que esta versão NÃO faz.
 func (l *ligacaoVideo) linhaDoArranque() string {
 	return fmt.Sprintf("tool %s LIGADA (EPIC-08/AOS-536, molde ADR-042): le um video MP4 (ate %d bytes e %s, a duracao da mvhd) do nivel de topo de %s=%q, montada so de leitura (a pasta da ocr_read), e manda-o inteiro a UMA chamada ao Model Gateway deste no — o mesmo dos turnos —, com o token NHI do run e o run e o passo da tool call. Alias %q (board %q, regiao %q), perfil do registo assinado de uso tool de video %s; instrucao fixa %s; max_tokens %d; prazo %s; sem tools oferecidas ao modelo de video; sem nova tentativa. Mediada pelo RM com %s e o recurso %s. CUSTO: %s",
-		videoToolName, port.MaxVideoBytes, videoDuracaoMax, ocrSeedDirEnv, l.pasta, l.alias, l.board, l.region, l.perfilDigest, l.digestDaInstrucao, videoMaxTokens, l.prazo, ocrCapability, ocrResourceValue, l.posturaDoCusto())
+		l.tool, port.MaxVideoBytes, videoDuracaoMax, ocrSeedDirEnv, l.pasta, l.alias, l.board, l.region, l.perfilDigest, l.digestDaInstrucao, l.maxTokens, l.prazo, ocrCapability, ocrResourceValue, l.posturaDoCusto())
 }
 
 // posturaDoCusto declara, no arranque, o que acontece ao custo de cada chamada.
 func (l *ligacaoVideo) posturaDoCusto() string {
 	return l.ligacaoDeModelo.posturaDoCusto(fmt.Sprintf("o maximo da chamada, funcao da duracao do video — %d x (segundos x %d + %d) tokens de entrada + %d de saida, pela tabela de precos; para %s, %d tokens e %d micro-USD —",
-		videoFolgaDaReserva, videoTokensPorSegundo, videoTokensDaInstrucao, videoMaxTokens, videoDuracaoMax, l.reservaMax.Tokens, l.reservaMax.CostMicroUSD))
+		videoFolgaDaReserva, videoTokensPorSegundo, videoTokensDaInstrucao, l.maxTokens, videoDuracaoMax, l.reservaMax.Tokens, l.reservaMax.CostMicroUSD))
 }
 
 // videoDoCliente devolve a ligação da `video_read` do cliente de modelo dado, ou nil.

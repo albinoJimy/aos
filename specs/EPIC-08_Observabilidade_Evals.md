@@ -3387,6 +3387,7 @@ Só o elo do proxy.
 | Dependências | **Parte (a), a medição: NENHUMA** — o banco fala com o proxy directamente, como o spike AOS-558 fez sem geração nenhuma no nó, e é ela que dá a tarifa ao AOS-567. **Parte (b), o portão do registo: AOS-567 e AOS-568.** **Custo real, autorizado pelo dono** |
 | Responsável sugerido | Engenheiro de Plataforma |
 | Documentos de referência | `docs/reports/desenho-r3-geracao-2026-10-27.md` (§5); `docs/reports/spike-litellm-imagem-video-2026-10-25.md` (§4, pontos 1 e 4); `docs/adr/ADR-043-harness-por-capacidades.md` (§2.7); `packages/qa/banco-ensaio/`; `packages/platform/model-gateway/policy/routeentry/verdict.go`; o molde do AOS-547 |
+| 1.41 | 2026-10-27 | +AOS-572 (o `/metrics` publica uma familia por tool de modelo composta): residuo do AOS-566, declarado em vez de descoberto depois. Com o USO a passar a configuracao o no compoe N ligacoes por classe, mas o `api.go` tem dois blocos escritos a mao que leem a PRIMEIRA de cada classe — os contadores de uma segunda tool da mesma classe existem e ficam invisiveis. Nao foi fechado no AOS-566 porque nao e a linha de codigo que custa: derivar um nome de familia Prometheus do nome da tool, que vem de configuracao do operador, e decisao de forma com tres saidas e nenhuma obvia | Equipa AOS |
 
 ### Contexto
 
@@ -3433,5 +3434,61 @@ de **saída** é recusado sem citar o relatório da geração.
 - Vídeo gerado (é a R6) e o elo por medir da API de vídeo (`spike:167-172`).
 - O catálogo qualificado em lote (é a R4): aqui qualifica-se **um** modelo de geração, à mão, como
   o `ocr-visao` e o `video-visao`.
+
+---
+
+## AOS-572 — O `/metrics` publica uma família por tool de modelo composta, e não só a primeira de cada classe
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-08 — Observabilidade e Evals |
+| Fase | Harness por capacidades (ADR-043), fase R3 — resíduo do AOS-566 |
+| Tipo | fix |
+| Prioridade | P2 |
+| Estimativa | S |
+| Dependências | AOS-566 (é quem cria a configuração que torna isto alcançável) |
+| Responsável sugerido | Engenheiro de Plataforma |
+| Documentos de referência | `packages/cmd/aos/api.go` (os dois blocos de `aos_ocr_read_total`/`aos_video_read_total`); `packages/cmd/aos/classe_de_media.go`; `docs/reports/desenho-r3-geracao-2026-10-27.md` |
+
+### Contexto
+
+O AOS-566 fez do USO de uma tool de modelo configuração: o nó compõe **uma ligação por entrada do
+registo** com bloco `modelo`, pela classe declarada, e deixou de haver limite de uma tool por
+classe. O `/metrics` não acompanhou: `api.go` tem **dois blocos escritos à mão** que lêem
+`node.ocr` e `node.video`, que passaram a ser **a primeira ligação de cada classe**.
+
+Consequência, medida e declarada no AOS-566 em vez de descoberta depois: um nó com **duas** tools
+de imagem corre as duas, media as duas, custeia as duas e conta cada uma nos **seus** contadores —
+mas publica só a família da primeira. Os contadores da segunda **existem e são invisíveis**.
+
+**E o gatilho é a ORDEM do registo, não só a existência de uma segunda tool** (achado da revisão
+adversarial do AOS-566): `juntarToolDeModelo` guarda a **primeira** ligação de cada classe pela
+ordem em que o registo as declara. Se a tool nova vier **antes** da `ocr_read` no `tools.json`, a
+família `aos_ocr_read_total` passa a reportar os números **dela** e os da `ocr_read` desaparecem —
+isto é, há um caso em que **há** atribuição errada, e não só omissão.
+
+**Porque não foi fechado no AOS-566.** Não é a linha de código que custa, é a decisão de forma:
+derivar o nome de uma família Prometheus do **nome da tool**, que vem de configuração do operador
+(`modelToolSpec.Name`, hoje validado só como não-vazio e único), é deixar um nome de ficheiro de
+configuração escolher um identificador de métrica. As saídas conhecidas são três, e nenhuma é
+óbvia: sanitizar o nome e emitir `aos_<tool>_total`; trocar as duas famílias por uma só com rótulo
+`tool=`, o que **quebra** os painéis e as asserções que hoje nomeiam `aos_ocr_read_total`; ou
+manter as duas famílias conhecidas e acrescentar uma genérica para as outras. É desenho, e desenho
+não se despacha no fim de um ticket grande.
+
+### Critérios de Aceitação
+
+- [ ] Uma decisão escrita sobre a forma, entre as três saídas acima, com a razão.
+- [ ] Para as duas tools de hoje (`ocr_read`, `video_read`) a saída do `/metrics` é **byte-idêntica**
+      à de agora — teste que o compara, não inspecção.
+- [ ] Uma terceira tool de modelo composta publica os seus contadores, com um teste que monta duas
+      tools da MESMA classe e vê as duas famílias (ou os dois rótulos).
+- [ ] Se a forma escolhida derivar o nome da família do nome da tool, o nome passa a ser validado
+      no carregamento contra o alfabeto que o Prometheus aceita — **no carregador**, para o arranque
+      recusar, e não no `/metrics`, para não haver família malformada a servir.
+
+### Fora de âmbito
+
+- Mudar os nomes das famílias existentes sem um caminho de compatibilidade.
 
 ---

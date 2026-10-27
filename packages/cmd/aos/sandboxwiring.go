@@ -305,7 +305,11 @@ func reescritaDaAutoridade(call referencemonitor.Call, bilhete *bilheteDaCall) (
 // auditado. As reescritas por tool vêm depois e reformam o documento num envelope de execução
 // (`ExecRequest`, `entradaDoArtefacto`) — procurar referências nesse envelope seria procurá-las
 // numa estrutura que o modelo não escreveu.
-func reescritaDoEfeito(bindings map[string]sandbox.SandboxBinding, ocrRw, videoRw, mediaRw func(referencemonitor.Call) (referencemonitor.Call, error), artefactos bool, handles *planoDeHandles) func(referencemonitor.Call) (referencemonitor.Call, error) {
+// As três reescritas de tools de modelo são SLOTS ENCADEADOS, e não uma por tool: cada uma só toca
+// na sua tool e deixa as outras inalteradas ([juntarReescritasDeModelo]). Desde o AOS-566 o
+// Bootstrap junta num só slot as reescritas de todas as tools de modelo compostas, que são quantas
+// o registo declarar.
+func reescritaDoEfeito(bindings map[string]sandbox.SandboxBinding, modeloRw, modeloRw2, mediaRw func(referencemonitor.Call) (referencemonitor.Call, error), artefactos bool, handles *planoDeHandles) func(referencemonitor.Call) (referencemonitor.Call, error) {
 	var artRw reescritaDaCall
 	if artefactos {
 		artRw = newArtifactRewriter()
@@ -323,7 +327,7 @@ func reescritaDoEfeito(bindings map[string]sandbox.SandboxBinding, ocrRw, videoR
 		semBilhete(comporReescritas(
 			func(tool string) bool { _, tem := bindings[tool]; return tem },
 			newSandboxEffectRewriter(bindings),
-			juntarReescritasDeModelo(ocrRw, videoRw, mediaRw))),
+			juntarReescritasDeModelo(modeloRw, modeloRw2, mediaRw))),
 		artRw,
 	)
 }

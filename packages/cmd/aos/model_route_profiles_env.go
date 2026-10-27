@@ -116,14 +116,38 @@ type perfisAssinados struct {
 	// despachante é o cliente de modelo por alias do nó, quando existe (um perfil assinado
 	// não-titular carregado). É por ele que o disjuntor LIGADO vê o resultado de cada pedido.
 	despachante *clientePorModelo
-	// ocr é a tool `ocr_read` composta (AOS-530, ADR-042), quando o registo de tools a declara: a
-	// tool chama o alias de um registo de uso `tool` desta pasta, pelo MESMO gateway. nil ⇒ sem a
-	// tool. O gateway liga-se-lhe na composição ([newGatewayModelClientComPerfis]).
+	// deModelo são TODAS as tools de modelo compostas, pela ordem do registo de tools (AOS-566):
+	// uma por entrada com bloco `modelo`, cada uma da classe que declarou. É esta lista que o nó
+	// liga ao gateway, regista no RM, custeia e fecha — sem saber quantas são nem como se chamam.
+	deModelo []toolDeModelo
+	// ocr é a ligação da classe IMAGEM (a `ocr_read` do manifesto de produção), quando composta: a
+	// tool chama o alias de um registo de uso `tool` desta pasta, pelo MESMO gateway. nil ⇒ sem
+	// nenhuma. O gateway liga-se a todas na composição ([newGatewayModelClientComPerfis]).
+	//
+	// É A PRIMEIRA DA CLASSE, e serve a série `aos_ocr_read_total` do `/metrics` — a única parte
+	// deste caminho que continua a ser por classe fixa. Um nó com DUAS tools de imagem corre as
+	// duas, conta cada uma nos seus contadores, e publica a família da primeira; publicar uma
+	// família por tool composta é mudança do `/metrics`, fora desta fatia.
 	ocr *ligacaoOCR
-	// video é a tool `video_read` composta (AOS-536 parte 2), quando o registo de tools a declara: a
-	// tool chama o alias de um registo de uso `tool` de VÍDEO desta pasta, pelo MESMO gateway. nil ⇒
-	// sem a tool. Como a `ocr`, o gateway liga-se-lhe na composição.
+	// video é a ligação da classe VÍDEO (a `video_read`), pela mesma regra da `ocr`, para a série
+	// `aos_video_read_total`.
 	video *ligacaoVideo
+}
+
+// juntarToolDeModelo guarda uma tool de modelo composta: na lista que o nó percorre, e — se for a
+// primeira da classe dela — no campo por onde o `/metrics` publica a família da classe.
+func (p *perfisAssinados) juntarToolDeModelo(t toolDeModelo) {
+	p.deModelo = append(p.deModelo, t)
+	switch l := t.(type) {
+	case *ligacaoOCR:
+		if p.ocr == nil {
+			p.ocr = l
+		}
+	case *ligacaoVideo:
+		if p.video == nil {
+			p.video = l
+		}
+	}
 }
 
 // perfis devolve o conjunto de perfis do nó: a tabela em código (nil) sem pasta ou sem registos.

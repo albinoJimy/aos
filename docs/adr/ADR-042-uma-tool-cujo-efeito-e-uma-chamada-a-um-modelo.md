@@ -140,6 +140,32 @@ JPEG, um PDF digitalizado e uma tabela), com e sem acentos.
   `"modelo": {"alias": "ocr-visao"}` (a forma exacta é do AOS-530). O modelo escolhe só o nome da
   tool e o `doc_id`; o alias, a instrução e os limites são do registo e do código, nunca dos args.
   Uma entrada com os dois blocos (`sandbox` e `modelo`) recusa o arranque.
+- **EMENDA (AOS-566, 2026-10-27, fase R3 do ADR-043 §2.4): o EFEITO continua código, o USO passa a
+  configuração — e o NOME deixa de ser o que liga uma tool de modelo.** Este ADR fixou que «o
+  efeito é código do nó, não configuração», e o nó impunha-o por uma lista de dois nomes: só a
+  `ocr_read` e a `video_read` podiam declarar o bloco `modelo`, e a composição procurava-as por
+  nome exacto. A objecção continua válida e **nada nela se revoga**: o efeito — a ordem (identidade
+  antes da leitura, reserva antes do pedido), a leitura confinada, a validação da media pelos
+  bytes, a chamada única sem retry nem failover, o custo e o selo — é **uma** implementação em
+  `cmd/aos`, escrita uma só vez. O que muda é o que a selecciona: passa a ser a **classe de media**
+  que o bloco declara, de um vocabulário **fechado** que o nó conhece em código, e não o nome. Uma
+  modalidade nova é uma linha nessa tabela; um uso novo de uma modalidade que já existe é uma
+  entrada no registo.
+- **O que a emenda NÃO move, e porquê.** A **instrução** fica em código, por classe. Medido a
+  2026-10-27: o único trinco que a prende é um teste de compilação que a compara com a do banco de
+  ensaio (`aos530_ocr_instrucao_test.go:52-60`); o registo de rota assinado **não tem membro de
+  instrução**; e o «registo assinado de tools» do nó é auto-assinado com uma chave efémera, pelo
+  que dá integridade dentro do processo e não proveniência do dono. Movê-la para configuração sem
+  um trinco assinado seria uma regressão de segurança disfarçada de generalização, e o trinco exige
+  **acto do dono** — é o AOS-573.
+- **O que a emenda custa, e fica dito.** Os **tectos** (`max_tokens`, prazo) passam a configuração
+  **sem** trinco assinado: deixam de mudar por revisão de código e release, e passam a mudar por um
+  ficheiro no servidor. O prazo ganha tecto no carregamento (um prazo mal escrito prende um run); o
+  `max_tokens` não ganha, porque um valor grande de mais só aumenta a reserva e torna a chamada
+  mais fácil de **negar**, que é o lado seguro. E a guarda que impedia uma tool de egress de entrar
+  em produção por acidente (o guard-test do AOS-069) deixou de excepcionar por nome: passa a
+  excepcionar por **forma declarada**, e aperta — exige, além do que já exigia, egress externo
+  declarado, mutação nenhuma, reversibilidade e sensibilidade do recurso declaradas.
 
 ### 2.2 Identidade: o token NHI do run, com o run e o passo da tool call
 
@@ -422,5 +448,6 @@ JPEG, um PDF digitalizado e uma tabela), com e sem acentos.
 |---|---|
 | AOS-529 | A medição que justifica a decisão (§1.1) |
 | AOS-530 | §2.1 a §2.8: a tool `ocr_read`, a porta `1.12.0`, o registo de uso `tool` e o veredicto `ocr` no banco, o custo durável e no tecto. Pode ser partido em PR pela ordem: porta e perfil; registo e veredicto; tool, custo e replay |
+| AOS-566 | Emenda à §2.1: o efeito continua uma implementação em código e o USO passa a configuração — a classe de media do bloco `modelo` substitui a lista de dois nomes, na composição e no guard-test do AOS-069. A instrução NÃO se move (AOS-573) |
 | AOS-561 | A via de entrada: os bytes de uma imagem no corpo do `POST /runs`, conferidos pelos bytes e selados no espaço de handles do run (emenda a §2.4) |
 | AOS-563 | As duas tools de imagem resolvem o `doc_id` no espaço de handles do run **antes** da pasta semeada (emenda a §2.4) |
