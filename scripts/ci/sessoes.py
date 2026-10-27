@@ -78,8 +78,22 @@ OBSOLETA_APOS_S = 12 * 3600
 
 
 def _git(*args: str) -> str:
+    """
+    Corre um comando git e devolve o stdout, SEMPRE decodificado como UTF-8.
+
+    O `encoding` é explícito de propósito. Sem ele o `text=True` decodifica pela
+    codepage da consola — cp1252 no Windows —, e o git emite UTF-8: o assunto de
+    um commit em PT-PT com `Í`, `Á` ou `Ó` (`c3 8d`, `c3 81`, `c3 93`) traz um
+    segundo byte que o cp1252 NÃO define, e o `registar` rebentava com
+    `UnicodeDecodeError` antes de escrever o que quer que fosse (AOS-571). O
+    `errors="replace"` fecha o resto: este stdout é texto para mostrar e para
+    comparar, nunca autoridade, pelo que um byte indecifrável vale mais como `?`
+    do que como excepção que mata a ferramenta que a disciplina deste repo manda
+    correr ANTES de tocar em código.
+    """
     return subprocess.run(
-        ["git", *args], capture_output=True, text=True, check=False
+        ["git", *args], capture_output=True, text=True, check=False,
+        encoding="utf-8", errors="replace",
     ).stdout.strip()
 
 
