@@ -3373,3 +3373,61 @@ Só o elo do proxy.
 | 1.37 | 2026-10-22 | AOS-547 feito: medida real 74/74, registo do titular com `imagem` assinado e em produção na v0.1.68 | Equipa AOS |
 | 1.38 | 2026-10-25 | +AOS-558 (ADR-043, pré-condição da fase R3, spike): o proxy LiteLLM fixado encaminha as APIs de imagem e de vídeo da OpenRouter, ou só o chat? O falso do estado passa a registar o CAMINHO de cada pedido e as CHAVES DO TOPO do corpo (listas fechadas, sem valores), a responder com uma imagem gerada na forma da OpenRouter (`--imagem-de-saida`) e a servir a família do vídeo na forma da API de vídeo da OpenAI; um cenário com o proxy real mede o encaminhamento e a saída nas duas formas de rota, sem custo | Equipa AOS |
 | 1.39 | 2026-10-25 | AOS-558 medido (1.96.2, `google/gemini-2.5-flash-image`): **a imagem passa nas duas rotas e nos dois sentidos** (o adaptador `openrouter` traduz `images/generations` para chat e extrai de volta o `message.images[]`; o `openai` encaminha nativamente; o sha256 do PNG volta igual nos dois), **`modalities`/`provider`/`plugins`/`transforms` chegam ao fornecedor** com o `drop_params: true` ligado, e **o vídeo só falha no adaptador `openrouter`** (500 sem nada sair; pela rota `openai/…` o ciclo criar/sondar/descarregar atravessa o proxy). A afirmação «só fala chat e não declara o endpoint» está errada nas duas metades; a pré-condição da R3 fica resolvida. Fica NÃO VERIFICADO se a OpenRouter aceita a forma que o proxy monta para o vídeo — decisão de arquitectura nomeada ao dono na §5 do relatório | Equipa AOS |
+| 1.40 | 2026-10-27 | +AOS-570 (o banco mede a geracao de imagem e o preco por imagem; o registo de perfil com classe de saida exige essa medida), fase R3 do ADR-043, no molde do AOS-547. Desenho em `docs/reports/desenho-r3-geracao-2026-10-27.md`. Fecha os dois elos que o spike AOS-558 deixou por medir e apontou a esta fase: a tarifa por imagem e os limites reais (`spike:191-193`), e se a OpenRouter real devolve a imagem em `message.images[]` — o spike mediu-o com fornecedor falso. E o unico ticket da fase com custo real | Equipa AOS |
+
+## AOS-570 — O banco de ensaio mede a geração de imagem, e o registo de perfil com saída exige essa medida
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-08 — Observabilidade e Evals |
+| Fase | Harness por capacidades (ADR-043), fase R3 — a parte do banco |
+| Tipo | feat |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | **AOS-568** (a geração; sem ela não há o que medir). **Custo real, autorizado pelo dono** |
+| Responsável sugerido | Engenheiro de Plataforma |
+| Documentos de referência | `docs/reports/desenho-r3-geracao-2026-10-27.md` (§5); `docs/reports/spike-litellm-imagem-video-2026-10-25.md` (§4, pontos 1 e 4); `docs/adr/ADR-043-harness-por-capacidades.md` (§2.7); `packages/qa/banco-ensaio/`; `packages/platform/model-gateway/policy/routeentry/verdict.go`; o molde do AOS-547 |
+
+### Contexto
+
+O spike AOS-558 deixou explicitamente fora de âmbito, e apontado a esta fase: «que modelos geram
+imagem ou vídeo pela OpenRouter, **com que preço por imagem e com que limites. É o que a R3 precisa
+para o preço por imagem, e mede-se no banco com o fornecedor real**» (`spike:191-193`).
+
+Não é um detalhe: é a **entrada** do AOS-567. Sem a tarifa por imagem de um modelo concreto não há
+linha na tabela de preços, e sem linha o nó recusa arrancar — que é o comportamento correcto e
+também o que bloqueia a fase.
+
+E há um segundo elo por medir, da §3.2 de `docs/reports/desenho-r3-geracao-2026-10-27.md`: que a OpenRouter real devolva a imagem
+em `message.images[]` está **`NÃO VERIFICADO`** — o spike mediu-o com um fornecedor falso. Os dois
+medem-se na mesma corrida.
+
+Este ticket é o molde do AOS-547 aplicado à saída: ali, um registo de uso `run` com `imagem` passou
+a ser recusado sem citar um relatório da medida de media; aqui, um registo que declare uma classe
+de **saída** é recusado sem citar o relatório da geração.
+
+### Critérios de Aceitação
+
+- [ ] Uma experiência do banco que mede um modelo a **gerar** imagem, pelo proxy fixado, com
+      veredicto contra um limiar e relatório selado, no molde das experiências `ocr` e `video`.
+- [ ] A corrida **mede e regista**: a tarifa por imagem efectiva, os limites do fornecedor
+      (resolução, número de imagens por pedido, tamanho), e **em que forma a imagem voltou** — se
+      em `message.images[]`, como o spike mediu com o falso, ou noutra. O resultado entra no
+      relatório selado e é a fonte da linha da tabela de preços.
+- [ ] Um registo de perfil que declare uma classe de **saída** é **recusado** se não citar um
+      relatório qualificado desta experiência, para o mesmo perfil — com causa própria no
+      vocabulário fechado do `routeentry`, no molde de `CheckMediaReport` (AOS-547). O
+      `aos-issuer route-profile-sign` exige o relatório quando o registo o cita.
+- [ ] A qualificação real corre com **custo autorizado pelo dono**, e o registo é assinado por ele
+      e conferido contra a âncora de produção.
+- [ ] Se a medição desmentir a §3.2 de `docs/reports/desenho-r3-geracao-2026-10-27.md` — isto é, se a OpenRouter real não devolver
+      em `message.images[]` —, **o resultado é registado e o AOS-568 reabre**. Uma medição que
+      desmente o desenho é o produto deste ticket, não uma falha dele.
+
+### Fora de âmbito
+
+- Vídeo gerado (é a R6) e o elo por medir da API de vídeo (`spike:167-172`).
+- O catálogo qualificado em lote (é a R4): aqui qualifica-se **um** modelo de geração, à mão, como
+  o `ocr-visao` e o `video-visao`.
+
+---

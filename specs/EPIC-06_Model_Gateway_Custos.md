@@ -5751,6 +5751,7 @@ trabalho do ticket:
 | Dependências | AOS-559 (o código é dele) |
 | Responsável sugerido | Arquitecto de Plataforma |
 | Documentos de referência | `packages/cmd/aos/aos559_rehospedagem_confere_o_selo.go` (as três classes e `principalDivergeDoSelo`); `packages/cmd/aos/service.go` (`imputadoA`, a construção do `runState`) |
+| 1.21 | 2026-10-27 | +AOS-565 (o fornecedor fixado e selado por pedido) e +AOS-567 (o preço com unidades), fase R3 do ADR-043. Desenho em `docs/reports/desenho-r3-geracao-2026-10-27.md`. Medido a 2026-10-27: `provider_order` e `zdr` tem ZERO ocorrencias em `packages/` e `deploy/`, o corpo que o gateway monta nao tem campo `provider`, o selo de atribuicao nao leva fornecedor, e `Rate` tem exactamente quatro tarifas, todas por token. As duas medicoes que decidem a forma do preco: `canonicalDigest` serializa a `Entry` inteira (um campo novo sem `omitempty` muda o digest da tabela pinada em producao sem nenhum preco ter mudado), e `omitempty` sozinho colapsa «gratis» com «sem preco» — por isso as tarifas novas sao ponteiros | Equipa AOS |
 
 ### Contexto
 
@@ -5798,3 +5799,132 @@ não é a defesa; é a ATRIBUIÇÃO»).
 - A via LEGADA (sem gate soberano) não autentica ninguém, e ali a atribuição nunca foi forte: este
   ticket não a muda.
 
+## AOS-565 — O fornecedor fixado e selado por pedido: ordem de fornecedores, retenção, e o efectivo no selo
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 — Model Gateway e Custos |
+| Fase | Harness por capacidades (ADR-043), fase R3 — a primeira peça |
+| Tipo | feat |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | Nenhuma. **Não depende da R2** nem das outras peças da R3: aplica-se às chamadas que já existem hoje (turnos do run, `ocr_read`, `video_read`) |
+| Responsável sugerido | Engenheiro de Plataforma |
+| Documentos de referência | `docs/reports/desenho-r3-geracao-2026-10-27.md` (§3.6); `docs/adr/ADR-043-harness-por-capacidades.md` (§2.4 regra 3, §5 resíduo 1); `docs/reports/spike-litellm-imagem-video-2026-10-25.md` (§3.2); `packages/platform/model-gateway/route.go`; `packages/platform/model-gateway/port/normalize.go`; `packages/platform/model-gateway/metering/attribution/attribution.go` |
+
+### Contexto
+
+O ADR-043 §2.4 regra 3 exige que «o fornecedor é fixado por pedido (ordem de fornecedores, sem
+fallback, ZDR quando a política o exige), e o fornecedor efectivo fica selado». Medido a
+2026-10-27: **não existe nada disso**. `provider_order` e `zdr` têm **zero ocorrências** em
+`packages/` e em `deploy/`, e o corpo que o gateway monta (`port/normalize.go`) não tem campo
+`provider`. O selo de atribuição (`attribution.go:85-108`) leva principal, modelo, região, `KeyID`
+e operação — **não leva fornecedor**.
+
+O spike AOS-558 mediu que o proxy fixado deixa declarar exactamente isto: `provider`
+(`{"order":[…],"data_collection":"deny"}`), `modalities`, `plugins` e `transforms` **chegaram ao
+fornecedor** nas duas formas de rota (`spike:114-120`). É por `provider` e pelos filtros que a
+OpenRouter expressa a escolha de endpoint, a retenção e o ZDR.
+
+Esta é a primeira peça da R3 porque **é a única que melhora o que já corre hoje**: todos os turnos
+e as duas tools de modelo passam a sair com o fornecedor fixado e a selar o efectivo, antes de
+existir qualquer geração.
+
+### Critérios de Aceitação
+
+- [ ] O `RouteProfile` ganha a declaração do fornecedor: ordem de fornecedores (lista, sem
+      fallback) e a política de retenção. Entra no `Digest()` do perfil, pelo que um perfil com
+      fornecedor diferente é um perfil diferente e **a assinatura do dono cobre-o**.
+- [ ] `ChatRequest.MarshalWire` escreve as chaves no corpo **se e só se** o perfil resolvido as
+      declarar. Um perfil sem declaração produz **exactamente o corpo de hoje**, byte a byte —
+      teste de regressão sobre os bytes do wire.
+- [ ] O fornecedor **efectivo** (o que o proxy declarou ter servido) entra no `attribution.Record`
+      e no evento do turno, ao lado do modelo servido. Quando o proxy não o declara, o valor é o
+      de «não reportado», com o mesmo vocabulário fechado de `ServedLabelUnreported` — **nunca um
+      vazio ambíguo**.
+- [ ] Sob governação da rota em `enforce`, um fornecedor efectivo que não esteja na ordem
+      declarada é uma variância de rota, com causa própria no vocabulário fechado de
+      `route.go:64-73`.
+- [ ] O banner de postura do nó declara, por rota, se o fornecedor está fixado ou não — pela mesma
+      regra dos outros banners: derivado do que foi composto, não de uma constante.
+- [ ] Em produção: um turno cujo corpo leva as chaves e cujo selo nomeia o fornecedor efectivo,
+      **com o `drop_params: false` que produção corre**. Este critério é o que fecha o resíduo
+      declarado em `docs/reports/desenho-r3-geracao-2026-10-27.md` §3.6: o spike mediu as chaves a chegarem com
+      `drop_params: true` e só mediu que, com `false`, **nada as recusa**.
+
+### Fora de âmbito
+
+- Escolher o fornecedor pela tarefa (é a R4).
+- Fechar o resíduo 1 do ADR-043 §5: «fixar o fornecedor e a quantização por pedido **reduz o risco
+  mas não o fecha**». Este ticket reduz; não promete fechar, e o texto que escrever não o pode
+  sugerir.
+
+---
+
+## AOS-567 — O preço com unidades: imagem, segundo e pedido, com o digest estável e a ausência fail-closed
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 — Model Gateway e Custos |
+| Fase | Harness por capacidades (ADR-043), fase R3 |
+| Tipo | feat |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | Nenhuma para construir. **O AOS-568 não vai a produção sem este** — uma geração que reserva por tarifas de token é um tecto que mente |
+| Responsável sugerido | Engenheiro de Plataforma |
+| Documentos de referência | `docs/reports/desenho-r3-geracao-2026-10-27.md` (§3.5); `docs/adr/ADR-043-harness-por-capacidades.md` (§2.8, §5 resíduo 4); `packages/platform/model-gateway/pricing/table.go`; `packages/platform/model-gateway/pricing/change.go`; `packages/platform/model-gateway/metering/cost/cost.go`; `packages/cmd/aos/ocr_custo.go`; `packages/integration/model_admission.go` |
+
+### Contexto
+
+O ADR-043 §2.8: «A tabela de preços passa a conhecer várias unidades: tokens (as quatro tarifas
+actuais), imagem, segundo de vídeo, pedido. **A reserva é o pior caso declarado.** […] **Um par sem
+preço continua a recusar o arranque**». Medido a 2026-10-27: `Rate` tem **exactamente** quatro
+tarifas, todas por token (`pricing/table.go:83-92`), e a chave é `{Model, Region}` — sem eixo de
+modalidade nem de operação.
+
+A tarifa é trivial; o documento não é. Duas medições decidem a forma:
+
+1. **`canonicalDigest` faz `json.Marshal` da `Entry` inteira** (`pricing/table.go:219-222`). Um
+   campo `int64` novo sem `omitempty` serializa `0` em todas as linhas, **muda o digest da tabela
+   que produção tem pinada** e dispara o evento de alteração de preço sem nenhum preço ter mudado.
+2. **`omitempty` sozinho é a correcção errada.** Com `int64` o valor `0` desaparece do JSON, e `0`
+   é um preço legítimo («grátis») enquanto a ausência significa «esta unidade não tem preço», que o
+   §2.8 manda tratar como recusa de arranque. Colapsá-los reintroduz o «0 silencioso» que o pacote
+   existe para impedir: «um 0 silencioso falsificaria o burn-down» (`pricing/table.go:40-43`).
+
+### Critérios de Aceitação
+
+- [ ] `Rate` ganha tarifas por **imagem**, por **segundo** e por **pedido**, **como ponteiros**
+      (`*int64`): ausente ≠ zero, ausente é fail-closed, zero é grátis. A validação de não-negativo
+      cobre-as.
+- [ ] **O digest de uma tabela que não declare nenhuma unidade nova não muda** — teste que carrega
+      a `pricing_table.json` embebida e compara o digest com o valor de hoje, literal. É o que
+      impede uma alteração fantasma no burn-down e na reconciliação.
+- [ ] `cost.Calculator` passa a contar unidades além dos tokens, com a mesma disciplina de
+      overflow-checked e micro-USD inteiro. Uma unidade pedida sem tarifa devolve `ErrNoPrice` —
+      **nunca 0**.
+- [ ] O `Diff`/`ChangeRecorder` descrevem uma alteração de tarifa de unidade como descrevem uma de
+      token: versão nova, digest novo, evento explícito.
+- [ ] **A reserva é o pior caso declarado.** O molde das tools de modelo (`ocr_custo.go:155,187`)
+      calcula o pior caso pelas unidades que a configuração declara, e não por uma fórmula de
+      tokens. O saldo faz-se pelo medido; o custo reportado pelo fornecedor fica gravado **como
+      observação**.
+- [ ] A estimativa de admissão do turno (`integration/model_admission.go`) continua coerente: ou
+      conta as unidades, ou **declara que não as conta**, no molde do resíduo que o AOS-546 já
+      declarou para os tokens de imagem. Uma estimativa que ignora em silêncio uma unidade cara é
+      um tecto cego.
+- [ ] **Um perfil de rota que declare uma classe de SAÍDA sem a tarifa dessa unidade para
+      (alias, região) recusa o arranque**, com erro que nomeia o par e a unidade. É o portão desta
+      peça, e prova-se sozinho.
+- [ ] O vocabulário das unidades é **fechado** e vive num sítio só.
+
+### Fora de âmbito
+
+- A operação `generate` e as partes de saída (é o AOS-568).
+- O preço do segundo de vídeo tem tarifa na tabela mas **nenhum consumidor** nesta fase: a R3 não
+  gera vídeo. Entra porque o §2.8 o nomeia e porque acrescentá-lo depois voltaria a mexer no
+  documento versionado; **fica declarado que não tem consumidor até à R6**.
+- Fechar o resíduo 4 do ADR-043 §5 («os `overrides` de preço da OpenRouter tornam a reserva uma
+  estimativa»). O tecto continua a ser o pior caso **declarado**.
+
+---
